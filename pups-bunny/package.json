@@ -1,0 +1,23 @@
+{
+  "name": "pups-bunny",
+  "version": "0.1.0",
+  "description": "Personal Upload Server (RFC-6) for Bunny.net Edge Scripting and Bunny Storage",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bunny.net/edgescript-sdk": "^0.13.0",
+    "@simplewebauthn/server": "^14.1.0",
+    "pups-ui": "file:../pups-ui"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.27.0",
+    "typescript": "^7.0.2",
+    "vitest": "4.1"
+  }
+}

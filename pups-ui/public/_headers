@@ -1,0 +1,4 @@
+# Headers for the assets on Cloudflare (static assets); other servers set them in code.
+/pups/assets/*
+  X-Content-Type-Options: nosniff
+  Cache-Control: max-age=300

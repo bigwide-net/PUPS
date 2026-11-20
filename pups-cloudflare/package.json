@@ -1,0 +1,28 @@
+{
+  "name": "pups-cloudflare",
+  "version": "0.1.0",
+  "description": "Personal Upload Server (RFC-6) reference implementation for Cloudflare Workers",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "^14.1.0",
+    "pups-ui": "file:../pups-ui"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.2",
+    "@cloudflare/workers-types": "^5.20261113.1",
+    "@vitest/runner": "4.1",
+    "@vitest/snapshot": "4.1",
+    "typescript": "^7.0.2",
+    "vitest": "4.1",
+    "wrangler": "^4.162.0"
+  }
+}

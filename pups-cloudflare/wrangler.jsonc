@@ -1,0 +1,73 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "pups",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-11-01",
+	// global_fetch_strictly_public: fetch() refuses non-public addresses after DNS
+	// resolution. This is the SSRF protection for client metadata document fetches.
+	"compatibility_flags": [
+		"nodejs_compat",
+		"global_fetch_strictly_public"
+	],
+	"observability": {
+		"enabled": true
+	},
+	// OAuth state, owner credentials, grants and tokens: one SQLite-backed Durable Object.
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "STORE",
+				"class_name": "PupsStore"
+			}
+		]
+	},
+	"exports": {
+		"PupsStore": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		}
+	},
+	// Stylesheet and script of the owner pages, from the shared package pups-ui
+	// (public/pups/assets/). Every other request goes to the Worker.
+	"assets": {
+		"directory": "./node_modules/pups-ui/public"
+	},
+	// Uploaded files and /.well-known/host-meta.json. The code uses the binding FILES; set
+	// bucket_name to the name of your bucket. Don't add a second binding for it. Never enable
+	// public access on the bucket: it also holds private files (RFC-6 "Private areas").
+	"r2_buckets": [
+		{
+			"binding": "FILES",
+			"bucket_name": "pups-files"
+		}
+	],
+	"vars": {
+		// The owner's domain (the identity, `me`). host-meta.json, the configuration
+		// document and the files are served here. Empty: the host of each request.
+		"OWNER_HOST": "",
+		// Optional auth subdomain (e.g. "id.tim.example.com") for the OAuth endpoints and
+		// owner pages. Strongly recommended if the domain also runs web applications.
+		"AUTH_HOST": "",
+		// Optional public base URL for reads, e.g. a CDN. Empty: https://<OWNER_HOST>/files/
+		// It must be served by this Worker (or a CDN that pulls through it), never by a public
+		// R2 bucket (r2.dev or a bucket custom domain): the bucket also holds private files,
+		// which only the Worker may serve. An r2.dev URL is rejected.
+		"PUBLIC_BASE": "",
+		// The largest accepted file, in bytes (25 MiB).
+		"MAX_UPLOAD_BYTES": "26214400",
+		// Overall storage quota in bytes. 0: unlimited.
+		"MAX_STORAGE_BYTES": "0",
+		// Writes per grant and minute. 0: unlimited.
+		"WRITES_PER_MINUTE": "120",
+		// Declared well-known paths as JSON. Empty: the RFC-6 list (SocialSpec files, /feed.json,
+		// /feed/, /pups/images/, /pups/pages/). Leave out /feed.json and /feed/ if your website serves them (WordPress).
+		"WELL_KNOWN_PATHS": "",
+		// "true": declare post_endpoint (only useful for testing clients' POST fallback).
+		"POST_FALLBACK": "false",
+		// "true": forward requests for unknown paths to the origin (Worker on a route in
+		// front of an existing website). Otherwise unknown paths get 404.
+		"ORIGIN_FALLBACK": "false",
+		// Local development only: accept plain HTTP. Never enable in production.
+		"DEV_ALLOW_HTTP": "false"
+	}
+}

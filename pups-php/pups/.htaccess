@@ -1,0 +1,23 @@
+# PUPS (Personal Upload Server): every request goes to index.php, which also serves the
+# uploads, with the headers that keep them from ever running as a web page.
+
+DirectoryIndex index.php
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Pass the Authorization header on to PHP; CGI and FastCGI setups drop it otherwise.
+    RewriteCond %{HTTP:Authorization} .+
+    RewriteRule ^ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # Hosting providers prove domain control with files in these folders (for HTTPS
+    # certificates). Serve them as they are.
+    RewriteRule ^\.well-known/(acme-challenge|pki-validation)/ - [L]
+
+    RewriteRule ^index\.php$ - [L]
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+<IfModule !mod_rewrite.c>
+    ErrorDocument 404 "PUPS needs mod_rewrite (or another way to send every request to index.php, see README.md)."
+</IfModule>

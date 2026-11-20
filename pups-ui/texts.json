@@ -1,0 +1,42 @@
+{
+  "_about": "Texts of the consent screen, the permission lists and the confirmation fieldset, shared by all PUPS implementations (TypeScript through pups-ui, PHP through a copy). Values are HTML; {name} placeholders are replaced with values the caller has already escaped, or, for title.*, with plain text that the page escapes.",
+
+  "group.appdata": "Store its own data",
+  "group.feeds": "Manage your feeds",
+  "group.profile": "Manage your profile",
+  "group.private": "Manage your private data",
+  "group.privateRead": "Read your private data",
+  "group.identity": "Learn that you are {me}",
+
+  "scope.ownFolder": "its own folder ({path})",
+  "scope.filesUnder": "files under {path}",
+  "scope.named": "{name} ({path})",
+  "scope.read": "read {what}",
+  "scope.readWrite": "read, create, replace and delete {what}",
+
+  "details.summary": "Details",
+  "details.write": "Create, replace and delete:",
+  "details.rels": "Add links to your <code>host-meta.json</code>: {list}",
+  "details.properties": "Set in your <code>host-meta.json</code>: {list}",
+
+  "title.signIn": "Sign in to {app} as {me}",
+  "title.allow": "Allow {app} to {verb} {me}?",
+  "consent.verbWrite": "write to",
+  "consent.verbAccess": "access",
+  "consent.didYouMean": "Did you mean to log in with {name}?",
+  "consent.signIn": "Sign in to {app} as {me}?",
+  "consent.wants": "{app} wants to {verb} your domain {me}.",
+  "consent.newApp": "<strong>New app.</strong> You have never approved {app} before.",
+  "consent.loopback": "<strong>This app runs on this computer.</strong> It receives your answer at a local address ({address}), as native apps and apps in development do.",
+  "consent.learnDomain": "{app} will learn your domain, {me}.",
+  "consent.mayThen": "{app} may then",
+  "consent.footer": "Everything the app stores is public, except private data. You can remove the app at any time on the <a href=\"{appsPage}\">apps page</a>.",
+  "consent.approve": "Approve",
+  "consent.deny": "Deny",
+
+  "confirm.legend": "Confirm that it is you",
+  "confirm.passkeyOrPassword": "Enter your password, or leave it empty to use your passkey.",
+  "confirm.passkey": "You will be asked for your passkey.",
+  "confirm.password": "Enter your password.",
+  "confirm.passwordLabel": "Password"
+}

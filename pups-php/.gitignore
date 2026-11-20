@@ -1,0 +1,6 @@
+/pups/config.php
+/pups/data/
+/certs/
+/Caddyfile.local
+/pups-php.zip
+.DS_Store

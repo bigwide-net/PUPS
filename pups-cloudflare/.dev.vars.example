@@ -1,0 +1,3 @@
+# Single-use secret that protects first-run setup at /pups/setup.
+# Choose a long random value, e.g. the output of `openssl rand -base64 32`.
+BOOTSTRAP_SECRET=
