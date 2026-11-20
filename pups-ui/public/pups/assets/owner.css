@@ -60,7 +60,12 @@ button { font: inherit; padding: .5rem 1rem; border-radius: 8px; border: 1px sol
   color: var(--fg); cursor: pointer; margin: .15rem .25rem .15rem 0; }
 button[type=submit]:first-of-type, button[value=approve] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 button[value=deny] { background: var(--card); color: var(--fg); border-color: var(--line); }
-td button, th button { padding: .25rem .6rem; font-size: .875rem; background: var(--card); color: var(--fg); border-color: var(--line); }
+/* Buttons in tables (Remove, Remove and delete its files) are stacked, as wide as their column, and look alike:
+   none of them is the page's main action, so the first-of-type accent above doesn't apply. */
+td button, th button, td button[type=submit]:first-of-type { display: block; width: 100%; margin: 0 0 .35rem; padding: .25rem .6rem;
+  font-size: .875rem; background: var(--card); color: var(--fg); border-color: var(--line); }
+/* The actions column gets room, so that most labels fit on one line. */
+td:has(> button) { width: 20%; }
 img { vertical-align: middle; border-radius: 6px; }
 [role=alert], [role=status], [role=note] { border-radius: 8px; padding: .6rem .9rem; margin: .75rem 0; }
 [role=alert] { background: var(--err-bg); color: var(--err); font-weight: 600; }

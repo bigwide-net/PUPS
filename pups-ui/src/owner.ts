@@ -133,8 +133,6 @@ export interface AppRow {
 export interface LinkRow {
   rel: string
   href: string
-  /** The client id that added the link; missing for the owner's links. */
-  addedBy?: string
 }
 
 export interface AppsPage {
@@ -178,12 +176,11 @@ ${o.apps.map(appRow).join('\n')}
 
   const linksTable = o.links.length ? `<table>
 <caption>Links</caption>
-<thead><tr><th scope="col">Relation</th><th scope="col">Target</th><th scope="col">Added by</th><th scope="col">Actions</th></tr></thead>
+<thead><tr><th scope="col">Relation</th><th scope="col">Target</th><th scope="col">Actions</th></tr></thead>
 <tbody>
 ${o.links.map(l => `<tr>
 <td><code>${h(visible(l.rel))}</code></td>
 <td><code>${h(visible(l.href))}</code></td>
-<td>${l.addedBy ? `<code>${h(visible(l.addedBy))}</code>` : 'you'}</td>
 <td><button type="submit" name="remove_link" value="${h(JSON.stringify([l.rel, l.href]))}">Remove</button></td>
 </tr>`).join('\n')}
 </tbody>

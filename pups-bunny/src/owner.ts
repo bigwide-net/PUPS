@@ -5,11 +5,11 @@ import {
 } from './auth'
 import { hashPassword, randomToken, sign, timingSafeEqual, verify } from './crypto'
 import { keyOf } from './files'
-import { type Link, modifyHostMeta, onGrantRevoked, readHostMeta } from './hostmeta'
+import { modifyHostMeta, onGrantRevoked, readHostMeta } from './hostmeta'
 import { readForm } from './http'
 import { permissionList } from './oauth'
 import { appdataPrefix } from './paths'
-import { type Env, PUPS_CLIENT_PROP, type Settings, store } from './settings'
+import { type Env, type Settings, store } from './settings'
 import type { Passkey } from './state'
 
 /**
@@ -184,7 +184,6 @@ async function deleteAppFiles(clientHost: string, env: Env): Promise<number> {
 
 const unlockPage = async (s: Settings, env: Env, error?: string) => ui.unlockPage(s, await confirmOptions(s, env), error)
 
-const linkOwner = (l: Link) => l.properties?.[PUPS_CLIENT_PROP]
 
 async function appsPage(s: Settings, env: Env, o: { message?: string; error?: string } = {}) {
   const db = store(env)
@@ -194,7 +193,7 @@ async function appsPage(s: Settings, env: Env, o: { message?: string; error?: st
       ...g, permissions: permissionList(g.scope, g.clientHost, s),
       hasFiles: g.scope.split(' ').includes(`write:${appdataPrefix(g.clientHost)}`),
     })),
-    links: (hostMeta.doc.links ?? []).map(l => ({ rel: String(l.rel), href: String(l.href ?? ''), addedBy: linkOwner(l) ? String(linkOwner(l)) : undefined })),
+    links: (hostMeta.doc.links ?? []).map(l => ({ rel: String(l.rel), href: String(l.href ?? '') })),
     properties: Object.entries(hostMeta.doc.properties ?? {}).map(([k, v]) => [k, String(v)]),
     hostMetaError: hostMeta.error, hostMetaStored: hostMeta.stored, usedBytes: used, maxBytes: s.maxStorageBytes,
     confirm, ...o,

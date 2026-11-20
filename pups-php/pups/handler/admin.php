@@ -138,12 +138,11 @@ function appsPage(Ctx $ctx, ?string $message = null, ?string $error = null): Res
 
     $linksTable = $links ? '<table>
 <caption>Links</caption>
-<thead><tr><th scope="col">Relation</th><th scope="col">Target</th><th scope="col">Added by</th><th scope="col">Actions</th></tr></thead>
+<thead><tr><th scope="col">Relation</th><th scope="col">Target</th><th scope="col">Actions</th></tr></thead>
 <tbody>
 ' . implode("\n", array_map(fn($l) => '<tr>
 <td><code>' . h(visible($str($l->rel ?? ''))) . '</code></td>
 <td><code>' . h(visible($str($l->href ?? ''))) . '</code></td>
-<td>' . (linkOwner($l) ? '<code>' . h(visible(linkOwner($l))) . '</code>' : 'you') . '</td>
 <td><button type="submit" name="remove_link" value="' . h(json_encode([$str($l->rel ?? ''), $str($l->href ?? '')], JSON_FLAGS)) . '">Remove</button></td>
 </tr>', $links)) . '
 </tbody>

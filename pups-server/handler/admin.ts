@@ -1,15 +1,13 @@
 import express from 'express';
 import { appsPage, unlockPage } from 'pups-ui';
-import { PUPS_CLIENT_PROP } from '../lib/config';
 import { Ctx } from '../lib/context';
 import { htmlErrors, ownerSite, PASSWORD_ONLY, send } from '../lib/html';
 import { field, LIMITS } from '../lib/http';
 import { log } from '../lib/log';
 import { appdataPrefix } from '../lib/paths';
-import { type Link, modifyHostMeta, onGrantRevoked, ownerHostMeta } from './hostmeta';
+import { modifyHostMeta, onGrantRevoked, ownerHostMeta } from './hostmeta';
 import { permissionList } from './oauth';
 
-const linkOwner = (l: Link) => l.properties?.[PUPS_CLIENT_PROP];
 
 /** The apps page: the grants, and the links and properties of host-meta.json, each with a button that removes it. */
 function listPage(res: express.Response, ctx: Ctx, o: { message?: string; error?: string } = {}) {
@@ -20,7 +18,7 @@ function listPage(res: express.Response, ctx: Ctx, o: { message?: string; error?
             ...g, lastUsedAt: g.lastUsedAt ?? null, permissions: permissionList(g.scope, g.clientHost, config),
             hasFiles: g.scope.split(' ').includes(`write:${appdataPrefix(g.clientHost)}`),
         })),
-        links: (hostMeta.doc.links ?? []).map(l => ({ rel: String(l.rel), href: String(l.href ?? ''), addedBy: linkOwner(l) ? String(linkOwner(l)) : undefined })),
+        links: (hostMeta.doc.links ?? []).map(l => ({ rel: String(l.rel), href: String(l.href ?? '') })),
         properties: Object.entries(hostMeta.doc.properties ?? {}).map(([k, v]) => [k, String(v)]),
         hostMetaError: hostMeta.error, hostMetaStored: hostMeta.stored, confirm: PASSWORD_ONLY, ...o,
     }));

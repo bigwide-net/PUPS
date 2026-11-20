@@ -57,13 +57,14 @@ describe('apps page', () => {
     const permissions = permissionList([['write:/appdata/app.example/', { kind: 'write', prefix: '/appdata/app.example/' }], ['write:/gone/', undefined]], site.ownerHost)
     const html = await appsPage(site, {
       apps: [{ id: 'g1', clientHost: 'app.example', clientName: 'App', permissions, createdAt: 0, lastUsedAt: null, hasFiles: true }],
-      links: [{ rel: 'https://bigwide.net/ns/feed', href: 'https://tim.example.com/feed.json', addedBy: 'https://app.example/client.json' }],
+      links: [{ rel: 'https://bigwide.net/ns/feed', href: 'https://tim.example.com/feed.json' }],
       properties: [['https://bigwide.net/ns/name', 'Tim']], hostMetaStored: true, usedBytes: 1048576, confirm: { hasPassword: true },
     }).text()
     expect(html).toContain('<li>Store its own data')
     expect(html).toContain('<li><code>write:/gone/</code></li>')
     expect(html).toContain('name="revoke_delete" value="g1"')
-    expect(html).toContain('<code>https://app.example/client.json</code>')
+    expect(html).toContain('name="remove_link" value="[&quot;https://bigwide.net/ns/feed&quot;,&quot;https://tim.example.com/feed.json&quot;]"')
+    expect(html).not.toContain('Added by')
     expect(html).toContain('These pages share the origin of your website.')
     expect(html).toContain('Storage used: 1.0 MiB.')
   })
