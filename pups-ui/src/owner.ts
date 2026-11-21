@@ -1,5 +1,6 @@
 import { alert, confirmFields, type ConfirmOptions, escapeHtml as h, jsonScript, page, status, time } from './html'
 import { sanitizeText, visible } from './sanitize'
+import { t } from './texts'
 
 /**
  * Owner pages: first-run setup, login (auth subdomain mode only), the apps page and the
@@ -54,6 +55,14 @@ ${alert(error)}
 <label>Bootstrap secret <input type="password" name="secret" autocomplete="off" required></label>
 <p><button type="submit">Continue</button></p>
 </form>`, { site: site.ownerHost, status: error ? 400 : 200 })
+
+/** The authorization endpoint before the setup: how to set up the server, then log in again. */
+export const notSetUpPage = (site: OwnerSite) => page(t('title.notSetUp'), `<h1>${h(t('title.notSetUp'))}</h1>
+<p>${t('notSetUp.intro', { host: `<strong>${h(site.ownerHost)}</strong>` })}</p>
+<ol>
+<li>${t('notSetUp.setUp', { setup: '/pups/setup', secret: t('notSetUp.bootstrapSecret') })}</li>
+<li>${t('notSetUp.again')}</li>
+</ol>`, { site: site.ownerHost, status: 503 })
 
 /** Step 2 of the setup: a passkey, a password or both. `token` is the signed setup session. */
 export const credentialForm = (site: OwnerSite, token: string, passkeyCreateOptions: object, error?: string) =>

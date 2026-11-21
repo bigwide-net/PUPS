@@ -75,6 +75,17 @@ that uses “sign in with your domain”, not just change your files.' . ($passk
     });
 }
 
+/** The authorization endpoint before the setup: how to set up the server, then log in again. */
+function notSetUpPage(Config $c): Response
+{
+    return page($c, t('title.notSetUp'), '<h1>' . h(t('title.notSetUp')) . '</h1>
+<p>' . t('notSetUp.intro', ['host' => '<strong>' . h($c->host) . '</strong>']) . '</p>
+<ol>
+<li>' . t('notSetUp.setUp', ['setup' => h($c->path('/pups/setup')), 'secret' => 'the setup secret from <code>config.php</code>']) . '</li>
+<li>' . t('notSetUp.again') . '</li>
+</ol>', ['status' => 503]);
+}
+
 function secretForm(Ctx $ctx, ?string $error = null): Response
 {
     $c = $ctx->config;

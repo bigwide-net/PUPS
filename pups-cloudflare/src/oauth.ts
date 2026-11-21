@@ -81,7 +81,7 @@ function redirectTo(redirectUri: string, params: Record<string, string | undefin
 }
 
 export async function authorize(req: Request, s: Settings, env: Env): Promise<Response> {
-  if (!await store(env).ownerExists()) return errorPage('Not set up', 'This server has no owner yet.', 503)
+  if (!await store(env).ownerExists()) return ui.notSetUpPage(s)
   if (req.method == 'POST') return authorizeDecision(req, s, env)
   if (req.method != 'GET') return errorPage('Method not allowed', 'Use GET or POST.', 405)
 

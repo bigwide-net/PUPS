@@ -34,6 +34,12 @@
   "consent.approve": "Approve",
   "consent.deny": "Deny",
 
+  "title.notSetUp": "Set up your server first",
+  "notSetUp.intro": "An app wants you to log in with {host}, but this Personal Upload Server is not set up yet.",
+  "notSetUp.setUp": "<a href=\"{setup}\">Set it up now</a>. You need {secret}, and you choose how you log in: a passkey, a password or both.",
+  "notSetUp.bootstrapSecret": "the bootstrap secret you chose when you deployed it",
+  "notSetUp.again": "Then go back to the app and log in again.",
+
   "confirm.legend": "Confirm that it is you",
   "confirm.passkeyOrPassword": "Enter your password, or leave it empty to use your passkey.",
   "confirm.passkey": "You will be asked for your passkey.",

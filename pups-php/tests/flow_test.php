@@ -171,10 +171,15 @@ test('authorization: gives identify-only grants no refresh token and no write ac
     eq($t->put('/appdata/app.example/a.json', $tok['access_token'], '{}')->status, 403);
 });
 
-test('authorization: needs an owner', function () {
-    $t = new T([], false);
+test('authorization: needs an owner, and explains how to set up the server', function () {
+    $t = new T(['base_path' => '/pups'], false);
     $c = $t->registerClient('app.example');
-    eq($t->get(T::authorizeUrl($c, 'identify', T::pkce()['challenge']))->status, 503);
+    $res = $t->get(str_replace('/oauth/', '/pups/oauth/', T::authorizeUrl($c, 'identify', T::pkce()['challenge'])));
+    eq($res->status, 503);
+    contains($res->text, '<h1>Set up your server first</h1>');
+    contains($res->text, 'log in with <strong>alice.pups.test</strong>');
+    contains($res->text, '<a href="/pups/pups/setup">Set it up now</a>. You need the setup secret from <code>config.php</code>');
+    contains($res->text, 'go back to the app and log in again');
 });
 
 test('refresh: rotates, and reuse of a replaced token revokes the grant', function () {

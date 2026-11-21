@@ -151,7 +151,7 @@ function authorize(Request $req, Ctx $ctx): Response
 {
     $c = $ctx->config;
     if (!$ctx->state->owner())
-        return errorPage($c, 'Not set up', 'This server has no owner yet.', 503);
+        return notSetUpPage($c);
     $q = $req->query();
     $clientId = field($q, 'client_id', Limits::URL);
     $redirectUri = field($q, 'redirect_uri', Limits::URL);

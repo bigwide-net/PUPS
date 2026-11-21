@@ -11,8 +11,12 @@ const app = registerClient('app.example')
 const other = registerClient('other.example')
 const evilLogo = registerClient('evil-logo.example', { logo_uri: 'https://cdn.example/logo.png' })
 
+// The authorization endpoint before the setup.
+let notSetUp: Response
+
 beforeAll(async () => {
   mockClientFetch()
+  notSetUp = await call(authorizeUrl(app, 'identify', (await pkce()).challenge))
   await setupOwner()
 })
 
@@ -110,6 +114,14 @@ describe('authorization request', () => {
     expect(await r.text()).toContain('This app runs on this computer')
     const local = await call(authorizeUrl({ ...native, redirectUri: 'http://localhost:49152/callback' }, 'identify', challenge))
     expect(local.status).toBe(400)
+  })
+
+  it('before the setup, explains how to set up the server and links to the setup', async () => {
+    expect(notSetUp.status).toBe(503)
+    const html = await notSetUp.text()
+    expect(html).toContain('<h1>Set up your server first</h1>')
+    expect(html).toContain('<a href="/pups/setup">Set it up now</a>')
+    expect(html).toContain('go back to the app and log in again')
   })
 
   it('shows a consent screen that cannot be framed', async () => {
