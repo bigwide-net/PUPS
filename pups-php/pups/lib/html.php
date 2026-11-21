@@ -44,7 +44,7 @@ function page(Config $c, string $title, string $body, array $opts = []): Respons
         'X-Frame-Options' => 'DENY',
         'X-Content-Type-Options' => 'nosniff',
         'Referrer-Policy' => 'no-referrer',
-        'Content-Security-Policy' => "default-src 'none'; script-src 'self'; style-src 'self'; img-src https: data:; "
+        'Content-Security-Policy' => "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; "
             . "form-action $formAction; frame-ancestors 'none'; base-uri 'none'",
     ], '<!doctype html>
 <html lang="en">

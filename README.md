@@ -8,6 +8,7 @@ Implementations of the **Personal Upload Server** ([RFC-6](https://github.com/bi
 | [pups-cloudflare](pups-cloudflare) | Cloudflare Worker with D1 and R2. |
 | [pups-bunny](pups-bunny) | Bunny.net Edge Script with Bunny Storage. |
 | [pups-server](pups-server) | Node/Express server for local development and tests. |
+| [webpup](webpup) | A homepage for a PUPS domain: the owner's profile, feeds and pages, rendered in the browser. pups-php comes with a build of it and installs it from the owner pages. |
 | [pups-ui](pups-ui) | The owner pages (consent screen, apps page, setup, login), shared by the TypeScript servers; pups-php uses copies of its stylesheet, script and texts. |
 
 The TypeScript servers depend on pups-ui as a local package (`"pups-ui": "file:../pups-ui"`), so run `npm install` in the server's folder after cloning the whole repository. Each folder has its own README with installation and development instructions.

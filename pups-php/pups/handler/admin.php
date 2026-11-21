@@ -11,7 +11,7 @@ namespace Pups;
 function nav(Config $c, string $current): string
 {
     $item = fn(string $p, string $label) => '<li><a href="' . h($c->path($p)) . '"' . ($p === $current ? ' aria-current="page"' : '') . ">$label</a></li>";
-    return "<nav aria-label=\"Owner pages\">\n<ul>\n" . $item('/pups/apps', 'Apps') . "\n" . $item('/pups/sign-in', 'Passkeys and password')
+    return "<nav aria-label=\"Owner pages\">\n<ul>\n" . $item('/pups/apps', 'Apps') . "\n" . $item('/pups/homepage', 'Homepage') . "\n" . $item('/pups/sign-in', 'Passkeys and password')
         . "\n" . $item('/pups/server', 'Server') . "\n</ul>\n</nav>";
 }
 

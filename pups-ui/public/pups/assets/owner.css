@@ -9,6 +9,7 @@
  *                      owner's passkey or password
  *   p[role=alert]      errors           p[role=status]   confirmations
  *   p[role=note]       warnings (new app, app on this computer, same-domain mode)
+ *   label > input[type=radio] + img   a choice with a picture (the themes of webpup in pups-php)
  *   fieldset > div     a group of permissions on the consent screen: a label with its
  *                      checkbox, then details (the paths, rels and properties)
  *   td details         on the apps page: the paths, rels and properties of a group
@@ -45,6 +46,8 @@ fieldset { margin: 1rem 0; border: 1px solid var(--line); border-radius: 12px; p
 legend { font-weight: 600; padding: 0 .25rem; }
 label { display: block; margin: .6rem 0; }
 fieldset label:has(input[type=checkbox]) { display: flex; gap: .6rem; align-items: flex-start; }
+fieldset label:has(input[type=radio]) { display: flex; gap: .75rem; align-items: center; }
+label img { flex: none; border: 1px solid var(--line); }
 input[type=checkbox] { margin-top: .35rem; }
 fieldset > div { border-top: 1px solid var(--line); }
 fieldset > div > label { margin-bottom: .2rem; }

@@ -212,7 +212,8 @@ test('source files contain no literal control or invisible characters', function
     $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
     foreach ($it as $f) {
         $rel = substr($f->getPathname(), strlen($root) + 1);
-        if (preg_match('#^(pups/data|certs|\.git)/#', $rel) || !preg_match('/\.(php|js|css|md|sh|json)$|^\.htaccess$/', $f->getFilename()))
+        // pups/webpup/ is a build of webpup (scripts/sync-webpup.sh): its bundled libraries need such characters.
+        if (preg_match('#^(pups/data|pups/webpup|certs|\.git)/#', $rel) || !preg_match('/\.(php|js|css|md|sh|json)$|^\.htaccess$/', $f->getFilename()))
             continue;
         foreach (explode("\n", file_get_contents($f->getPathname())) as $i => $line)
             if (preg_match('/' . \Pups\UNSAFE . '/u', str_replace(["\t", "\r"], '', $line), $m) || !preg_match('//u', $line))

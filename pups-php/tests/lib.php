@@ -178,7 +178,7 @@ final class T
     {
         Log::$quiet = true;
         $this->dataDir = $dataDir ?? tempDir();
-        $this->config = Config::fromArray($config + ['origin' => ORIGIN, 'data_dir' => $this->dataDir, 'setup_secret' => SETUP_SECRET,
+        $this->config = Config::fromArray($config + ['origin' => ORIGIN, 'data_dir' => $this->dataDir, 'site_dir' => tempDir(), 'setup_secret' => SETUP_SECRET,
             'mentions' => false, 'comments' => false]);
         $this->ctx = new Ctx($this->config, fn(string $url) => $this->docs[$url] ?? ['status' => 404, 'body' => 'not found'],
             fn() => (int) floor(microtime(true) * 1000) + $this->offset, function (string $url) {

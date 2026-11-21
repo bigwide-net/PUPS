@@ -14,6 +14,11 @@ DirectoryIndex index.php
     # certificates). Serve them as they are.
     RewriteRule ^\.well-known/(acme-challenge|pki-validation)/ - [L]
 
+    # webpup, when it is the homepage (installed at /pups/homepage): its script, styles and themes
+    # are served as they are. index.html, /p/* and webpup-config.json go through index.php.
+    RewriteCond %{REQUEST_FILENAME} -f
+    RewriteRule ^(webpups\.js|webpup\.css|theme\.css|webpup-themes/[a-z0-9-]+\.(css|jpg|json))$ - [L]
+
     RewriteRule ^index\.php$ - [L]
     RewriteRule ^ index.php [L]
 </IfModule>

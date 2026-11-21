@@ -85,16 +85,17 @@ function hostMetaDocument(Ctx $ctx): Response
     ], $stored['text']);
 }
 
-/** A start page for the owner, handy to check the setup. */
+/** The start page of the owner pages, /pups/ (/ forwards here while the domain has no homepage). */
 function startPage(Ctx $ctx): Response
 {
     $c = $ctx->config;
     $owner = $ctx->state->owner();
     return page($c, "Personal Upload Server for $c->host", '<h1>Personal Upload Server</h1>
 <p>This is the Personal Upload Server of <strong>' . h($c->host) . '</strong>. Apps can upload files to this domain once its owner allows them.</p>
-' . ($owner ? '' : '<p role="note">This server has no owner yet. <a href="' . h($c->path('/pups/setup')) . '">Set it up</a>.</p>') . '
+' . ($owner ? homepageSummary($c) : '<p role="note">This server has no owner yet. <a href="' . h($c->path('/pups/setup')) . '">Set it up</a>.</p>') . '
 <ul>
 <li><a href="' . h($c->path('/pups/apps')) . '">Your apps</a>: see which apps have access, and remove them.</li>
+' . ($c->basePath === '' ? '<li><a href="' . h($c->path('/pups/homepage')) . '">Homepage</a>: install webpup as the homepage of your domain, choose its theme, or remove it.</li>' : '') . '
 <li>Discovery: <a href="/.well-known/host-meta.json">/.well-known/host-meta.json</a> → <a href="' . h($c->configUrl) . '">' . h($c->configUrl) . '</a>
 · <a href="' . h(OAUTH_METADATA_PATH) . '">OAuth metadata</a></li>
 </ul>');

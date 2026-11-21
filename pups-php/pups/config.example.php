@@ -60,6 +60,10 @@ return [
     // 'mentions' => true,
     // 'comments' => true,
 
+    // With webpup as your homepage (installed on /pups/homepage): end the page with a small
+    // "Owner" link to the owner pages at /pups/.
+    // 'webpup_owner_link' => true,
+
     // --- Local development only ---------------------------------------------------------------
 
     // Accept a plain http:// origin, e.g. 'http://localhost:8080'. Apps require HTTPS.

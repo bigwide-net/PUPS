@@ -71,6 +71,8 @@ that uses “sign in with your domain”, not just change your files.' . ($passk
 ' . sameDomainWarning($c) . '
 <h2>Checks</h2>
 ' . checksHtml(environmentChecks($ctx)) . '
+<h2>Your homepage</h2>
+' . homepageSummary($c) . '
 <p><a href="' . h($c->path('/pups/apps')) . '">Manage your apps</a></p>', ['nav' => nav($c, '')]);
     });
 }
@@ -129,6 +131,19 @@ function documentRoot(): ?string
 {
     $root = $_SERVER['DOCUMENT_ROOT'] ?? '';
     return $root !== '' && is_dir($root) ? rtrim($root, '/\\') : null;
+}
+
+/**
+ * For a data directory inside the web root: where it could go instead, if PHP may write next to
+ * the web root (a folder next to public_html), or that it is in the right place.
+ */
+function dataDirHint(string $root): string
+{
+    $parent = dirname($root);
+    // is_writable() warns under open_basedir, which is one way hosts forbid this.
+    return $parent !== $root && @is_writable($parent)
+        ? ". It is inside the web root, protected by .htaccess. Safer: set 'data_dir' => '$parent/pups-data' in config.php, and move the contents of this folder there. PUPS creates the folder."
+        : ". It is inside the web root, protected by .htaccess. Your host doesn't let PHP write outside the web root, so this is the right place.";
 }
 
 /** The .htaccess that sends /.well-known/ to PUPS when it is installed in a folder. */
@@ -193,7 +208,7 @@ function environmentChecks(Ctx $ctx): array
     $root = documentRoot();
     $dataReal = realpath($c->dataDir) ?: $c->dataDir;
     $inRoot = $root && str_starts_with($dataReal . '/', (realpath($root) ?: $root) . '/');
-    $out[] = is_writable($c->dataDir) ? ['ok', 'Data directory', $dataReal . ($inRoot ? ' (inside the web root, protected by .htaccess; outside is better if your host allows it)' : '')]
+    $out[] = is_writable($c->dataDir) ? ['ok', 'Data directory', $dataReal . ($inRoot ? dataDirHint(realpath($root) ?: $root) : '')]
         : ['fail', 'Data directory', "$dataReal is not writable for PHP."];
     if ($inRoot) {
         $url = $c->origin . substr($dataReal, strlen(realpath($root) ?: $root)) . '/state.json';

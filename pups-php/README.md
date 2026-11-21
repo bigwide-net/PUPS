@@ -14,7 +14,8 @@ It implements the same protocol as the [Cloudflare Worker](../pups-cloudflare) a
   - setup with a one-time secret;
   - passkeys and password;
   - apps, with the links and properties of `host-meta.json`;
-  - a server page with environment checks and the log.
+  - a server page with environment checks and the log;
+- a homepage for your domain: [webpup](../webpup), installed from the owner pages with a theme of your choice.
 
 ## Install on shared hosting
 
@@ -25,7 +26,7 @@ These steps work on any host with PHP and `.htaccess`, such as Namecheap, Hostin
    - Don't install PUPS on a domain that also runs other web applications, such as WordPress, a wiki or a forum. They share the origin of the owner pages, so a security hole in any of them puts your login at risk. With that login someone could sign in as you wherever you use your domain. Static files are fine.
 2. **Turn on HTTPS** for that domain. Most hosts issue a free certificate automatically, e.g. through *SSL/TLS Status*, *AutoSSL* or *Let's Encrypt*.
 3. **Choose PHP 8.1 or later** for it, e.g. in *Select PHP Version*, *MultiPHP Manager* or *PHP Configuration*.
-4. **Upload the contents of the folder `pups/`** into the domain's folder, with the hosting file manager or FTP. To get it, download this repository (on GitHub: *Code → Download ZIP*) and unpack it. `pups/` holds everything the server needs and nothing else: `.htaccess`, `index.php`, `controller.php`, `config.example.php` and the folders `assets/`, `handler/` and `lib/`. Include `.htaccess`: some FTP clients hide files that start with a dot. From a clone, `scripts/make-zip.sh` packs these files into `pups-php.zip`; most hosting file managers can unpack a zip on the server.
+4. **Upload the contents of the folder `pups/`** into the domain's folder, with the hosting file manager or FTP. To get it, download this repository (on GitHub: *Code → Download ZIP*) and unpack it. `pups/` holds everything the server needs and nothing else: `.htaccess`, `index.php`, `controller.php`, `config.example.php` and the folders `assets/`, `handler/`, `lib/` and `webpup/`. Include `.htaccess`: some FTP clients hide files that start with a dot. From a clone, `scripts/make-zip.sh` packs these files into `pups-php.zip`; most hosting file managers can unpack a zip on the server.
 5. **Create `config.php`.** Copy `config.example.php` to `config.php` and set two values:
    - `origin`: your domain as `https://me.example.com`;
    - `setup_secret`: a long random value. Generate one with `openssl rand -base64 32` or a password manager.
@@ -36,9 +37,11 @@ These steps work on any host with PHP and `.htaccess`, such as Namecheap, Hostin
 
 That's it. In an app that supports PUPS, enter `me.example.com`.
 
-**Optional:** move the data folder out of the web root. PUPS keeps everything in `data/` next to `index.php`, protected by `.htaccess`. If your host lets you create folders outside the web root (usually next to `public_html`), that is safer: set `'data_dir' => __DIR__ . '/../pups-data'` in `config.php`. PUPS creates the folder.
+Your owner pages start at `https://me.example.com/pups/`. While your domain has no homepage, `https://me.example.com/` forwards there. To give it one, install webpup on the page *Homepage* (`/pups/homepage`), see [Homepage](#homepage).
 
-**Updating:** upload the contents of the new `pups/` folder over the old files. Your `config.php` and `data/` aren't part of the download, so they stay.
+**Optional:** move the data folder out of the web root. PUPS keeps everything in `data/` next to `index.php`, protected by `.htaccess`. If your host lets you create folders outside the web root (usually next to `public_html`), that is safer: set `'data_dir' => __DIR__ . '/../pups-data'` in `config.php`. PUPS creates the folder. The checks on the setup page tell you whether your host allows it, and give you the exact line.
+
+**Updating:** upload the contents of the new `pups/` folder over the old files. Your `config.php` and `data/` aren't part of the download, so they stay. So does an installed webpup: if the new PUPS comes with another version of it, the page *Homepage* says so, and **Save** installs it.
 
 ### When something doesn't work
 
@@ -58,7 +61,8 @@ PUPS can live in a folder of an existing website, e.g. `https://example.com/pups
 
 - the endpoints are under `/pups/`;
 - `storage_base` is `https://example.com/pups/`, so an app's files are at `https://example.com/pups/appdata/<app>/…`;
-- the owner pages are at `/pups/pups/apps`.
+- the owner pages are at `/pups/pups/`, e.g. `/pups/pups/apps`, and `/pups/` forwards there;
+- webpup can't be your homepage: it needs PUPS at the domain root.
 
 Two things must still be at the domain root: `/.well-known/host-meta.json`, and the well-known files such as `/.well-known/about.md`. At the end of setup, PUPS writes a file `.well-known/.htaccess` into the domain's document root that sends these requests to PUPS. Static files that exist there take precedence. So do the folders that hosting providers use to prove domain control for HTTPS certificates (`acme-challenge`, `pki-validation`). If PHP can't write that file, the setup and server pages show its content, for you to upload yourself. The base path is detected from the URL of `index.php`; set `base_path` in `config.php` if that goes wrong.
 
@@ -76,7 +80,7 @@ location / {
 }
 ```
 
-nginx passes the `Authorization` header to PHP-FPM, and `PUT` and `DELETE` too. Don't let nginx serve uploads from `data_dir` itself: fresh reads (`GET` with `Authorization`) must reach PHP. Keep `data_dir` outside the web root, since `data/.htaccess` doesn't protect anything here (requests never reach the files directly with this configuration, but a mistake in it would expose them).
+nginx passes the `Authorization` header to PHP-FPM, and `PUT` and `DELETE` too. PHP serves webpup's files then, too. Don't let nginx serve uploads from `data_dir` itself: fresh reads (`GET` with `Authorization`) must reach PHP. Keep `data_dir` outside the web root, since `data/.htaccess` doesn't protect anything here (requests never reach the files directly with this configuration, but a mistake in it would expose them).
 
 ## Local setup (macOS)
 
@@ -111,7 +115,9 @@ The default host name is `alice-php.pups.test`, so that it doesn't collide with 
 
 | URL | What |
 | --- | --- |
-| `/` | Start page. |
+| `/` | Your homepage: webpup, or an `index.html` of your own in the domain's folder. Without one, it forwards to `/pups/`. |
+| `/pups/` | Start page of the owner pages. |
+| `/pups/homepage` | **Homepage.** Install webpup, choose its theme and whether visitors see the theme browser, or remove it. |
 | `/pups/setup` | First-run setup with the setup secret: checks, then a passkey and/or a password. Gone after setup. |
 | `/pups/apps` | **Your apps.** Every grant: the app's domain, its self-declared name, the permissions, when it was approved and last used. **Remove** ends an app's access at once; **Remove and delete its files** also deletes its `/appdata/<app>/` folder. Also lists the links and properties in `host-meta.json`, each removable. |
 | `/pups/sign-in` | Add and remove passkeys; change or set the password. |
@@ -125,8 +131,9 @@ The default host name is `alice-php.pups.test`, so that it doesn't collide with 
 | `/pups/host-meta` | `host_meta_endpoint`: apps add, change, remove and order links and set properties. |
 | `/pups/post` | `post_endpoint`, if `PUT`/`DELETE` are blocked or `post_fallback` is set. |
 | `/pups/probe` | Used by the checks: echoes the method and whether the `Authorization` header arrived. |
+| `/p/…`, `/index.html`, `/webpup-config.json`, … | webpup's pages and files, while it is installed. |
 
-**Uploads live at the root of the domain**, as with the Node server: an app's file `/appdata/app.example/logo.svg` is at `https://me.example.com/appdata/app.example/logo.svg`. The server's own routes take precedence: `/`, `/oauth/…`, `/pups/…`, `/personal-storage.json`, `/.well-known/host-meta.json` and `/.well-known/oauth-authorization-server`. Uploads can never shadow them: scopes allow writes only in `/appdata/<app>/` and the declared well-known paths, and well-known paths may not overlap these routes. The exceptions are `/pups/images/` and `/pups/pages/`, the declared directories for your site's profile images and pages, and the private paths you declare inside `/pups/private/`: no route of PUPS is in them.
+**Uploads live at the root of the domain**, as with the Node server: an app's file `/appdata/app.example/logo.svg` is at `https://me.example.com/appdata/app.example/logo.svg`. The server's own routes take precedence: `/`, `/oauth/…`, `/pups/…`, `/personal-storage.json`, webpup's URLs while it is installed (`/p/…` and its files), `/.well-known/host-meta.json` and `/.well-known/oauth-authorization-server`. Uploads can never shadow them: scopes allow writes only in `/appdata/<app>/` and the declared well-known paths, and well-known paths may not overlap these routes. The exceptions are `/pups/images/` and `/pups/pages/`, the declared directories for your site's profile images and pages, and the private paths you declare inside `/pups/private/`: no route of PUPS is in them.
 
 **Every owner action needs a fresh confirmation**, with a passkey or the password: viewing the apps, approving an app, removing one, changing the password. The owner pages share the origin of your domain (same-domain mode), so PUPS never sets a cookie: a script on your website would have no session to abuse. With a passkey, `assets/owner.js` asks for it when you submit a form with an empty password field. Without JavaScript, the forms work with the password. Failed attempts are rate-limited: after 5 in 15 minutes, you wait 1, 2, 4, … minutes.
 
@@ -219,6 +226,22 @@ Client metadata documents, scopes, paths, form fields, headers and `host-meta.js
 - **Log.** Values are JSON-quoted with control and invisible characters escaped, so nothing from a request or a fetched document can inject log lines or terminal escape sequences. Values over 4096 bytes are cut.
 - **Source files** must not contain literal control or invisible characters ("Trojan Source"); a test checks that.
 
+## Homepage
+
+[webpup](../webpup) is a homepage for your domain: your profile, posts and pages, from the files your apps write through PUPS (feeds, `about.md`, `contact.vcf`, `host-meta.json`). It is a single page that renders them in the visitor's browser, so it changes whenever your apps change these files. pups-php comes with a copy in `webpup/`.
+
+On the page *Homepage* (`/pups/homepage`, also linked from the start page and the end of the setup), you choose:
+
+- **a theme**: webpup's default look or one of its ten themes, each with a preview. A `theme.css` you wrote yourself is kept, as the choice *Your own theme.css*;
+- **the theme browser**: a row of all themes at the bottom of the page, where you and your visitors can try them. Off by default.
+
+**Install webpup** copies webpup to the domain's folder (next to `index.php`): `index.html`, `webpups.js`, `webpup.css`, `theme.css` (the theme), `webpup-config.json`, and `webpup-themes/` while the theme browser is on. **Save** writes them again, with your new choices; your other settings in `webpup-config.json`, such as `embeds`, stay. **Remove webpup** deletes these files, and `/` forwards to the owner pages again.
+
+- `/` and webpup's pretty URLs (`/p/about`, `/p/feed/photos`, …) serve its `index.html`. `.htaccess` lets the web server deliver its script, styles and themes directly; everything else goes through `index.php`.
+- `webpup-config.json` is served with two links that PUPS adds: `settings-url`, where the theme browser tells you to change the theme, and `owner-link`, the **Owner** link to `/pups/` at the very bottom of the page. Set `'webpup_owner_link' => false` in `config.php` to leave that link out.
+- An `index.html` of your own takes precedence: PUPS serves it at `/`, never replaces it, and the page *Homepage* asks you to remove or rename it before installing webpup.
+- webpup is installed only at the domain root, not in a [folder installation](#installing-in-a-folder): it loads its files and your feeds from there.
+
 ## Configuration
 
 `config.php` returns an array. Only `origin` and `setup_secret` are required; see `config.example.php`.
@@ -237,6 +260,7 @@ Client metadata documents, scopes, paths, form fields, headers and `host-meta.js
 | `public_base` | `storage_base` | Base URL for public reads, if they go through another host (a CDN). |
 | `mentions` | `true` | Receive mentions of your domain at `/pups/mention` and put them into your inbox. See [Inbox](#inbox). |
 | `comments` | `true` | Receive comments on your feeds at `/pups/comments` and put them into your inbox. See [Inbox](#inbox). |
+| `webpup_owner_link` | `true` | With webpup as your homepage: end the page with a link to the owner pages. See [Homepage](#homepage). |
 | `allow_http` | `false` | Local tests only: accept an `http://` origin. |
 | `allow_private_clients` | `false` | Local tests only: fetch client metadata documents from private addresses. Never on a public server (SSRF). |
 | `extra_ca` | none | Local tests only: an additional CA certificate (PEM) for fetching client metadata documents, e.g. mkcert's. |
@@ -361,7 +385,7 @@ The server is in `pups/`; the paths below are relative to it. `tests/` and `scri
 | File | Contents |
 | --- | --- |
 | `index.php` | Entry point: checks the PHP version, calls `Pups\run()`. |
-| `.htaccess` | Sends every request to `index.php`; passes the `Authorization` header on. |
+| `.htaccess` | Sends every request to `index.php`, except webpup's script, styles and themes; passes the `Authorization` header on. |
 | `controller.php` | Routing, error handling, sending responses (`handle()`, `emit()`, `run()`). |
 | `handler/discovery.php` | `host-meta.json`, configuration document, RFC 8414 metadata, start page. |
 | `handler/oauth.php` | Authorization endpoint with consent screen, token and revocation endpoints. |
@@ -369,6 +393,7 @@ The server is in `pups/`; the paths below are relative to it. `tests/` and `scri
 | `handler/hostmeta.php` | `host_meta_endpoint` and the cleanup after revocation. |
 | `handler/admin.php` | The apps and sign-in pages. |
 | `handler/setup.php` | Setup, environment checks, the server page, the probe. |
+| `handler/homepage.php` | The homepage: installing and removing webpup, the page *Homepage*, serving `/` and webpup's URLs. |
 | `handler/mentions.php` | The built-in receiver: `/pups/mention`, `/pups/comments`, status pages, the queue and the checks. |
 | `handler/inbox.php` | Dismissing inbox items: the RFC-9 action and the confirmation page. |
 | `lib/inbox.php` | The inbox file: writing it under the storage lock, items, limits, the action key. |
@@ -386,8 +411,11 @@ The server is in `pups/`; the paths below are relative to it. `tests/` and `scri
 | `lib/log.php`, `lib/context.php` | The log; the shared context and the data folder. |
 | `assets/owner.css`, `assets/owner.js` | Look of the owner pages (no classes, see the comment at the top) and the passkey ceremonies. Copies from pups-ui. |
 | `lib/texts.json` | Texts of the consent screen, the permission lists and the confirmation fieldset (`t()` in `lib/html.php`). A copy from pups-ui. |
+| `webpup/` | A build of [webpup](../webpup), which the page *Homepage* installs. |
 
 The stylesheet, the script and `texts.json` are shared with the TypeScript implementations through [pups-ui](../pups-ui). Change them there and run `scripts/sync-ui.sh` to copy them here; a test fails while the copies are out of date. The server itself never needs pups-ui.
+
+`webpup/` is a production build of [webpup](../webpup). After changing webpup, run `scripts/sync-webpup.sh`: it builds webpup and copies the build here.
 
 ```sh
 php tests/run.php            # all tests; php tests/run.php <filter> for some

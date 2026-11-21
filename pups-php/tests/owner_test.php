@@ -27,6 +27,18 @@ test('setup: needs the setup secret, works once, then is gone', function () {
     eq($t->ctx->state->owner()['passkeys'], []);
 });
 
+test('setup checks: a data directory in the web root gets a config.php line, or the note that it is the right place', function () {
+    $home = tempDir();
+    mkdir("$home/public_html");
+    contains(\Pups\dataDirHint("$home/public_html"), "Safer: set 'data_dir' => '$home/pups-data' in config.php");
+    chmod($home, 0555);
+    try {
+        contains(\Pups\dataDirHint("$home/public_html"), "Your host doesn't let PHP write outside the web root, so this is the right place.");
+    } finally {
+        chmod($home, 0755);
+    }
+});
+
 test('setup: rate-limits wrong secrets', function () {
     $t = new T([], false);
     for ($i = 0; $i < 5; $i++)
@@ -141,7 +153,7 @@ test('server page: shows checks and the log after confirmation', function () {
 
 test('owner pages: no CORS, no cookies, strict CSP, assets served', function () {
     $t = new T();
-    foreach (['/', '/pups/apps', '/pups/sign-in', '/pups/server'] as $p) {
+    foreach (['/pups/', '/pups/apps', '/pups/homepage', '/pups/sign-in', '/pups/server'] as $p) {
         $res = $t->get($p);
         eq([$p, $res->header('access-control-allow-origin'), $res->header('set-cookie')], [$p, null, null]);
         contains($res->header('content-security-policy'), "script-src 'self'");

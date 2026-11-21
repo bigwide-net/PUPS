@@ -47,6 +47,10 @@ final class Config
     public string $publicBase;
     public string $configUrl;
     public string $dataDir;
+    /** The domain's web root, where /pups/homepage installs webpup: the folder of index.php. Null in tests that don't set it. */
+    public ?string $siteDir;
+    /** webpup ends the page with a link to the owner pages (/pups/). */
+    public bool $webpupOwnerLink;
     public string $setupSecret;
     public int $maxUploadBytes;
     public int $maxStorageBytes;
@@ -108,6 +112,9 @@ final class Config
         if (!is_string($dataDir) || $dataDir === '')
             throw new \InvalidArgumentException("'data_dir' must be set");
         $x->dataDir = rtrim($dataDir, '/\\');
+        $siteDir = $c['site_dir'] ?? null;
+        $x->siteDir = is_string($siteDir) && $siteDir !== '' ? rtrim($siteDir, '/\\') : null;
+        $x->webpupOwnerLink = self::bool($c, 'webpup_owner_link', true);
         $secret = $c['setup_secret'] ?? '';
         $x->setupSecret = is_string($secret) ? $secret : '';
         $x->maxUploadBytes = self::int($c, 'max_upload_bytes', 26214400);

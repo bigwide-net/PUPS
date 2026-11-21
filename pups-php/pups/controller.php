@@ -8,11 +8,11 @@ namespace Pups;
 
 foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'inbox'] as $f)
     require_once __DIR__ . "/lib/$f.php";
-foreach (['discovery', 'hostmeta', 'files', 'oauth', 'admin', 'setup', 'mentions', 'inbox'] as $f)
+foreach (['discovery', 'hostmeta', 'files', 'oauth', 'admin', 'setup', 'homepage', 'mentions', 'inbox'] as $f)
     require_once __DIR__ . "/handler/$f.php";
 
 /** Paths (relative to the base) that are never CORS-enabled: the owner pages and their assets. */
-const OWNER_PAGES = ['/', '/oauth/authorize', '/pups/apps', '/pups/sign-in', '/pups/server', '/pups/setup', '/pups/inbox/dismiss', '/pups/assets/owner.css', '/pups/assets/owner.js'];
+const OWNER_PAGES = ['/pups/', '/pups/homepage', '/oauth/authorize', '/pups/apps', '/pups/sign-in', '/pups/server', '/pups/setup', '/pups/inbox/dismiss', '/pups/assets/owner.css', '/pups/assets/owner.js'];
 
 /** Handles one request. Never throws. */
 function handle(Request $req, Ctx $ctx): Response
@@ -52,8 +52,10 @@ function dispatch(Request $req, string $abs, ?string $rel, Ctx $ctx): ?Response
     if ($abs === OAUTH_METADATA_PATH && $m === 'GET')
         return jsonDocument(oauthMetadata($c));
     switch ($rel) {
-        case '/':
+        case '/pups/':
             return $m === 'GET' ? startPage($ctx) : null;
+        case '/pups/homepage':
+            return homepageEndpoint($req, $ctx);
         case CONFIG_PATH:
             return $m === 'GET' ? jsonDocument(configDocument($c)) : null;
         case '/oauth/authorize':
@@ -94,6 +96,10 @@ function dispatch(Request $req, string $abs, ?string $rel, Ctx $ctx): ?Response
     }
     if ($rel !== null && str_starts_with($rel, '/pups/comments/status/'))
         return commentStatusEndpoint($req, substr($rel, 22), $ctx);
+    if ($rel !== null && preg_match('#^/pups/assets/themes/(.+)\.jpg$#D', $rel, $t))
+        return $m === 'GET' ? themeThumbnail($t[1]) : null;
+    if ($rel !== null && $m === 'GET' && ($home = homepageRoute($req, $rel, $ctx)))
+        return $home;
     return fileRoutes($req, $abs, $rel, $ctx);
 }
 
@@ -155,6 +161,7 @@ function loadConfig(string $dir): Config
     if (!is_array($array))
         throw new \InvalidArgumentException('config.php must return an array (see config.example.php).');
     $array['data_dir'] ??= "$dir/data";
+    $array['site_dir'] = $dir;
     $detected = json_decode(@file_get_contents($array['data_dir'] . '/detected.json') ?: '[]', true) ?: [];
     return Config::fromArray($array, $detected, detectBasePath());
 }
