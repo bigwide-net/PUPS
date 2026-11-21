@@ -84,6 +84,9 @@ final class Config
             throw new \InvalidArgumentException("'origin' must use https (for local tests, set 'allow_http' => true)");
         if (($m[1] === 'https' && ($m[3] ?? '') === ':443') || ($m[1] === 'http' && ($m[3] ?? '') === ':80'))
             throw new \InvalidArgumentException("'origin' must not contain the default port");
+        // .example is reserved for documentation (RFC 2606): config.php was copied without filling it in.
+        if (str_ends_with($m[2], '.example'))
+            throw new \InvalidArgumentException("'origin' is still the example domain, $origin. Set it in config.php to your own domain, e.g. https://yourname.com");
         $x->origin = $origin;
         $x->host = $m[2] . ($m[3] ?? '');
         $x->rpId = trim($m[2], '[]');

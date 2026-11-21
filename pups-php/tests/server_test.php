@@ -115,7 +115,7 @@ test('built-in server: setup, upload, ranges and the Authorization header over r
     }
 });
 
-test('built-in server: a missing or broken config.php gives a clear message', function () {
+test('built-in server: a missing, broken or unedited config.php gives a clear message', function () {
     [$url, $dir, $stop] = startServer([]);
     try {
         unlink("$dir/config.php");
@@ -124,6 +124,9 @@ test('built-in server: a missing or broken config.php gives a clear message', fu
         contains($res['body'], 'Copy config.example.php to config.php');
         file_put_contents("$dir/config.php", "<?php return ['origin' => 'https://x.example/'];");
         contains(\Pups\httpRequest('GET', "$url/")['body'], "'origin' must be an origin");
+        // config.example.php copied without filling it in.
+        copy(dirname(__DIR__) . '/pups/config.example.php', "$dir/config.php");
+        contains(\Pups\httpRequest('GET', "$url/")['body'], "'origin' is still the example domain, https://alice.example. Set it in config.php");
     } finally {
         $stop();
     }
