@@ -79,7 +79,7 @@ keep it). The answer is kept in the browser's localStorage for 7 days.
 | Archive page 3 of `photos` | `/p/feed/photos/archive/3` | `/index.html?show=feed&feed=photos&mode=archive&page=3` |
 | The Pages tab | `/p/pages` | `/index.html?show=pages` |
 | The page `imprint.md` | `/p/page/imprint` | `/index.html?show=page&name=imprint` |
-| Post 47 of the main feed (`_pups.index` 47) | `/p/feed/post/47` | `/index.html?show=post&feed=feed&index=47` |
+| Post 47 of the main feed (`_archive.index` 47) | `/p/feed/post/47` | `/index.html?show=post&feed=feed&index=47` |
 | Post 3 of `photos` | `/p/feed/photos/post/3` | `/index.html?show=post&feed=feed/photos&index=3` |
 | A post without an index | its page + `#<item id>` | the same |
 
@@ -130,8 +130,10 @@ All from the site's own origin, in parallel:
   site. See [Pages and footer](#pages-and-footer).
 - The **footer**: the Markdown file of the property `https://bigwide.net/ns/webpup-footer`.
 - `/feed.json`, registered or not, and the registered named feeds. Archives
-  (`_pups.archive_url`) are loaded when an archive page is opened. Feeds without `archive_url` have
-  no archive pages.
+  ([RFC-13](https://github.com/bigwide-net/RFCs/blob/main/RFC-13-JSON-Feed-Archives.md):
+  `_archive.archive_url`, and `archive_template` if given) are loaded when an archive page is opened.
+  Feeds without `archive_url` have no archive pages. Feeds of earlier drafts, with `archive_url` and
+  `index` in `_pups`, work as well.
 - `/.well-known/about.md`, `following.opml`, `contact.vcf`. A tab shows only if its file exists.
 - `/webpup-config.json`, if it exists.
 

@@ -13,7 +13,7 @@
 // named by their file name. The main feed (/feed.json) is "blog"; named feeds (/feed/<name>.json, RFC-7) are under "feed", so
 // a feed can have any name, also "about" or "archive". Archive pages are numbered like the archive
 // files (feed.000003.json is page 3), so their URLs never change. A post has a page of its own,
-// addressed by its feed's path (feed, feed/photos) and its index (_pups.index, RFC-7): the URL of
+// addressed by its feed's path (feed, feed/photos) and its index (_archive.index, RFC-13): the URL of
 // the site property https://bigwide.net/ns/post-url-template (RFC-6), {feed} and {index} filled in.
 // Without an index, a post is its page + #<item id>.
 // Both styles are always understood; links use the style the server supports (detectUrlStyle).

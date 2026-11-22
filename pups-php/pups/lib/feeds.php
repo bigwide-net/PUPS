@@ -9,7 +9,7 @@ namespace Pups;
  * own feeds are read from storage, not over HTTP.
  *
  * A parsed feed: ['url', 'title', 'account', 'submissions' (?array), 'next' (?string),
- * 'page' (true for an HTML page), 'items']. An item: ['id' (?string), 'url', 'title', 'html',
+ * 'updates' (?string: the feed file of an RFC-13 archive), 'page' (true for an HTML page), 'items']. An item: ['id' (?string), 'url', 'title', 'html',
  * 'text', 'markdown', 'author', 'account', 'inReplyTo', 'date', 'allowComments', 'links'].
  */
 
@@ -230,11 +230,16 @@ function jsonFeed(array $j): array
         ];
     }
     $src = is_array($j['_source'] ?? null) ? $j['_source'] : [];
+    // RFC-13 archive fields, or those of earlier drafts in _pups (RFC-13 "Earlier drafts").
+    $archive = fn(string $k) => $str(is_array($j['_archive'] ?? null) ? ($j['_archive'][$k] ?? null) : null)
+        ?? $str(is_array($j['_pups'] ?? null) ? ($j['_pups'][$k] ?? null) : null);
     return [
         'title' => $str($j['title'] ?? null), 'account' => is_array($src['accounts'] ?? null) ? $str($src['accounts']['socialspec'] ?? null) : null,
         'submissions' => is_array($j['_submissions'] ?? null) ? $j['_submissions'] : null,
-        // RFC-7 feed files point to their newest archive with _pups.archive_url.
-        'next' => $str($j['next_url'] ?? null) ?? (is_array($j['_pups'] ?? null) ? $str($j['_pups']['archive_url'] ?? null) : null),
+        // Feed files point to their newest archive with _archive.archive_url.
+        'next' => $str($j['next_url'] ?? null) ?? $archive('archive_url'),
+        // Archives point to their feed file with _archive.updates_url.
+        'updates' => $archive('updates_url'),
         'page' => false, 'items' => $items,
     ];
 }
@@ -286,7 +291,7 @@ function rssFeed(string $xml): ?array
             'date' => isoDate($text($it->pubDate)), 'allowComments' => !$closed, 'links' => [],
         ];
     }
-    return ['title' => $text($ch->title), 'account' => rssAccount($ch), 'submissions' => $submissions, 'next' => $next, 'page' => false, 'items' => $items];
+    return ['title' => $text($ch->title), 'account' => rssAccount($ch), 'submissions' => $submissions, 'next' => $next, 'updates' => null, 'page' => false, 'items' => $items];
 }
 
 /** The class tokens of an element. */
@@ -352,5 +357,5 @@ function parseHtmlPage(string $html): array
     // A p-name that is the whole entry (an h-entry without e-content) is no title.
     if ($entry && !$content && $item['title'] === $text($entry))
         $item['title'] = null;
-    return ['title' => $pageTitle, 'account' => null, 'submissions' => null, 'next' => null, 'page' => true, 'items' => $root ? [$item] : []];
+    return ['title' => $pageTitle, 'account' => null, 'submissions' => null, 'next' => null, 'updates' => null, 'page' => true, 'items' => $root ? [$item] : []];
 }

@@ -1,4 +1,4 @@
-// A feed's page: its newest posts (the feed file) or one of its archives (RFC-7), each post a card
+// A feed's page: its newest posts (the feed file) or one of its archives (RFC-13), each post a card
 // of postviewer, with Older/Newer links between the archive pages.
 import type { EmbedConsentApi } from '@lib/postviewer/src/embed-consent';
 import { addHtml, newHtml } from '@lib/postviewer/src/dom';
@@ -259,7 +259,7 @@ export function archivePanel(feed: SiteFeed, n: number, ctx: PostContext, ready:
                 addHtml(archiveHead, 'p', {class: 'wp-archive-dates'}, range);
             panel.appendChild(archive.items.length ? postList(archive.items, feed, page, ctx) : empty('This archive page has no posts.'));
         }
-        // Archives are numbered from 0, the oldest (RFC-7); each number exists up to the newest.
+        // Archives are numbered from 0, the oldest (RFC-13); each number exists up to the newest.
         const older = n > 0 && n <= newest ? n - 1 : undefined;
         panel.appendChild(pager([
             n < newest ? pageLink(feedRoute(feed, n + 1), '← Newer posts', 'wp-newer') : pageLink(feedRoute(feed), '← Latest posts', 'wp-newer'),

@@ -134,7 +134,7 @@ function commentTarget(Ctx $ctx, string $target): array
     } catch (FetchError $e) {
         throw new HttpError(400, 'target-gone', 'The target feed can\'t be read: ' . $e->getMessage());
     }
-    $s = $found['feed']['submissions'];
+    $s = submissionsOf($ctx, $found['feed']);
     if (($s['url'] ?? null) !== commentUrl($ctx->config))
         throw new HttpError(400, 'invalid_request', 'This feed doesn\'t accept comments at this endpoint');
     $policy = is_array($s['policies'] ?? null) && is_array($s['policies']['comments'] ?? null) ? $s['policies']['comments'] : null;
@@ -145,6 +145,24 @@ function commentTarget(Ctx $ctx, string $target): array
     if (!$found['item']['allowComments'])
         throw new HttpError(400, 'comments-disabled', 'The post is closed for comments');
     return ['feed' => $found['feed'], 'item' => $found['item'], 'policy' => policy($policy)];
+}
+
+/**
+ * The `_submissions` that apply to a feed of the owner. For an RFC-13 archive, those of its feed
+ * file at `_archive.updates_url`: archives don't carry their own (RFC-7 "Receiving comments", RFC-13).
+ */
+function submissionsOf(Ctx $ctx, array $feed): ?array
+{
+    if ($feed['updates'] === null)
+        return $feed['submissions'];
+    $main = resolveUrl($feed['url'], $feed['updates']);
+    if (ownerStoragePath($main, $ctx->config) === null)
+        return null;
+    try {
+        return loadFeed($ctx, $main)['submissions'];
+    } catch (FetchError $e) {
+        throw new HttpError(400, 'target-gone', 'The feed of the archive can\'t be read: ' . $e->getMessage());
+    }
 }
 
 /** A comments policy with the defaults of RFC-4, and values of the wrong type ignored. */

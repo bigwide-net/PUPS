@@ -87,6 +87,9 @@ test('handles: found as RFC-11 describes, not in e-mail and fediverse addresses 
     eq(handles('(@a.example), "@b.example"! @c.example: @d.example;'), ['a.example', 'b.example', 'c.example', 'd.example']);
     eq(handles('tim@tim.example.com @tim@social.example @x.example/path @x-.example @nolabel @1.2 x@y.example.com .@z.example'), []);
     eq(handles('@x.example.com- @x.example_y @a.example.com.au @b.example.com-y'), ['a.example.com.au', 'b.example.com-y']);
+    eq(handles('@foo.com,@bar.com;@baz.com (@x.example, @y.example).'), ['foo.com', 'bar.com', 'baz.com', 'x.example', 'y.example']);
+    eq(handles("I did this thanks to @foo.com. And @bar.com!\nAlso @baz.com."), ['foo.com', 'bar.com', 'baz.com']);
+    eq(handles('Thanks to @a.example/@b.example/@c.example! @d.example/@e.example/path x/@f.example @g.example/@nodot'), ['a.example', 'b.example', 'c.example']);
     eq(\Pups\visibleText('<p>Hi <a href="https://alice.pups.test/">@alice.pups.test</a></p><pre>@code.example</pre>', true), 'Hi @alice.pups.test');
 });
 
@@ -106,8 +109,11 @@ test('mentions: a post that names the owner reaches the inbox, attributed and wi
     $item = $feed['items'][0];
     eq([$item['_inbox']['type'], $item['_inbox']['source'], $item['_inbox']['target'], $item['_inbox']['postDate']], ['mention', "$src#p-81", ORIGIN . '/', '2026-11-19T09:00:00Z']);
     eq([$item['title'], $item['url'], $item['authors'][0]['name'], $item['_source']['accounts']['socialspec']], ['Feeds are back', 'https://bob.example/2026/feeds', 'Bob', '@bob.example']);
-    contains($item['content_html'], '<p>Great talk by @alice.pups.test yesterday.</p><p class="without-extension-actions"><a href="' . ORIGIN . '/pups/inbox/dismiss?id=' . $item['id'] . '&amp;key=');
-    eq($item['_actions']['actions'], [['template' => 'dismiss']]);
+    contains($item['content_html'], '<p>Great talk by @alice.pups.test yesterday.</p><p class="without-extension-actions">Mention from @bob.example at '
+        . "<a href=\"$src#p-81\">bob.example/feed/feed.000004.json#p-81</a></p>"
+        . '<p class="without-extension-actions"><a href="' . ORIGIN . '/pups/inbox/dismiss?id=' . $item['id'] . '&amp;key=');
+    eq($item['_actions']['actions'], [['type' => 'display', 'text' => 'Mention from @bob.example at bob.example/feed/feed.000004.json#p-81', 'url' => "$src#p-81"],
+        ['template' => 'dismiss']]);
     contains($feed['_actions']['templates']['dismiss']['action'], ORIGIN . '/pups/inbox/action?id={id}&key=');
 
     // The same webmention again changes nothing; once the handle is gone, the mention is removed.
@@ -202,6 +208,7 @@ test('mentions: RSS sources, HTML pages with h-entry, redirects; never the own e
 
 test('replies: to the owner\'s items, also in archives, and to items republished for the owner', function () {
     $t = receiver();
+    // As written before RFC-13: the archive link in _pups.
     $t->ctx->files->write('/feed.json', jsonFeedDoc([['id' => 'p-12', 'content_text' => 'Mine']], ['_pups' => ['archive_url' => ORIGIN . '/feed/feed.000000.json']]));
     $t->ctx->files->write('/feed/feed.000000.json', jsonFeedDoc([['id' => 'p-1', 'url' => 'https://alice.pups.test/2025/old', 'content_text' => 'Old']]));
     $group = 'https://rm.example/groups/two/posts.json';
@@ -232,6 +239,9 @@ test('replies: to the owner\'s items, also in archives, and to items republished
     ok(!in_array(ORIGIN . '/feed.json', $t->fetched, true), 'the owner\'s feeds are read from storage');
     $r3 = array_values(array_filter(inbox($t)['items'], fn($i) => $i['_inbox']['source'] === "$comments#r3"))[0];
     eq($r3['_source']['accounts']['socialspec'], '@bob.example', 'stated by the server that republished it');
+    $r1 = array_values(array_filter(inbox($t)['items'], fn($i) => $i['_inbox']['source'] === "$comments#r1"))[0];
+    eq([$r3['_actions']['actions'][0]['text'], $r1['_actions']['actions'][0]['text']], ['Reply from @bob.example at rm.example/groups/two/comments/g1.json#r3',
+        'Reply from rm.example at rm.example/groups/two/comments/g1.json#r1'], 'the host without a verified account');
 });
 
 test('comments: on the owner\'s posts, checked against the feed\'s rules, into the inbox, not published', function () {
@@ -259,6 +269,7 @@ test('comments: on the owner\'s posts, checked against the feed\'s rules, into t
     $item = $items[0];
     eq([$item['_inbox']['type'], $item['_inbox']['target'], $item['authors'][0]['name'], $item['_source']['accounts']['socialspec']], ['submission', ORIGIN . '/feed.json#p-12', 'Bob', '@bob.example']);
     contains($item['content_html'], '<p>Agreed, but discovery is <b>hard</b>.</p>', 'only the allowlist, only http(s) links');
+    eq($item['_actions']['actions'][0], ['type' => 'display', 'text' => 'Comment from @bob.example at bob.example/comments.json#c-17', 'url' => 'https://bob.example/comments.json#c-17']);
     notContains($item['content_html'], 'script');
     notContains($item['content_html'], 'onclick');
     notContains(json_decode($t->ctx->files->read('/feed.json'), true)['items'][0]['content_html'], 'Agreed', 'nothing is published');
@@ -293,6 +304,24 @@ test('comments: only on posts of feeds that name the endpoint; edits and deletes
     processQueue($t->ctx);
     eq([$t->get(substr($res->header('location'), strlen(ORIGIN)))->json()['status'], inbox($t)['items']], ['deleted', []]);
     eq($t->get('/pups/comments/status/s-AAAAAAAAAAAAAAAA')->status, 404);
+});
+
+test('comments: on archived posts as the feed file says, whatever the archive says (RFC-7)', function () {
+    $t = receiver();
+    $archive = ORIGIN . '/feed/feed.000000.json';
+    ownerFeed($t, [], [], ['_archive' => ['archive_url' => $archive]]);
+    $t->ctx->files->write('/feed/feed.000000.json', jsonFeedDoc([['id' => 'p-1', 'content_text' => 'Old']], ['_archive' => ['updates_url' => ORIGIN . '/feed.json']]));
+    serve($t, 'https://bob.example/comments.json', [bobComment(['_source' => ['accounts' => ['socialspec' => '@bob.example'], 'inReplyTo' => "$archive#p-1"]])]);
+    eq(webmention($t, COMMENTS, 'https://bob.example/comments.json#c-17', "$archive#p-1")->status, 201, 'the archive has no _submissions');
+    processQueue($t->ctx);
+    eq(array_column(array_column(inbox($t)['items'], '_inbox'), 'target'), ["$archive#p-1"]);
+
+    // Comments turned off in the feed file; the archive still has a copy from earlier.
+    $t->ctx->files->write('/feed.json', jsonFeedDoc([], ['_archive' => ['archive_url' => $archive]]));
+    $t->ctx->files->write('/feed/feed.000000.json', jsonFeedDoc([['id' => 'p-2', 'content_text' => 'Old']],
+        ['_archive' => ['updates_url' => ORIGIN . '/feed.json'], '_submissions' => ['url' => COMMENTS, 'republish' => 'no', 'policies' => ['comments' => []]]]));
+    $res = webmention($t, COMMENTS, 'https://bob.example/comments.json#c-18', "$archive#p-2");
+    eq([$res->status, $res->json()['error']], [400, 'invalid_request']);
 });
 
 test('inbox limits: 100 items, 10 per source host; old mentions make room, waiting comments never', function () {

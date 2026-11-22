@@ -63,8 +63,8 @@ export interface SiteFeed {
     name?: string;
     url: string;
     json: JsonFeed;
-    /** From _pups.archive_url: the archives' URL without the number, and the newest's number. */
-    archives?: {prefix: string, newest: number};
+    /** From _archive (RFC-13): the archive URL template with `{number}`, the newest's number, and the archive size. */
+    archives?: {template: string, newest: number, size: number};
 }
 
 export interface Site {
@@ -115,15 +115,28 @@ export function feedNameOf(url: string, origin: string): string | undefined {
 }
 
 const ARCHIVE = /^(.*\/feed\.)(\d{6})\.json$/;
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** The archives of a feed with _pups.archive_url (RFC-7): feed.000000.json... in its directory. */
+/**
+ * The archives of a feed with _archive.archive_url (RFC-13), on this site: their URLs from _archive.archive_template,
+ * or, without one, feed.000000.json... next to the newest (RFC-7 names; also feeds of earlier drafts, which kept
+ * archive_url in _pups).
+ */
 export function archivesOf(json: JsonFeed, origin: string): SiteFeed['archives'] {
-    const url = httpUrl(json._pups?.archive_url, origin);
-    const m = url && new URL(url).origin == origin ? ARCHIVE.exec(url) : undefined;
-    return m ? {prefix: m[1], newest: Number(m[2])} : undefined;
+    const url = httpUrl(json._archive?.archive_url ?? json._pups?.archive_url, origin);
+    if (!url || new URL(url).origin != origin) return undefined;
+    // Normalized like the URL, with a placeholder that URL parsing leaves alone (it would encode the braces).
+    const raw = json._archive?.archive_template;
+    const declared = typeof raw == 'string' && raw.split('{number}').length == 2 ? httpUrl(raw.replace('{number}', 'N0MBER'), origin) : undefined;
+    const template = declared && declared.split('N0MBER').length == 2 && new URL(declared).origin == origin ? declared.replace('N0MBER', '{number}')
+        : ARCHIVE.test(url) ? url.replace(ARCHIVE, '$1{number}.json') : undefined;
+    const [before, after] = template?.split('{number}') ?? [];
+    const m = template && new RegExp(`^${escape(before)}(\\d{6,})${escape(after)}$`).exec(url);
+    const size = json._archive?.archive_size;
+    return m ? {template: template!, newest: Number(m[1]), size: Number.isInteger(size) && size! > 0 ? size! : 20} : undefined;
 }
 
-export const archiveUrl = (feed: SiteFeed, n: number) => `${feed.archives!.prefix}${String(n).padStart(6, '0')}.json`;
+export const archiveUrl = (feed: SiteFeed, n: number) => feed.archives!.template.replace('{number}', String(n).padStart(6, '0'));
 
 const archiveCache = new Map<string, Promise<JsonFeed | undefined>>();
 
@@ -138,16 +151,16 @@ export function loadArchive(feed: SiteFeed, n: number): Promise<JsonFeed | undef
     return p;
 }
 
-/** The item with index `index` (RFC-7, "Reading with indexes"): in the feed file, else in archive
- *  min(newest, ⌊index / 20⌋), going down or up from there. Undefined if no file has it. */
+/** The item with index `index` (RFC-13, "Finding an item by index"): in the feed file, else in archive
+ *  min(newest, ⌊index / archive size⌋), going down or up from there. Undefined if no file has it. */
 export async function findItem(feed: SiteFeed, index: number): Promise<JsonFeedItem | undefined> {
     const has = (items: JsonFeedItem[]) => items.find(i => itemIndex(i) == index);
     const inFeed = has(feed.json.items);
     if (inFeed || !feed.archives)
         return inFeed;
-    const {newest} = feed.archives;
+    const {newest, size} = feed.archives;
     let direction = 0;
-    for (let n = Math.min(newest, Math.floor(index / 20)); n >= 0 && n <= newest; n += direction) {
+    for (let n = Math.min(newest, Math.floor(index / size)); n >= 0 && n <= newest; n += direction) {
         const archive = await loadArchive(feed, n);
         if (!archive)
             return undefined;

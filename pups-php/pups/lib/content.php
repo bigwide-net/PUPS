@@ -21,9 +21,11 @@ const INBOX_TAGS = ['p', 'br', 'a', 'strong', 'b', 'em', 'i', 'code', 'pre', 'bl
  * starting with a letter. Before it: the start, whitespace, or punctuation other than
  * `. _ - + / @` (no e-mail addresses). After it: the end, whitespace, or punctuation other
  * than `- _ / @`, where a `.` ends the handle unless a letter or digit follows (no fediverse
- * addresses, no paths).
+ * addresses, no paths). A `/` directly between two handles separates them:
+ * `@a.example/@b.example` names both.
  */
-const HANDLE_RE = '/(?:^|(?<=[\s\p{P}\p{S}]))(?<![._\-+\/@])@((?:[\p{L}\p{N}](?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?\.)+\p{L}(?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?)(?![\p{L}\p{M}\p{N}_\-\/@]|\.[\p{L}\p{N}])/u';
+const HANDLE_HOST = '(?:[\p{L}\p{N}](?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?\.)+\p{L}(?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?';
+const HANDLE_RE = '/(?:^|(?<=[\s\p{P}\p{S}]))(?<![._\-+\/@])@(' . HANDLE_HOST . '(?:\/@' . HANDLE_HOST . ')*)(?![\p{L}\p{M}\p{N}_\-\/@]|\.[\p{L}\p{N}])/u';
 
 /** Parses an HTML fragment. Returns its body element, or null if there is nothing. */
 function htmlBody(string $html): ?\DOMElement
@@ -85,7 +87,8 @@ function asciiHost(string $host): ?string
 function handles(string $text): array
 {
     preg_match_all(HANDLE_RE, $text, $m);
-    return array_values(array_unique(array_filter(array_map(fn($h) => asciiHost($h), $m[1]))));
+    $hosts = array_merge([], ...array_map(fn($list) => explode('/@', $list), $m[1]));
+    return array_values(array_unique(array_filter(array_map(fn($h) => asciiHost($h), $hosts))));
 }
 
 /** The host of an account like `@alice.example.com`, in comparable form, or null. */

@@ -24,10 +24,19 @@ describe('feed names', () => {
 });
 
 describe('archives', () => {
-    it('come from _pups.archive_url, on this site only', () => {
+    it('come from _archive, with its template and size', () => {
+        const json = {version: 'https://jsonfeed.org/version/1.1', items: [],
+            _archive: {archive_url: `${O}/a/7.json`, archive_template: `${O}/a/{number}.json`, archive_size: 50}};
+        expect(archivesOf({...json, _archive: {...json._archive, archive_url: `${O}/a/000007.json`}}, O)).toEqual({template: `${O}/a/{number}.json`, newest: 7, size: 50});
+        expect(archivesOf(json, O)).toBeUndefined();
+        expect(archivesOf({...json, _archive: {archive_url: `${O}/feed/feed.000003.json`, archive_template: 'https://cdn.example/{number}.json'}}, O))
+            .toEqual({template: `${O}/feed/feed.{number}.json`, newest: 3, size: 20});
+    });
+
+    it('come from _pups.archive_url of earlier drafts, on this site only', () => {
         const json = {version: 'https://jsonfeed.org/version/1.1', items: [], _pups: {archive_url: `${O}/feed/photos/feed.000012.json`}};
         const archives = archivesOf(json, O);
-        expect(archives).toEqual({prefix: `${O}/feed/photos/feed.`, newest: 12});
+        expect(archives).toEqual({template: `${O}/feed/photos/feed.{number}.json`, newest: 12, size: 20});
         expect(archiveUrl({url: '', json, archives}, 3)).toBe(`${O}/feed/photos/feed.000003.json`);
         expect(archivesOf({...json, _pups: {archive_url: 'https://cdn.example/feed/feed.000001.json'}}, O)).toBeUndefined();
         expect(archivesOf({...json, _pups: {}}, O)).toBeUndefined();
@@ -37,10 +46,10 @@ describe('archives', () => {
 
 describe('findItem', () => {
     // 47 items: archive 0 holds 0–19, 1 holds 20–39, 2 holds 40–46; the feed file the newest 30.
-    const item = (i: number) => ({id: `p${i}`, content_text: `Post ${i}`, _pups: {index: i}});
+    const item = (i: number) => ({id: `p${i}`, content_text: `Post ${i}`, _archive: {index: i}});
     const range = (from: number, to: number) => Array.from({length: to - from + 1}, (_, k) => item(to - k));
     const archive = (from: number, to: number) => JSON.stringify({version: 'https://jsonfeed.org/version/1.1', items: range(from, to)});
-    const withArchives = (prefix = `${O}/feed/feed.`): SiteFeed => ({url: `${O}/feed.json`, archives: {prefix, newest: 2},
+    const withArchives = (prefix = `${O}/feed/feed.`): SiteFeed => ({url: `${O}/feed.json`, archives: {template: `${prefix}{number}.json`, newest: 2, size: 20},
         json: {version: 'https://jsonfeed.org/version/1.1', items: range(17, 46)}});
 
     it('finds the item in the feed file, then in the archive of its index', async () => {
@@ -84,7 +93,7 @@ describe('loadSite', () => {
                     'https://bigwide.net/ns/banner': 'javascript:alert(1)', 'https://bigwide.net/ns/theme-color': '#336699',
                 },
             }),
-            '/feed.json': feed('Notes', {_pups: {pupsControlled: true, archive_url: `${O}/feed/feed.000002.json`}}),
+            '/feed.json': feed('Notes', {_pups: {pupsControlled: true}, _archive: {archive_url: `${O}/feed/feed.000002.json`}}),
             '/feed/photos.json': feed('Photos'),
             '/.well-known/about.md': '---\nsummary: Hi there\n---\n# About',
             '/webpup-config.json': '{"embeds":"consent"}',

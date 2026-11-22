@@ -1,5 +1,5 @@
 // JSON Feed 1.1 (https://www.jsonfeed.org/version/1.1/) with the extensions PUPS clients write:
-// _pups (RFC-7), _source (RFC-1: inReplyTo, markdown), _image (alt text). Items become the Post
+// _archive (RFC-13), _source (RFC-1: inReplyTo, markdown), _image (alt text). Items become the Post
 // objects that postviewer (bigwide-net/lib) renders.
 import { renderMarkdown } from '@lib/postviewer/src/markdown';
 import type {ExternalScript, Post, PostInReplyTo } from '@lib/postviewer/src/types';
@@ -36,6 +36,8 @@ export interface JsonFeedItem {
     attachments?: JsonFeedAttachment[];
     _image?: {alt?: string};
     _source?: {inReplyTo?: string | {value?: string, isPermaLink?: boolean, feedUrl?: string, feedTitle?: string}, markdown?: string};
+    _archive?: {index?: number};
+    /** Earlier drafts of RFC-7 kept the index here (RFC-13 "Earlier drafts"). */
     _pups?: {index?: number};
 }
 
@@ -51,6 +53,8 @@ export interface JsonFeed {
     authors?: JsonFeedAuthor[];
     language?: string;
     items: JsonFeedItem[];
+    _archive?: {archive_url?: string, archive_template?: string, archive_size?: number, updates_url?: string, number?: number};
+    /** Earlier drafts of RFC-7 kept archive_url and updates_url here (RFC-13 "Earlier drafts"). */
     _pups?: {pupsControlled?: boolean, archive_url?: string, updates_url?: string};
 }
 
@@ -183,9 +187,9 @@ export function toPost(item: JsonFeedItem, base: string): Post {
 /** An item's id as a string, for #fragments and de-duplication. */
 export const itemId = (item: JsonFeedItem) => item.id != undefined ? String(item.id) : undefined;
 
-/** The item's index (_pups.index, RFC-7), if it has a valid one. */
+/** The item's index (_archive.index, RFC-13; _pups.index in earlier drafts), if it has a valid one. */
 export const itemIndex = (item: JsonFeedItem) => {
-    const i = item._pups?.index;
+    const i = item._archive?.index ?? item._pups?.index;
     return Number.isInteger(i) && i! >= 0 ? i : undefined;
 };
 

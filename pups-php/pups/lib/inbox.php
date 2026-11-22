@@ -198,13 +198,26 @@ function dropOldestMention(array &$items): bool
 }
 
 /**
+ * Where an item comes from, for its action area: "Mention from @bob.example at bob.example/feed.json#p-81",
+ * with the account if one was verified, else the host of the source. Returns [text before the
+ * link, link text].
+ */
+function originText(string $type, string $source, ?string $account): array
+{
+    $what = ['submission' => 'Comment', 'reply' => 'Reply'][$type] ?? 'Mention';
+    return ["$what from " . ($account ?? urlHost($source)) . ' at ', sanitizeText(preg_replace('#^https?://#i', '', $source), 100)];
+}
+
+/**
  * An inbox item. `post` is the parsed item (feeds.php); `content` its HTML for the inbox. The
  * account is included only as `attribution()` verified it.
  */
 function inboxItem(Ctx $ctx, string $id, string $type, string $source, string $target, array $post, string $content, ?string $author, ?string $account): array
 {
     $url = $post['url'] ?? null;
-    $fallback = '<p class="without-extension-actions"><a href="' . h(dismissPageUrl($ctx, $id)) . '">Dismiss</a></p>';
+    [$origin, $at] = originText($type, $source, $account);
+    $fallback = '<p class="without-extension-actions">' . h($origin) . '<a href="' . h($source) . '">' . h($at) . '</a></p>'
+        . '<p class="without-extension-actions"><a href="' . h(dismissPageUrl($ctx, $id)) . '">Dismiss</a></p>';
     return array_filter([
         'id' => $id,
         'url' => is_string($url) && preg_match('#^https?://#i', $url) && isCleanUrlString($url) ? $url : null,
@@ -214,7 +227,7 @@ function inboxItem(Ctx $ctx, string $id, string $type, string $source, string $t
         'authors' => ($name = sanitizeText($author, 100)) ? [['name' => $name]] : null,
         '_source' => $account ? ['about' => SOURCE_ABOUT, 'accounts' => ['socialspec' => $account]] : null,
         '_inbox' => array_filter(['about' => INBOX_ABOUT, 'type' => $type, 'source' => $source, 'target' => $target, 'postDate' => $post['date'] ?? null]),
-        '_actions' => ['about' => ACTIONS_ABOUT, 'actions' => [['template' => 'dismiss']]],
+        '_actions' => ['about' => ACTIONS_ABOUT, 'actions' => [['type' => 'display', 'text' => $origin . $at, 'url' => $source], ['template' => 'dismiss']]],
     ], fn($v) => $v !== null);
 }
 

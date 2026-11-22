@@ -111,7 +111,7 @@ describe('view', () => {
     });
 
     it('shows a post on a page of its own, found by its index, and links posts to that page', async () => {
-        const items = [{id: 'p2', title: 'Second', content_text: 'B', url: `${O}/p/feed/post/2`, _pups: {index: 2}}, {id: 'p1', title: 'First', content_text: 'A', _pups: {index: 1}}];
+        const items = [{id: 'p2', title: 'Second', content_text: 'B', url: `${O}/p/feed/post/2`, _archive: {index: 2}}, {id: 'p1', title: 'First', content_text: 'A', _pups: {index: 1}}];
         const s = site({feeds: [feed(undefined, items)]});
         const ready = jest.fn();
         const app = document.createElement('div');
