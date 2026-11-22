@@ -35,10 +35,10 @@ describe('consent page', () => {
     }).text()
     expect(html).toContain('<title>Allow app.example to write to tim.example.com?</title>')
     expect(html).toContain('<span>Manage your feeds</span>')
-    expect(html).toContain('<span>Read your private data</span>')
+    expect(html).toContain('<span>Read non-public content</span>')
     expect(html).toContain('<li>read your inbox (<code>/pups/private/inbox/</code>)</li>')
-    expect(html.indexOf('Manage your feeds')).toBeLessThan(html.indexOf('Read your private data'))
-    expect(html).toContain('Everything the app stores is public, except private data.')
+    expect(html.indexOf('Manage your feeds')).toBeLessThan(html.indexOf('Read non-public content'))
+    expect(html).toContain('Everything the app stores is public, except non-public content.')
     expect(html).toContain('<legend>Confirm that it is you</legend>')
   })
 

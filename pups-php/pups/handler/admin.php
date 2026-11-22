@@ -208,7 +208,7 @@ function inboxSection(Ctx $ctx): string
 <h2 id="inbox-heading">Inbox</h2>
 <p>This server receives ' . implode(' and ', array_filter([$c->mentions ? 'mentions of <strong>@' . h(ownerHost($c)) . '</strong>' : null,
         $c->comments ? 'comments on your feeds' : null])) . ' and puts them into your private inbox, <code>' . h(INBOX_PATH) . '</code>.
-Your feed reader shows it, if it supports inboxes and you allow it to read your private data.</p>
+Your feed reader shows it, if it supports inboxes and you allow it to read non-public content.</p>
 ' . $state . '
 </section>';
 }

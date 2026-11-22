@@ -149,21 +149,21 @@ test('private areas: a group of their own on the consent screen and the apps pag
     $t = withInbox();
     $c = $t->registerClient('app.example');
     $page = $t->get(T::authorizeUrl($c, 'identify read:/pups/private/inbox/', T::pkce()['challenge']))->text;
-    contains($page, 'value="read:/pups/private/inbox/" checked> <span>Read your private data</span>');
+    contains($page, 'value="read:/pups/private/inbox/" checked> <span>Read non-public content</span>');
     contains($page, '<li>read your inbox (<code>/pups/private/inbox/</code>)</li>');
     notContains($page, 'Manage your profile');
 
     $scope = 'write:/.well-known/about.md write:/pups/private/inbox/2026/ read:/pups/private/inbox/';
     $page = $t->get(T::authorizeUrl($c, $scope, T::pkce()['challenge']))->text;
     contains($page, 'value="write:/.well-known/about.md" checked> <span>Manage your profile</span>');
-    contains($page, 'value="write:/pups/private/inbox/2026/ read:/pups/private/inbox/" checked> <span>Manage your private data</span>');
+    contains($page, 'value="write:/pups/private/inbox/2026/ read:/pups/private/inbox/" checked> <span>Manage non-public content</span>');
     contains($page, '<li>read, create, replace and delete files under <code>/pups/private/inbox/2026/</code></li>');
     contains($page, '<li>read your inbox (<code>/pups/private/inbox/</code>)</li>');
-    ok(strpos($page, 'Manage your profile') < strpos($page, 'Manage your private data'), 'private data comes last');
+    ok(strpos($page, 'Manage your profile') < strpos($page, 'Manage non-public content'), 'private data comes last');
 
     $t->connect($c, 'identify read:/pups/private/inbox/');
     $apps = $t->post('/pups/apps', ['password' => PASSWORD])->text;
-    contains($apps, "<li>Read your private data\n<details>");
+    contains($apps, "<li>Read non-public content\n<details>");
     contains($apps, '<li>read your inbox (<code>/pups/private/inbox/</code>)</li>');
 });
 

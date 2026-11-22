@@ -106,7 +106,7 @@ If your website already serves one of these paths (WordPress serves its RSS feed
 Two areas hold files that only the owner's apps can read (RFC-6 "Private areas"):
 
 - `/appdata/<client-host>/private/`: an app's own private data, read and written with the app's scope `write:/appdata/<client-host>/`.
-- `/pups/private/`: private files that an extension of RFC-6 defines, e.g. an inbox in `/pups/private/inbox/`. The default list declares none. To offer one, add it to `WELL_KNOWN_PATHS` with `path` (and optionally `description`) only: `url`, `rels`, `properties`, `link_properties` and `url_properties` are rejected, because private files are never linked. Apps request it with `write:<path>` (read and write) or `read:<path>` (read only); both are in the consent group "private data" and need step-up.
+- `/pups/private/`: private files that an extension of RFC-6 defines, e.g. an inbox in `/pups/private/inbox/`. The default list declares none. To offer one, add it to `WELL_KNOWN_PATHS` with `path` (and optionally `description`) only: `url`, `rels`, `properties`, `link_properties` and `url_properties` are rejected, because private files are never linked. Apps request it with `write:<path>` (read and write) or `read:<path>` (read only); both are in the consent group "non-public content" and need step-up.
 
   ```json
   { "path": "/pups/private/inbox/", "description": "your inbox" }

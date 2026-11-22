@@ -149,16 +149,16 @@ describe('declared private paths in /pups/private/', () => {
   it('are in the consent group "private data", which reads only with read scopes', async () => {
     const { challenge } = await pkce()
     let html = await (await call(authorizeUrl(reader, 'identify read:/pups/private/inbox/', challenge))).text()
-    expect(html).toContain('value="read:/pups/private/inbox/" checked> <span>Read your private data</span>')
+    expect(html).toContain('value="read:/pups/private/inbox/" checked> <span>Read non-public content</span>')
     expect(html).toContain('<li>read your inbox (<code>/pups/private/inbox/</code>)</li>')
     expect(html).not.toContain('Manage your profile')
     html = await (await call(authorizeUrl(writer, 'write:/.well-known/about.md write:/pups/private/inbox/ read:/pups/private/inbox/2026/', challenge))).text()
     expect(html).toContain('value="write:/.well-known/about.md" checked> <span>Manage your profile</span>')
-    expect(html).toContain('value="write:/pups/private/inbox/ read:/pups/private/inbox/2026/" checked> <span>Manage your private data</span>')
+    expect(html).toContain('value="write:/pups/private/inbox/ read:/pups/private/inbox/2026/" checked> <span>Manage non-public content</span>')
     expect(html).toContain('<li>read, create, replace and delete your inbox (<code>/pups/private/inbox/</code>)</li>')
     expect(html).toContain('<li>read files under <code>/pups/private/inbox/2026/</code></li>')
     const s = settings(env, new URL(ORIGIN))
-    expect(permissionList('read:/pups/private/inbox/', reader.host, s)).toContain('<li>Read your private data')
+    expect(permissionList('read:/pups/private/inbox/', reader.host, s)).toContain('<li>Read non-public content')
   })
 
   it('need step-up confirmation for read scopes', async () => {

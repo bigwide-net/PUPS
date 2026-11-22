@@ -628,14 +628,14 @@ describe('private areas', () => {
         const w = registerClient('writer.example'), r = registerClient('reader.example');
         let html = (await request(app).get(authorizeUrl(r, 'identify read:/pups/private/inbox/', pkce().challenge))).text;
         expect(html).toContain('Allow reader.example to access alice.pups.test?');
-        expect(html).toContain('value="read:/pups/private/inbox/" checked> <span>Read your private data</span>');
+        expect(html).toContain('value="read:/pups/private/inbox/" checked> <span>Read non-public content</span>');
         expect(html).toContain('<ul>\n<li>read files under <code>/pups/private/inbox/</code></li>\n</ul>');
         expect(html).not.toContain('Manage your profile');
         html = (await request(app).get(authorizeUrl(w, 'write:/pups/private/inbox/ write:/pups/images/ read:/pups/private/inbox/old/', pkce().challenge))).text;
         expect(html).toContain('Allow writer.example to write to alice.pups.test?');
         expect(html).toContain('value="write:/pups/images/" checked> <span>Manage your profile</span>');
-        expect(html).toContain('value="write:/pups/private/inbox/ read:/pups/private/inbox/old/" checked> <span>Manage your private data</span>');
-        expect(html.indexOf('Manage your profile')).toBeLessThan(html.indexOf('Manage your private data'));
+        expect(html).toContain('value="write:/pups/private/inbox/ read:/pups/private/inbox/old/" checked> <span>Manage non-public content</span>');
+        expect(html.indexOf('Manage your profile')).toBeLessThan(html.indexOf('Manage non-public content'));
         expect(html).toContain('<ul>\n<li>read, create, replace and delete files under <code>/pups/private/inbox/</code></li>\n<li>read files under <code>/pups/private/inbox/old/</code></li>\n</ul>');
 
         // Only declared private paths can be read with a read: scope.
@@ -671,8 +671,8 @@ describe('private areas', () => {
 
         // The apps page groups the scope as the consent screen does.
         html = (await request(app).post('/pups/apps').type('form').send({ show: '1', password: PASSWORD })).text;
-        expect(html).toContain('<li>Read your private data\n<details>');
-        expect(html).toContain('<li>Manage your private data\n<details>');
+        expect(html).toContain('<li>Read non-public content\n<details>');
+        expect(html).toContain('<li>Manage non-public content\n<details>');
 
         // Private files can't be linked or used as URL properties in host-meta.json.
         res = await hm(app, writer, { action: 'set-property', property: avatar, value: `${ORIGIN}/pups/private/inbox/a.png` });

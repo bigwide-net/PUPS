@@ -4,8 +4,8 @@
   "group.appdata": "Store its own data",
   "group.feeds": "Manage your feeds",
   "group.profile": "Manage your profile",
-  "group.private": "Manage your private data",
-  "group.privateRead": "Read your private data",
+  "group.private": "Manage non-public content",
+  "group.privateRead": "Read non-public content",
   "group.identity": "Learn that you are {me}",
 
   "scope.ownFolder": "its own folder ({path})",
@@ -30,7 +30,7 @@
   "consent.loopback": "<strong>This app runs on this computer.</strong> It receives your answer at a local address ({address}), as native apps and apps in development do.",
   "consent.learnDomain": "{app} will learn your domain, {me}.",
   "consent.mayThen": "{app} may then",
-  "consent.footer": "Everything the app stores is public, except private data. You can remove the app at any time on the <a href=\"{appsPage}\">apps page</a>.",
+  "consent.footer": "Everything the app stores is public, except non-public content. You can remove the app at any time on the <a href=\"{appsPage}\">apps page</a>.",
   "consent.approve": "Approve",
   "consent.deny": "Deny",
 
