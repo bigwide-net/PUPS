@@ -208,8 +208,7 @@ test('mentions: RSS sources, HTML pages with h-entry, redirects; never the own e
 
 test('replies: to the owner\'s items, also in archives, and to items republished for the owner', function () {
     $t = receiver();
-    // As written before RFC-13: the archive link in _pups.
-    $t->ctx->files->write('/feed.json', jsonFeedDoc([['id' => 'p-12', 'content_text' => 'Mine']], ['_pups' => ['archive_url' => ORIGIN . '/feed/feed.000000.json']]));
+    $t->ctx->files->write('/feed.json', jsonFeedDoc([['id' => 'p-12', 'content_text' => 'Mine']], ['_archive' => ['archive_url' => ORIGIN . '/feed/feed.000000.json']]));
     $t->ctx->files->write('/feed/feed.000000.json', jsonFeedDoc([['id' => 'p-1', 'url' => 'https://alice.pups.test/2025/old', 'content_text' => 'Old']]));
     $group = 'https://rm.example/groups/two/posts.json';
     serve($t, $group, [['id' => 'g1', 'content_text' => 'By Alice', '_source' => ['accounts' => ['socialspec' => '@alice.pups.test']]],

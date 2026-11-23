@@ -9,17 +9,32 @@ export { cimdFetches }
 export const ORIGIN = 'https://tim.example.com'
 export const PASSWORD = 'correct horse battery staple'
 
-/** The environment of the tests; each test file has its own fake storage zone. */
-export const testEnv = (vars: Record<string, string> = {}): Env => envFrom(k => ({
-  OWNER_HOST: 'tim.example.com', BOOTSTRAP_SECRET: 'test-bootstrap-secret', WRITES_PER_MINUTE: '1000', MAX_UPLOAD_BYTES: '1048576',
-  POST_FALLBACK: 'true', STORAGE_ZONE: ZONE, STORAGE_HOST, STORAGE_ACCESS_KEY: ACCESS_KEY, ...vars,
-} as Record<string, string>)[k])
+const pending: Promise<unknown>[] = []
+
+/** Waits for the work that requests left for after their response (e.g. checking webmentions). */
+export async function settle() {
+  while (pending.length) await pending.shift()
+}
+
+/** The environment of the tests; each test file has its own fake storage zone. Work after the response runs until settle(). */
+export function testEnv(vars: Record<string, string> = {}): Env {
+  const env = envFrom(k => ({
+    OWNER_HOST: 'tim.example.com', BOOTSTRAP_SECRET: 'test-bootstrap-secret', WRITES_PER_MINUTE: '1000', MAX_UPLOAD_BYTES: '1048576',
+    POST_FALLBACK: 'true', STORAGE_ZONE: ZONE, STORAGE_HOST, STORAGE_ACCESS_KEY: ACCESS_KEY, ...vars,
+  } as Record<string, string>)[k])
+  env.waitUntil = work => void pending.push(work)
+  return env
+}
 
 export const env = testEnv()
 
+let envOverride: Env | undefined
+/** Runs every following call() with this environment instead of the default one. */
+export const useEnv = (e: Env | undefined) => envOverride = e
+
 /** Every response is checked: same-domain mode never sets a cookie. */
 export async function call(path: string, init?: RequestInit): Promise<Response> {
-  const res = await handle(new Request(path.startsWith('http') ? path : ORIGIN + path, init), env)
+  const res = await handle(new Request(path.startsWith('http') ? path : ORIGIN + path, init), envOverride ?? env)
   expect(res.headers.get('set-cookie'), `cookie on ${path}`).toBeNull()
   return res
 }

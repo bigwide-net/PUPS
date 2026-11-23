@@ -11,14 +11,16 @@ tim.example.com ──► Pull zone (custom hostname, TLS)
                      ▼
                     Standalone Edge Script (dist/index.js)
                      └── Bunny Storage HTTP API: uploaded files, .well-known/host-meta.json,
-                         and the server's own state under _pups/
+                         your inbox, and the server's own state under _pups/
 ```
 
 - **No database.** The OAuth state is kept as small JSON files under `_pups/` in the storage zone: owner credentials, grants with token hashes and refresh state, authorization codes, used nonces, sessions. `_pups/` can never be written by an app or served.
 - **Tokens are `<grant id>.<random>`**, stored only as SHA-256 hashes in their grant's file. A request reads one file to authenticate.
 - **ETags are content hashes.** Bunny Storage has no ETags, so the ETag of a file is the SHA-256 of its content (`"<base64url>"`). The server reads the file to compute it, both when serving it and when checking `If-Match` / `If-None-Match` before a write. Uploads carry the same hash in Bunny's `Checksum` header.
 - **WebAuthn challenges are signed values**, made single-use by a nonce file.
-- **The stylesheet and script** of the owner pages are bundled into the script.
+- **The stylesheet and script** of the owner pages are bundled into the script, and so is webpup, the homepage.
+- **The receiver** ([pups-inbox](../lib/pups-inbox), shared with Cloudflare) puts mentions and comments into your inbox; see [Inbox](#inbox).
+- **Kept feeds** ([pups-feeds](../lib/pups-feeds), shared with Cloudflare): the script writes the archives of your feeds; see [Feeds](#feeds).
 
 ### Consistency
 
@@ -31,6 +33,9 @@ Bunny Storage has no transactions or conditional writes. Every check-and-set (si
 | Two conditional writes to the same file in parallel | Both succeed, the last one wins. |
 | The owner revokes an app while it refreshes | The refresh can rewrite the grant file the revocation just deleted. Revoke again. |
 | host-meta.json edited in parallel | The file is reread just before the write, which narrows but doesn't close the window. |
+| Two apps post to the same kept feed in the same instant, on different instances | Both read the same archive; the second write drops the first post from it, and both posts can get the same index. Within one instance, posts take their turn. |
+| The receiver writes the inbox while a reader dismisses an item | The same: the inbox is reread just before the write. One of the two changes can get lost; a lost mention comes back with the next webmention. |
+| The same webmention checked by two instances | Both put the same item; the second write replaces the first. |
 
 Requests that don't race behave exactly like the Cloudflare version.
 
@@ -61,7 +66,7 @@ Because the pull zone ignores `Vary` (see [Fresh reads](#fresh-reads)), add an e
 Step by step, for owners: [INSTALL.md](INSTALL.md). In short:
 
 1. **Storage zone.** Create one under *Storage*. Note its name, its primary region's API host (e.g. `storage.bunnycdn.com` for Falkenstein, `ny.storage.bunnycdn.com` for New York) and its *password* under *FTP & API Access*. Don't connect it to a pull zone: the server's state would become readable. Replication regions are optional, because the script always reads from the primary region.
-2. **Build** the script: `npm install && npm run build`, with [pups-ui](../pups-ui) (the owner pages, shared with pups-cloudflare) next to this directory, as in the repository. This writes `dist/index.js`, a single file.
+2. **Build** the script: `npm install && npm run build`, with [pups-ui](../lib/pups-ui) (the owner pages, shared with pups-cloudflare) in `../lib/`, as in the repository. This writes `dist/index.js`, a single file.
 3. **Edge Script.** Create a *standalone* script under *Edge Scripting*, and paste or upload `dist/index.js`. The GitHub Action `BunnyWay/actions/deploy-script` can automate this. Then set, under *Env Configuration*:
    - the variables `OWNER_HOST`, `STORAGE_ZONE` and `STORAGE_HOST`;
    - the secrets `STORAGE_ACCESS_KEY` (the storage zone password) and `BOOTSTRAP_SECRET` (at least 16 characters, used once at setup).
@@ -92,17 +97,41 @@ The same variables as the Cloudflare version, set as Edge Script environment var
 | `ORIGIN_URL` | | An existing website behind this server. Unknown paths, and declared files nobody has uploaded, are fetched from it. |
 | `POST_FALLBACK` | `false` | `true` declares `post_endpoint`. |
 | `DOH_URL` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS resolver for the SSRF check; `off` disables the check. |
+| `MENTIONS` | `true` | Receive mentions of your domain (RFC-11) at `/pups/mention`, see [Inbox](#inbox). |
+| `COMMENTS` | `true` | Receive comments on your feeds (RFC-4) at `/pups/comments`. |
+| `WEBPUP_OWNER_LINK` | `true` | `false`: webpup without the link to the owner pages at the bottom of the page. |
 | `DEV_ALLOW_HTTP` | `false` | Local development only. |
+
+## Feeds
+
+The script keeps your feeds ([RFC-7](https://github.com/bigwide-net/RFCs/blob/main/RFC-7-Feed-Publishing-with-PUPS.md)), as the PHP and Cloudflare versions do ([pups-feeds](../lib/pups-feeds)): feed files in `/feed.json` or `/feed/<name>.json` with `"_pups": { "pupsControlled": true }`. Apps `POST` posts to the feed file at `/files/…`; the script gives them their index (and with webpup the URL of their page), puts them into the archives `feed.000000.json`, … of 20 posts each ([RFC-13](https://github.com/bigwide-net/RFCs/blob/main/RFC-13-JSON-Feed-Archives.md)), and writes the feed file with the newest 30. A `PUT` of the feed file is applied to the stored one; apps can't write the archives. The configuration document says `"kept_feeds": true`.
+
+RFC-7 asks for a lock around each request. Bunny Storage has none, so requests to the same feed take their turn within one script instance, but not across instances (see [Consistency](#consistency)).
+
+## Inbox
+
+The script has the same small built-in receiver as the PHP and Cloudflare versions. It puts what other sites send you into your **inbox**, a private JSON Feed at `/pups/private/inbox.json` ([RFC-12](https://github.com/bigwide-net/RFCs/blob/main/RFC-12-Inbox-Feeds.md)), which your feed reader shows if you allow it `read:/pups/private/inbox.json`. The path is declared automatically while the receiver is on. `MENTIONS` and `COMMENTS` turn the two parts off.
+
+- **Mentions** ([RFC-11](https://github.com/bigwide-net/RFCs/blob/main/RFC-11-Mentions.md)) at `/pups/mention`, when a post names `@yourdomain` or replies to one of your posts. The generated `host-meta.json` links it (rel `https://bigwide.net/ns/mention`); a stored one gets the link once, and if you remove it, it stays removed.
+- **Comments** ([RFC-4](https://github.com/bigwide-net/RFCs/blob/main/RFC-4-Feed-Submissions.md)) on feeds that name `/pups/comments` in `_submissions.url`. They are checked against the feed's rules and land in your inbox; nothing is published. `/pups/comments/status/s-…` tells the sender how it went, for 24 hours.
+- Webmentions are answered at once and checked after the response with `Bunny.v1.waitUntil()`: the script fetches the post (1 MB, 10 s, 3 redirects, after the same DNS check as client metadata documents) and puts it into the inbox if it really names or answers you. They wait as files in `_pups/mentions/queue/`, at most 100, 5 per site. Each request checks at most 2, to stay under the 50 subrequests; the next webmention picks up the rest.
+- The inbox holds 100 items, 10 per site. Mentions make room after 30 days or when the inbox is full; comments are never dropped.
+- **Dismiss**: every item has an RFC-9 action (`/pups/inbox/action`) and a link to a page that asks first (`/pups/inbox/dismiss`).
+
+## Homepage
+
+On the page *Homepage* (`/pups/homepage`) you can make **webpup** the homepage of your domain, choose its theme and the theme browser, or remove it again; then `/` forwards to the owner pages at `/pups/`. webpup's files are part of the script, nothing is copied to the storage zone. `/` and `/p/…` serve its `index.html`; `/webpups.js`, `/webpup.css`, `/theme.css`, `/webpup-themes/…` and `/webpup-config.json` the rest, revalidated on every request. While webpup is installed, `host-meta.json` declares its post pages with the property `https://bigwide.net/ns/post-url-template` (`https://tim.example.com/p/{feed}/post/{index}`). With `ORIGIN_URL`, your existing website keeps `/`.
 
 ## Security notes
 
-- **SSRF.** Edge Scripts can't restrict `fetch()` to public addresses (Cloudflare's `global_fetch_strictly_public`). Before fetching a client metadata document, the script resolves its host over DNS-over-HTTPS and refuses private, loopback, link-local and other special-purpose addresses. The gap: `fetch()` resolves the name again, so DNS rebinding can still reach a private address. If Bunny's network turns out to block private addresses itself, set `DOH_URL=off`.
+- **SSRF.** Edge Scripts can't restrict `fetch()` to public addresses (Cloudflare's `global_fetch_strictly_public`). Before fetching a client metadata document or a post for the receiver, the script resolves its host over DNS-over-HTTPS and refuses private, loopback, link-local and other special-purpose addresses. The gap: `fetch()` resolves the name again, so DNS rebinding can still reach a private address. If Bunny's network turns out to block private addresses itself, set `DOH_URL=off`.
 - **The storage zone password** gives full access to all files and to the state, including the password hash and the signing key. It lives only in the script's secrets.
 - **Files are buffered.** Serving a file reads all of it to compute its ETag, and range requests are cut from the buffer. With uploads capped at 25 MB, this stays well below the 128 MB memory limit, but large files written to the zone by other means would be slow to serve.
 
 ## Limits
 
-- **50 subrequests per request.** Every storage access is one. Most requests need 3 to 10. The apps page needs about 10 plus one per app, so it works for about 40 apps.
+- **50 subrequests per request.** Every storage access is one. Most requests need 3 to 10. The apps page needs about 10 plus one per app, so it works for about 40 apps. Checking a webmention takes about a dozen, which is why a request checks at most two. Posting to a kept feed takes about a dozen too; a `PUT` of a feed file that changes many old posts needs one more per archive it touches.
+- **Work after the response.** Whether `waitUntil()` work has its own limits is not documented ([Open questions](#open-questions)). Webmentions that weren't checked stay in the queue for the next one.
 - **One owner per script and storage zone**, as in RFC-6.
 
 ## Open questions
@@ -117,10 +146,11 @@ These are undocumented by Bunny. Check them on the first deployment:
 6. Do `Set-Cookie` and `303` responses pass through unchanged (auth subdomain mode)?
 7. Does the pull zone leave `no-cache` and `no-store` responses (404s of files included) uncached? Does it pass requests with `Authorization` to the script (fresh reads, private files)? Does the edge rule for the private areas keep them out of the cache?
 8. Can a script reach private addresses (`10.0.0.1`, `169.254.169.254`)?
+9. Does work passed to `Bunny.v1.waitUntil()` run to its end after the response, and do the CPU and subrequest limits of the request apply to it?
 
 ## Development
 
-The owner pages (HTML, `owner.css`, `owner.js`) and the sanitizer come from [pups-ui](../pups-ui), a local dependency (`file:../pups-ui`) in the same repository.
+The owner pages (HTML, `owner.css`, `owner.js`), the sanitizer and webpup come from [pups-ui](../lib/pups-ui), the receiver from [pups-inbox](../lib/pups-inbox) and kept feeds from [pups-feeds](../lib/pups-feeds): local dependencies (`file:../lib/pups-ui`, …) in the same repository.
 
 ```
 npm install
@@ -135,8 +165,10 @@ The code is a port of pups-cloudflare. What differs:
 | --- | --- |
 | `src/storage.ts` | New: Bunny Storage HTTP client with content-hash ETags (replaces R2). |
 | `src/state.ts` | New: state as JSON files in storage (replaces the Durable Object `store.ts`). |
-| `src/ssrf.ts` | New: DNS check before client metadata fetches. |
-| `src/main.ts` | New: the Edge Script entry point. |
+| `src/ssrf.ts` | New: DNS check before client metadata fetches and the receiver's fetches. |
+| `src/main.ts` | New: the Edge Script entry point; passes `Bunny.v1.waitUntil` on. |
+| `src/receiver.ts` | The receiver's storage: the queue and status pages as files, the inbox reread before each write. |
+| `src/feeds.ts` | Kept feeds: the lock is per instance only. |
 | `files.ts`, `hostmeta.ts` | Preconditions checked by reading and hashing the current file; byte ranges cut from the buffer. |
 | `auth.ts` | Signed WebAuthn challenges. |
 | `index.ts` | Bundled assets, `ORIGIN_URL` proxy, `X-Forwarded-Proto`. |

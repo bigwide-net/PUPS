@@ -268,8 +268,8 @@ function jsonFeed(j: Record<string, any>): Omit<Feed, 'url'> {
       allowComments: obj(it._commenting)?.allowComments !== false, links: [],
     })
   }
-  // RFC-13 archive fields, or those of earlier drafts in _pups (RFC-13 "Earlier drafts").
-  const archive = (k: string) => str(obj(j._archive)?.[k]) ?? str(obj(j._pups)?.[k])
+  // RFC-13 archive fields.
+  const archive = (k: string) => str(obj(j._archive)?.[k])
   return {
     title: str(j.title), account: str(obj(obj(j._source)?.accounts)?.socialspec), submissions: obj(j._submissions),
     // Feed files point to their newest archive with _archive.archive_url; archives to their feed file with updates_url.

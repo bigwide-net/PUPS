@@ -15,7 +15,7 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^5.2.1",
-    "pups-ui": "file:../pups-ui"
+    "pups-ui": "file:../lib/pups-ui"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

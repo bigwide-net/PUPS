@@ -1,4 +1,4 @@
-import { exports } from 'cloudflare:workers'
+import { env } from 'cloudflare:workers'
 import { expect, vi } from 'vitest'
 import { randomToken, s256 } from '../src/crypto'
 import worker from '../src/index'
@@ -10,10 +10,19 @@ let envOverride: object | undefined
 /** Runs every following call() with this environment instead of the configured one. */
 export const useEnv = (env: object | undefined) => envOverride = env
 
+const pending: Promise<unknown>[] = []
+/** The execution context of test requests: work passed to waitUntil() runs until settle(). */
+export const testCtx = { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException() {}, props: {} } as unknown as ExecutionContext
+
+/** Waits for the work that requests left for after their response (e.g. checking webmentions). */
+export async function settle() {
+  while (pending.length) await pending.shift()
+}
+
 /** Every response is checked: same-domain mode never sets a cookie. */
 export async function call(path: string, init?: RequestInit): Promise<Response> {
   const req = new Request(path.startsWith('http') ? path : ORIGIN + path, init)
-  const res: Response = await (envOverride ? worker.fetch(req as any, envOverride as any) : (exports as any).default.fetch(req))
+  const res: Response = await worker.fetch(req as any, (envOverride ?? env) as any, testCtx)
   expect(res.headers.get('set-cookie'), `cookie on ${path}`).toBeNull()
   return res
 }
@@ -29,16 +38,24 @@ export interface TestClient {
 
 const clientDocs = new Map<string, unknown>()
 export const cimdFetches: string[] = []
+/** Other documents on the fake network, e.g. the sources of webmentions. */
+export const web = new Map<string, { status?: number; headers?: Record<string, string>; body: string }>()
 
-/** Serves client metadata documents in place of the network. */
+/** Serves client metadata documents and the documents in `web` in place of the network. */
 export function mockClientFetch() {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = typeof input == 'string' ? input : input instanceof URL ? input.href : input.url
     cimdFetches.push(url)
     const doc = clientDocs.get(url)
-    return doc ? Response.json(doc) : new Response('not found', { status: 404 })
+    if (doc) return Response.json(doc)
+    const w = web.get(url)
+    return w ? new Response(w.body, { status: w.status ?? 200, headers: w.headers }) : new Response('not found', { status: 404 })
   })
 }
+
+/** A JSON Feed document. */
+export const jsonFeed = (items: unknown[], extra: Record<string, unknown> = {}) =>
+  JSON.stringify({ version: 'https://jsonfeed.org/version/1.1', title: 'A feed', ...extra, items })
 
 export function registerClient(host: string, extra: object = {}): TestClient {
   const clientId = `https://${host}/oauth/client.json`

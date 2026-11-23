@@ -19,6 +19,8 @@ export const privateHosts = new Set(['private.example'])
 export const clientDocs = new Map<string, unknown>()
 export const cimdFetches: string[] = []
 export const originPages = new Map<string, string>()
+/** Other documents on the fake network, e.g. the sources of webmentions. */
+export const web = new Map<string, { status?: number; headers?: Record<string, string>; body: string }>()
 
 const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex').toUpperCase()
 
@@ -77,6 +79,8 @@ export function installFetch() {
       return page ? new Response(page) : new Response('not found', { status: 404 })
     }
     cimdFetches.push(url.href)
+    const w = web.get(url.href)
+    if (w) return new Response(w.body, { status: w.status ?? 200, headers: w.headers })
     const doc = clientDocs.get(url.href)
     return doc ? Response.json(doc) : new Response('not found', { status: 404 })
   })

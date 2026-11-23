@@ -1,3 +1,4 @@
+import { feedOf, isKeptPut, postItemEndpoint, putKept, refuseArchiveWrite, withFeedLock } from './feeds'
 import { checkUploadType, checkUtf8, fileType, servedType } from './filetypes'
 import { header, HttpError, LIMITS, methodNotAllowed, readLimited, readQuery } from './http'
 import { canReadPrivate, covers, isPrivate, parsePath, servable, writePrefixes } from './paths'
@@ -61,15 +62,20 @@ export async function write(req: Request, method: string, rawPath: string, s: Se
   // The content (for its ETag) is read only when a precondition needs it.
   const current = (): Promise<StoredFile | FileInfo | null> => ifMatch || ifNoneMatch ? files.get(key) : files.stat(key)
   const etag = (f: StoredFile | FileInfo) => 'etag' in f ? f.etag : ''
+  // Feed files and their archives are written under the feed's lock (RFC-7 "Kept feeds"); apps never write the
+  // archives of a kept feed.
+  const feed = feedOf(path, s)
+  if (feed && feed != path) await refuseArchiveWrite(path, s, env)
+  const locked = (fn: () => Promise<Response>) => feed ? withFeedLock(feed, fn) : fn()
 
-  if (method == 'DELETE') {
+  if (method == 'DELETE') return locked(async () => {
     const existing = await current()
     if (!existing) throw new HttpError(404, 'not_found', 'The file does not exist')
     if (ifMatch && !etagMatches(ifMatch, etag(existing))) throw new HttpError(412, 'precondition_failed', 'The file has changed')
     await files.delete(key)
     await db.reserveStorage(-existing.size, 0)
     return new Response(null, { status: 204 })
-  }
+  })
 
   // PUT: check the type and size before storing a single byte.
   const type = checkUploadType(path, header(req, 'content-type'))
@@ -78,26 +84,31 @@ export async function write(req: Request, method: string, rawPath: string, s: Se
   const body = await readLimited(req.body, s.maxUploadBytes)
   if (!body) throw tooLarge(s)
   checkUtf8(type, body)
+  // A feed file with the marker is kept by the server (RFC-7 "Kept feeds").
+  const kept = isKeptPut(path, body, s)
 
-  const existing = await current()
-  if (ifNoneMatch && (ifNoneMatch.trim() == '*' ? existing : existing && etagMatches(ifNoneMatch, etag(existing))))
-    throw new HttpError(412, 'precondition_failed', 'The file already exists')
-  if (ifMatch && (!existing || !etagMatches(ifMatch, etag(existing))))
-    throw new HttpError(412, 'precondition_failed', existing ? 'The file has changed' : 'The file does not exist')
+  return locked(async () => {
+    const existing = await current()
+    if (ifNoneMatch && (ifNoneMatch.trim() == '*' ? existing : existing && etagMatches(ifNoneMatch, etag(existing))))
+      throw new HttpError(412, 'precondition_failed', 'The file already exists')
+    if (ifMatch && (!existing || !etagMatches(ifMatch, etag(existing))))
+      throw new HttpError(412, 'precondition_failed', existing ? 'The file has changed' : 'The file does not exist')
+    if (kept != undefined) return putKept(path, rawPath, kept, !!existing, s, env)
 
-  const delta = body.byteLength - (existing?.size ?? 0)
-  if (!await db.reserveStorage(delta, s.maxStorageBytes)) throw new HttpError(507, 'insufficient_storage', 'The storage quota is reached')
-  let newEtag: string
-  try {
-    newEtag = await files.put(key, body)
-  } catch (e) {
-    await db.reserveStorage(-delta, 0)
-    throw e
-  }
-  const status = existing ? 200 : 201
-  return new Response(null, {
-    status,
-    headers: { ETag: newEtag, ...status == 201 && { Location: s.storageBase + rawPath.slice(1) } },
+    const delta = body.byteLength - (existing?.size ?? 0)
+    if (!await db.reserveStorage(delta, s.maxStorageBytes)) throw new HttpError(507, 'insufficient_storage', 'The storage quota is reached')
+    let newEtag: string
+    try {
+      newEtag = await files.put(key, body)
+    } catch (e) {
+      await db.reserveStorage(-delta, 0)
+      throw e
+    }
+    const status = existing ? 200 : 201
+    return new Response(null, {
+      status,
+      headers: { ETag: newEtag, ...status == 201 && { Location: s.storageBase + rawPath.slice(1) } },
+    })
   })
 }
 
@@ -111,6 +122,9 @@ export async function filesEndpoint(req: Request, rawPath: string, s: Settings, 
     case 'PUT':
     case 'DELETE':
       return write(req, req.method, rawPath, s, env)
+    case 'POST':
+      // Items to a kept feed (RFC-7); a POST to any other file gets 405.
+      return postItemEndpoint(req, rawPath, s, env)
     case 'GET':
     case 'HEAD':
       return serve(req, rawPath, s, env, true)
@@ -131,16 +145,17 @@ async function freshRead(req: Request, s: Settings, env: Env): Promise<boolean> 
   return true
 }
 
-/** POST fallback for hosts that block PUT and DELETE. */
+/** POST fallback for hosts that block PUT and DELETE. `method=POST` posts an item to a feed. */
 export async function postEndpoint(req: Request, s: Settings, env: Env): Promise<Response> {
   if (req.method != 'POST') throw methodNotAllowed('POST, OPTIONS')
   const q = readQuery(req)
   const method = q.get('method')
   const path = q.get('path')
-  if (method != 'PUT' && method != 'DELETE') throw new HttpError(400, 'invalid_request', 'method must be PUT or DELETE')
+  if (method != 'PUT' && method != 'DELETE' && method != 'POST') throw new HttpError(400, 'invalid_request', 'method must be PUT, DELETE or POST')
   if (!path) throw new HttpError(400, 'invalid_path', 'path is required')
   // `path` was percent-decoded once by the query parser; re-encode so write() decodes it exactly once.
-  return write(req, method, path.split('/').map(encodeURIComponent).join('/'), s, env)
+  const raw = path.split('/').map(encodeURIComponent).join('/')
+  return method == 'POST' ? postItemEndpoint(req, raw, s, env) : write(req, method, raw, s, env)
 }
 
 /**

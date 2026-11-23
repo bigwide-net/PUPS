@@ -1,0 +1,21 @@
+{
+  "name": "pups-feeds",
+  "version": "0.1.0",
+  "description": "Kept feeds of the Personal Upload Server (RFC-7): items posted to a feed file, archives (RFC-13) written by the server. Shared by the TypeScript implementations",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "4.1"
+  }
+}

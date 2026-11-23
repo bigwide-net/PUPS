@@ -45,6 +45,8 @@ function configDocument(Config $c): array
         // server, and where to send comments on the owner's feeds (`_submissions.url`).
         ...($c->mentions ? ['mention_endpoint' => mentionUrl($c)] : []),
         ...($c->comments ? ['comment_endpoint' => commentUrl($c)] : []),
+        // Feed files with the RFC-7 marker are kept by this server: it writes their archives, and takes items by POST.
+        'kept_feeds' => true,
         'max_upload_bytes' => maxUploadBytes($c),
         'spec_version' => SPEC_VERSION,
     ];

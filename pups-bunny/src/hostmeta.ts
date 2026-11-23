@@ -1,7 +1,8 @@
 import { authenticate, requireScope } from './files'
 import { HttpError, json, methodNotAllowed, readLimited } from './http'
 import { appdataPrefix, covers, isPrivate, pathFromPublicUrl, writePrefixes } from './paths'
-import { hasUnsafeChars } from 'pups-ui'
+import { mentionLink, MENTION_REL } from 'pups-inbox'
+import { hasUnsafeChars, POST_URL_TEMPLATE_PROP, webpupPostUrlTemplate } from 'pups-ui'
 import { type Env, PUPS_CLIENT_PROP, PUPS_PROP_PREFIX, PUPS_REL, type Settings, store } from './settings'
 import type { Grant } from './state'
 
@@ -42,7 +43,8 @@ export interface HostMeta {
 }
 
 export const pupsLink = (s: Settings): Link => ({ rel: PUPS_REL, type: 'application/json', href: s.configUrl })
-const defaultHostMeta = (s: Settings): HostMeta => ({ links: [pupsLink(s)] })
+/** The generated host-meta.json: the PUPS link, and the mention link of the built-in receiver (RFC-11). */
+const defaultHostMeta = (s: Settings): HostMeta => ({ links: [pupsLink(s), ...s.mentions ? [mentionLink({ base: s.ownerOrigin })] : []] })
 
 /** GET /.well-known/host-meta.json: the stored file, or a generated one with the PUPS link. */
 export async function serveHostMeta(req: Request, s: Settings, env: Env): Promise<Response> {
@@ -311,4 +313,45 @@ export async function onGrantRevoked(clientId: string, s: Settings, env: Env): P
     // An invalid host-meta.json must not make revocation fail.
     console.error('host-meta cleanup failed', e)
   }
+}
+
+/** Environments (one per instance in production) whose host-meta.json was checked for the mention link. */
+const mentionLinkChecked = new WeakSet<Env>()
+
+/**
+ * Adds the mention link to a stored host-meta.json, once: at the first request with mentions on. If the owner removes
+ * it later, it stays removed. Without a stored file, the generated one contains it (defaultHostMeta()).
+ */
+export async function ensureMentionLink(s: Settings, env: Env): Promise<void> {
+  if (!s.mentions || mentionLinkChecked.has(env)) return
+  const db = store(env)
+  if (!await db.setting('mention-link')) {
+    try {
+      await modifyHostMeta(s, env, doc => {
+        if (doc.links?.some(l => l?.rel == MENTION_REL)) return false
+        doc.links = [...doc.links ?? [], mentionLink({ base: s.ownerOrigin })]
+        return true
+      }, false)
+      await db.setSetting('mention-link', { href: mentionLink({ base: s.ownerOrigin }).href, at: new Date().toISOString() })
+    } catch (e) {
+      console.error('host-meta.json: adding the mention link failed', e)
+      return
+    }
+  }
+  mentionLinkChecked.add(env)
+}
+
+/**
+ * Sets the post URL template in host-meta.json to webpup's (`on`), or removes it if it is still webpup's. Apps that
+ * write the feeds then give new posts the URL of their page (RFC-7).
+ */
+export function setPostUrlTemplate(s: Settings, env: Env, on: boolean): Promise<void> {
+  const template = webpupPostUrlTemplate(s.ownerOrigin)
+  return modifyHostMeta(s, env, doc => {
+    const props = doc.properties ??= {}
+    if (on == (props[POST_URL_TEMPLATE_PROP] == template)) return false
+    if (on) props[POST_URL_TEMPLATE_PROP] = template
+    else delete props[POST_URL_TEMPLATE_PROP]
+    return true
+  }, on)
 }

@@ -115,8 +115,8 @@ describe('well-known configuration', () => {
     expect(parseWellKnown('[{"path":"/pups/private/inbox/"},{"path":"/pups/private/settings.json"}]', 'https://tim.example.com'))
       .toMatchObject([{ path: '/pups/private/inbox/', url: undefined }, { path: '/pups/private/settings.json', url: undefined }])
   })
-  it('declares no private paths by default', () => {
-    expect(s.wellKnown.some(e => isPrivate(e.path))).toBe(false)
+  it('declares no private paths by default but the inbox, which the built-in receiver writes', () => {
+    expect(s.wellKnown.filter(e => isPrivate(e.path)).map(e => e.path)).toEqual(['/pups/private/inbox.json'])
   })
   it('accepts /pups/images/ and /pups/pages/ with link properties', () => {
     expect(parseWellKnown('[{"path":"/pups/images/"}]', 'https://tim.example.com')[0].path).toBe('/pups/images/')

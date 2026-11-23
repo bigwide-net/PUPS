@@ -8,7 +8,7 @@ It speaks the same protocol as the real implementations (Cloudflare Worker, PHP 
 
 ```sh
 cd pups-server
-npm install                                              # links ../pups-ui, see Code
+npm install                                              # links ../lib/pups-ui, see Code
 npm run setup-local                                      # TLS certificate and .env, see below
 echo '127.0.0.1 alice.pups.test' | sudo tee -a /etc/hosts
 npm start
@@ -246,7 +246,7 @@ Layout:
 | `lib/owner.ts` | Password check. |
 | `lib/html.ts` | Sends the owner pages from pups-ui and serves `/pups/assets/`. |
 
-The owner pages (consent screen, apps page, error pages), their stylesheet and script, and the sanitizer for untrusted values come from [pups-ui](../pups-ui), which the Cloudflare and Bunny servers use too. It is a local package in this repository (`"pups-ui": "file:../pups-ui"`).
+The owner pages (consent screen, apps page, error pages), their stylesheet and script, and the sanitizer for untrusted values come from [pups-ui](../lib/pups-ui), which the Cloudflare and Bunny servers use too. It is a local package in this repository (`"pups-ui": "file:../lib/pups-ui"`).
 | `lib/log.ts` | Request and event log. |
 
 ```sh

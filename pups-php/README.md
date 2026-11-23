@@ -127,7 +127,7 @@ The default host name is `alice-php.pups.test`, so that it doesn't collide with 
 | `/.well-known/oauth-authorization-server` | RFC 8414 metadata. |
 | `/oauth/authorize` | Authorization and consent screen. |
 | `/oauth/token`, `/oauth/revoke` | Token and revocation endpoints. |
-| `/<path>` | Upload API (`PUT`, `DELETE`) and public reads (`GET`, `HEAD`, ranges, conditional requests) at the domain root, e.g. `/appdata/app.example/feed.json` and `/.well-known/about.md`. With an app's token, `GET` and `HEAD` are fresh reads. |
+| `/<path>` | Upload API (`PUT`, `DELETE`) and public reads (`GET`, `HEAD`, ranges, conditional requests) at the domain root, e.g. `/appdata/app.example/feed.json` and `/.well-known/about.md`. With an app's token, `GET` and `HEAD` are fresh reads. `POST` to a feed file adds, changes or deletes an item (see [Feeds](#feeds)). |
 | `/pups/host-meta` | `host_meta_endpoint`: apps add, change, remove and order links and set properties. |
 | `/pups/post` | `post_endpoint`, if `PUT`/`DELETE` are blocked or `post_fallback` is set. |
 | `/pups/probe` | Used by the checks: echoes the method and whether the `Authorization` header arrived. |
@@ -238,7 +238,7 @@ On the page *Homepage* (`/pups/homepage`, also linked from the start page and th
 **Install webpup** copies webpup to the domain's folder (next to `index.php`): `index.html`, `webpups.js`, `webpup.css`, `theme.css` (the theme), `webpup-config.json`, and `webpup-themes/` while the theme browser is on. **Save** writes them again, with your new choices; your other settings in `webpup-config.json`, such as `embeds`, stay. **Remove webpup** deletes these files, and `/` forwards to the owner pages again.
 
 - `/` and webpup's pretty URLs (`/p/about`, `/p/feed/photos`, …) serve its `index.html`. `.htaccess` lets the web server deliver its script, styles and themes directly; everything else goes through `index.php`.
-- **Post pages.** Every post has a page of its own, e.g. `/p/feed/post/47` for the post with index 47 of your main feed. PUPS declares these URLs in `host-meta.json`, with the site property `https://bigwide.net/ns/post-url-template` set to `https://me.example.com/p/{feed}/post/{index}`, and removes it again with webpup. Apps that write your feeds then link new posts to their page ([RFC-7, Post URLs](https://github.com/bigwide-net/RFCs/blob/main/RFC-7-Feed-Publishing-with-PUPS.md#post-urls)). Apps can't change the property.
+- **Post pages.** Every post has a page of its own, e.g. `/p/feed/post/47` for the post with index 47 of your main feed. PUPS declares these URLs in `host-meta.json`, with the site property `https://bigwide.net/ns/post-url-template` set to `https://me.example.com/p/{feed}/post/{index}`, and removes it again with webpup. PUPS then links new posts of your feeds to their page ([RFC-7, Post URLs](https://github.com/bigwide-net/RFCs/blob/main/RFC-7-Feed-Publishing-with-PUPS.md#post-urls)). Apps can't change the property.
 - `webpup-config.json` is served with two links that PUPS adds: `settings-url`, where the theme browser tells you to change the theme, and `owner-link`, the **Owner** link to `/pups/` at the very bottom of the page. Set `'webpup_owner_link' => false` in `config.php` to leave that link out.
 - An `index.html` of your own takes precedence: PUPS serves it at `/`, never replaces it, and the page *Homepage* asks you to remove or rename it before installing webpup.
 - webpup is installed only at the domain root, not in a [folder installation](#installing-in-a-folder): it loads its files and your feeds from there.
@@ -332,6 +332,12 @@ Two areas hold files that only your apps can read, not the public: drafts, setti
 
 Private files are read with the app's token at `storage_base`, like a fresh read. Without a token PUPS answers `401`, with an invalid one `401`, with a token whose scopes don't cover the path `403`, and only then, if the file is missing, `404`, so the answer never tells anyone else whether a file exists. Every response for a private path carries `Cache-Control: no-store` (`private, no-store` with the file) and `Vary: Authorization`. A `read:` scope never allows writing. The files are in `data_dir` with all the other uploads, which the web server never serves without PUPS. They are not encrypted: whoever runs the hosting can read them.
 
+### Feeds
+
+PUPS keeps your feeds ([RFC-7](https://github.com/bigwide-net/RFCs/blob/main/RFC-7-Feed-Publishing-with-PUPS.md)): every feed file in `/feed.json` or `/feed/<name>.json` that carries `"_pups": { "pupsControlled": true }`. Apps send posts one at a time, with `POST` of a JSON Feed item to the feed file, and PUPS does the rest: it gives each post its index and, with webpup, the URL of its page, puts it into the archives `feed.000000.json`, `feed.000001.json`, … in the feed directory, 20 posts each ([RFC-13](https://github.com/bigwide-net/RFCs/blob/main/RFC-13-JSON-Feed-Archives.md)), and writes the feed file with the newest 30. Edits and deletes work the same way. Every request is done completely under the storage lock, archives first, so posts from several apps never get lost. Apps may also `PUT` the feed file, e.g. to change its title: PUPS compares its items with the ones it had, and adds, changes or deletes posts accordingly. Apps can't write the archives. The configuration document says `"kept_feeds": true`.
+
+A feed you made by hand or with another tool stays untouched until you add the `_pups` marker; then PUPS puts its posts into archives on the next write.
+
 ### Inbox
 
 PUPS has a small built-in receiver. It puts what other sites send you into your **inbox**, a private JSON Feed at `/pups/private/inbox.json` ([RFC-12](https://github.com/bigwide-net/RFCs/blob/main/RFC-12-Inbox-Feeds.md)). Your feed reader shows it, if it supports inboxes and you allow it to read non-public content (`read:/pups/private/inbox.json`). Nothing has to be set up, and both parts can be switched off in `config.php` (`mentions`, `comments`).
@@ -399,6 +405,7 @@ The server is in `pups/`; the paths below are relative to it. `tests/` and `scri
 | `handler/inbox.php` | Dismissing inbox items: the RFC-9 action and the confirmation page. |
 | `lib/inbox.php` | The inbox file: writing it under the storage lock, items, limits, the action key. |
 | `lib/feeds.php` | Fetching posts with limits; parsing JSON Feed, RSS and HTML pages; finding items in archives. |
+| `lib/archive.php` | Kept feeds (RFC-7): `PUT` of a feed file and `POST` of items, the RFC-13 archives, indexes and post URLs. |
 | `lib/content.php` | Visible text, handles, excerpts, and the HTML subset the inbox keeps. |
 | `lib/config.php` | Configuration and well-known path rules. |
 | `lib/state.php` | `state.json`: owner, codes, grants, tokens, refresh rotation, rate limits, all under a lock. |
@@ -414,7 +421,7 @@ The server is in `pups/`; the paths below are relative to it. `tests/` and `scri
 | `lib/texts.json` | Texts of the consent screen, the permission lists and the confirmation fieldset (`t()` in `lib/html.php`). A copy from pups-ui. |
 | `webpup/` | A build of [webpup](../webpup), which the page *Homepage* installs. |
 
-The stylesheet, the script and `texts.json` are shared with the TypeScript implementations through [pups-ui](../pups-ui). Change them there and run `scripts/sync-ui.sh` to copy them here; a test fails while the copies are out of date. The server itself never needs pups-ui.
+The stylesheet, the script and `texts.json` are shared with the TypeScript implementations through [pups-ui](../lib/pups-ui). Change them there and run `scripts/sync-ui.sh` to copy them here; a test fails while the copies are out of date. The server itself never needs pups-ui.
 
 `webpup/` is a production build of [webpup](../webpup). After changing webpup, run `scripts/sync-webpup.sh`: it builds webpup and copies the build here.
 
@@ -436,6 +443,7 @@ They cover:
 - setup, passkeys and rate limiting;
 - untrusted input and size limits;
 - folder installations and persistence;
+- kept feeds: posting, editing and deleting items, archives of 20 and the newest 30 in the feed file, `PUT` of the feed file, handed-over feeds, post URLs, and archives that apps can't write;
 - the inbox: mentions by name and replies (RSS, JSON Feed, HTML, archives, items republished by groups), comments and their rules, edits and deletes, the limits, Dismiss, and another system's inbox. A fake network serves the posts.
 
 `tests/server_test.php` also runs PUPS on PHP's built-in server. That covers the real request and response path: `.htaccess`-style routing, the `Authorization` header, streaming uploads, ranges, `HEAD`, the self-test checks and configuration errors.

@@ -1,12 +1,14 @@
 import * as ui from 'pups-ui'
-import { errorPage, hasUnsafeChars, MIN_PASSWORD_LENGTH, setupCompletePage } from 'pups-ui'
+import { inboxSummary } from 'pups-inbox'
+import { errorPage, hasUnsafeChars, type HomepageKind, type HomepageState, isTheme, MIN_PASSWORD_LENGTH, ownerNav, setupCompletePage } from 'pups-ui'
 import {
   createSession, endSession, passkeyCreateOptions, passkeyGetOptions, session, verifyCredential, verifyPasskeyRegistration,
 } from './auth'
 import { hashPassword, randomToken, sign, timingSafeEqual, verify } from './crypto'
-import { modifyHostMeta, onGrantRevoked, readHostMeta } from './hostmeta'
+import { modifyHostMeta, onGrantRevoked, readHostMeta, setPostUrlTemplate } from './hostmeta'
 import { readForm } from './http'
 import { permissionList } from './oauth'
+import { receiver } from './receiver'
 import { appdataPrefix } from './paths'
 import { type Env, type Settings, store } from './settings'
 import type { Passkey } from './store'
@@ -75,7 +77,7 @@ export async function setup(req: Request, s: Settings, env: Env): Promise<Respon
   if (!passkey && !password) return credentialForm(token!, s, env, 'Register a passkey or choose a password.')
   if (!await db.useNonce(st.nonce, 30 * 60_000) || !await db.createOwner(password ? await hashPassword(password) : null, passkey))
     return notFound()
-  return setupCompletePage(s, { configUrl: s.configUrl, issuer: s.issuer, hasPasskey: !!passkey })
+  return setupCompletePage(s, { configUrl: s.configUrl, issuer: s.issuer, hasPasskey: !!passkey, homepage: await homepageKind(s, env) })
 }
 
 function checkNewPassword(password: string, repeat: unknown): string | undefined {
@@ -89,7 +91,7 @@ async function credentialForm(token: string, s: Settings, env: Env, error?: stri
 
 // --- Login (auth subdomain mode only) --------------------------------------------------------
 
-const RETURN_PATHS = ['/pups/apps', '/pups/password']
+const RETURN_PATHS = ['/pups/apps', '/pups/homepage', '/pups/password']
 const safeReturn = (r: unknown) =>
   typeof r == 'string' && r.length <= 2048 && (r.startsWith('/oauth/authorize?') || RETURN_PATHS.includes(r)) &&
     !r.includes('\\') && !/\s/.test(r) && !hasUnsafeChars(r) ? r : '/pups/apps'
@@ -192,7 +194,8 @@ const unlockPage = async (s: Settings, env: Env, error?: string) => ui.unlockPag
 
 async function appsPage(s: Settings, env: Env, o: { message?: string; error?: string } = {}) {
   const db = store(env)
-  const [grants, used, hostMeta, confirm] = await Promise.all([db.activeGrants(), db.storageUsed(), readHostMeta(s, env), confirmOptions(s, env)])
+  const [grants, used, hostMeta, confirm, inbox] = await Promise.all([db.activeGrants(), db.storageUsed(), readHostMeta(s, env), confirmOptions(s, env),
+    receiver(s, env).then(inboxSummary)])
   return ui.appsPage(s, {
     apps: grants.map(g => ({
       ...g, permissions: permissionList(g.scope, g.clientHost, s),
@@ -201,7 +204,7 @@ async function appsPage(s: Settings, env: Env, o: { message?: string; error?: st
     links: (hostMeta.doc.links ?? []).map(l => ({ rel: String(l.rel), href: String(l.href ?? '') })),
     properties: Object.entries(hostMeta.doc.properties ?? {}).map(([k, v]) => [k, String(v)]),
     hostMetaError: hostMeta.error, hostMetaStored: hostMeta.stored, usedBytes: used, maxBytes: s.maxStorageBytes,
-    confirm, ...o,
+    confirm, inbox, ...o,
   })
 }
 
@@ -232,4 +235,47 @@ export async function password(req: Request, s: Settings, env: Env): Promise<Res
 async function passwordPage(s: Settings, env: Env, o: { message?: string; error?: string } = {}) {
   const owner = await store(env).owner()
   return ui.passwordPage(s, { hasPassword: !!owner?.passwordHash, passkeyOptions: await passkeyGetOptions(s, env), ...o })
+}
+
+// --- Start page and homepage -------------------------------------------------------------
+
+/** Who owns the domain's homepage: an existing website behind this server, webpup, or nobody. */
+export async function homepageKind(s: Settings, env: Env): Promise<HomepageKind> {
+  return s.originFallback ? 'website' : await homepageState(env) ? 'webpup' : 'none'
+}
+
+export const homepageState = async (env: Env) => await store(env).setting('homepage') as HomepageState | undefined
+
+/** /pups/: the start page of the owner pages. */
+export async function start(req: Request, s: Settings, env: Env): Promise<Response> {
+  if (req.method != 'GET' && req.method != 'HEAD') return errorPage('Method not allowed', 'Use GET.', 405)
+  return ui.startPage(s, { hasOwner: await store(env).ownerExists(), homepage: await homepageKind(s, env), configUrl: s.configUrl, nav: ownerNav(s, '') })
+}
+
+/** /pups/homepage: install webpup as the homepage, choose its theme, or remove it. */
+export async function homepage(req: Request, s: Settings, env: Env): Promise<Response> {
+  const stop = await guard(req, s, env, '/pups/homepage')
+  if (stop) return stop
+  const nav = ownerNav(s, '/pups/homepage')
+  const page = async (o: { message?: string; error?: string } = {}) => ui.homepagePage(s, {
+    kind: await homepageKind(s, env), state: await homepageState(env), confirm: await confirmOptions(s, env), nav, ...o,
+  })
+  if (req.method == 'GET') return s.subdomainMode ? page() : ui.homepageUnlockPage(s, await confirmOptions(s, env), nav)
+  const form = await readForm(req)
+  const err = await verifyCredential(form, s, env)
+  if (err) return s.subdomainMode ? page({ error: err }) : ui.homepageUnlockPage(s, await confirmOptions(s, env), nav, err)
+  const action = form.get('webpup')
+  const kind = await homepageKind(s, env)
+  if (!action || kind == 'website') return page()
+  const db = store(env)
+  if (action == 'remove') {
+    await db.setSetting('homepage', undefined)
+    await setPostUrlTemplate(s, env, false)
+    return page({ message: `webpup was removed. ${s.ownerHost} now forwards to these pages.` })
+  }
+  const theme = String(form.get('theme') ?? '')
+  if (action != 'install' || !isTheme(theme)) return page({ error: 'Choose a theme.' })
+  await db.setSetting('homepage', { theme, themeSelector: form.get('theme_selector') == '1' } satisfies HomepageState)
+  await setPostUrlTemplate(s, env, true)
+  return page({ message: kind == 'webpup' ? 'Saved.' : `webpup is now the homepage of ${s.ownerHost}.` })
 }

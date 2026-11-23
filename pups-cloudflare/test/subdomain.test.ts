@@ -1,14 +1,14 @@
 import { env } from 'cloudflare:workers'
 import { beforeAll, describe, expect, it } from 'vitest'
 import worker from '../src/index'
-import { form, mockClientFetch, PASSWORD, pkce, registerClient, signedRequest, type TestClient } from './helpers'
+import { form, mockClientFetch, PASSWORD, pkce, registerClient, signedRequest, type TestClient, testCtx } from './helpers'
 
 /** The same Worker in auth subdomain mode: owner pages and OAuth on id.tim.example.com. */
 const AUTH = 'https://id.tim.example.com'
 const OWNER = 'https://tim.example.com'
 const subEnv = { ...env, AUTH_HOST: 'id.tim.example.com' } as any
 
-const call = (url: string, init?: RequestInit) => worker.fetch(new Request(url, init) as any, subEnv)
+const call = (url: string, init?: RequestInit) => worker.fetch(new Request(url, init) as any, subEnv, testCtx)
 
 const app = registerClient('sub-app.example')
 

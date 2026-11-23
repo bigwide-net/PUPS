@@ -60,6 +60,8 @@ function writeFile(Request $req, string $method, string $rawPath, Ctx $ctx): Res
     $ifMatch = reqHeader($req, 'if-match');
     $ifNoneMatch = reqHeader($req, 'if-none-match');
     $files = $ctx->files;
+    if (($owner = archiveOwner($path, $c)) && isKeptFile($ctx, $owner))
+        throw new HttpError(403, 'forbidden', "This server writes the archives of $owner (RFC-7). Change its items with PUT or POST of $owner.");
 
     if ($method === 'DELETE')
         return $files->locked(function () use ($files, $path, $ifMatch, $grant) {
@@ -95,14 +97,18 @@ function writeFile(Request $req, string $method, string $rawPath, Ctx $ctx): Res
         fclose($out);
         if ($type[2] && !isUtf8(file_get_contents($tmp)))
             throw new HttpError(415, 'unsupported_type', 'Text files must be UTF-8');
+        // A feed file with the marker is kept by the server (RFC-7 "Kept feeds").
+        $kept = isFeedPath($path, $c) && isKept(json_decode(file_get_contents($tmp), false, 512)) ? file_get_contents($tmp) : null;
 
         // Under the lock, no other request can change the file between the precondition check and the write.
-        return $files->locked(function () use ($files, $path, $rawPath, $tmp, $bytes, $ifMatch, $ifNoneMatch, $grant, $contentType, $c) {
+        return $files->locked(function () use ($files, $path, $rawPath, $tmp, $bytes, $ifMatch, $ifNoneMatch, $grant, $contentType, $c, $kept, $ctx) {
             $existing = $files->stat($path);
             if ($ifNoneMatch && (trim($ifNoneMatch) === '*' ? $existing : $existing && etagMatches($ifNoneMatch, $existing['etag'])))
                 throw new HttpError(412, 'precondition_failed', 'The file already exists');
             if ($ifMatch && (!$existing || !etagMatches($ifMatch, $existing['etag'])))
                 throw new HttpError(412, 'precondition_failed', $existing ? 'The file has changed' : 'The file does not exist');
+            if ($kept !== null)
+                return putKeptFeed($ctx, $path, $rawPath, $kept, $existing, $grant);
             if ($c->maxStorageBytes && $files->used() - ($existing['size'] ?? 0) + $bytes > $c->maxStorageBytes)
                 throw new HttpError(507, 'insufficient_storage', 'The storage quota is reached');
             $etag = $files->commit($path, $tmp);
@@ -120,7 +126,7 @@ function writeFile(Request $req, string $method, string $rawPath, Ctx $ctx): Res
     }
 }
 
-/** POST fallback for hosts that block PUT and DELETE (only when declared). */
+/** POST fallback for hosts that block PUT and DELETE (only when declared). `method=POST` posts an item to a feed. */
 function postEndpoint(Request $req, Ctx $ctx): Response
 {
     if ($req->method !== 'POST')
@@ -128,12 +134,12 @@ function postEndpoint(Request $req, Ctx $ctx): Response
     $q = $req->query();
     $method = field($q, 'method');
     $path = field($q, 'path', Limits::RAW_PATH);
-    if ($method !== 'PUT' && $method !== 'DELETE')
-        throw new HttpError(400, 'invalid_request', 'method must be PUT or DELETE');
+    if ($method !== 'PUT' && $method !== 'DELETE' && $method !== 'POST')
+        throw new HttpError(400, 'invalid_request', 'method must be PUT, DELETE or POST');
     if ($path === null)
         throw new HttpError(400, 'invalid_path', 'path is required');
     // `path` was percent-decoded once by the query parser; re-encode it so that it is decoded exactly once.
-    return writeFile($req, $method, encodePath($path), $ctx);
+    return $method === 'POST' ? postItem($req, encodePath($path), $ctx) : writeFile($req, $method, encodePath($path), $ctx);
 }
 
 /**
@@ -241,6 +247,9 @@ function fileRoutes(Request $req, string $abs, ?string $rel, Ctx $ctx): ?Respons
         case 'PUT':
         case 'DELETE':
             return $rel === null ? null : writeFile($req, $req->method, $rel, $ctx);
+        case 'POST':
+            // Only feed files take POST; for everything else, the path doesn't exist as an endpoint.
+            return $rel !== null && ($path = tryParsePath($rel, $c)) !== null && isFeedPath($path, $c) ? postItem($req, $rel, $ctx) : null;
         case 'GET':
         case 'HEAD':
             foreach ($c->wellKnown as $e) {

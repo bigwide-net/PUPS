@@ -1,5 +1,6 @@
 import * as ui from 'pups-ui'
 import { errorPage } from 'pups-ui'
+import { commentUrl, mentionUrl } from 'pups-inbox'
 import { passkeyGetOptions, session, verifyCredential } from './auth'
 import { type Client, ClientError, loadClient, redirectUriAllowed } from './cimd'
 import { hashToken, randomToken, s256, sign, verify } from './crypto'
@@ -34,6 +35,12 @@ export const configDocument = (s: Settings) => ({
   })),
   host_meta_endpoint: `${s.ownerOrigin}/pups/host-meta`,
   ...s.postFallback && { post_endpoint: `${s.ownerOrigin}/pups/post` },
+  // The built-in receiver: clients learn here that the mention link in host-meta.json is this server, and where to
+  // send comments on the owner's feeds (`_submissions.url`).
+  ...s.mentions && { mention_endpoint: mentionUrl({ base: s.ownerOrigin }) },
+  ...s.comments && { comment_endpoint: commentUrl({ base: s.ownerOrigin }) },
+  // Feed files with the RFC-7 marker are kept by this server: it writes their archives, and takes items by POST.
+  kept_feeds: true,
   max_upload_bytes: s.maxUploadBytes,
   spec_version: SPEC_VERSION,
 })

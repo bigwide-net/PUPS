@@ -157,8 +157,7 @@ describe('mentions', () => {
 
   it("arrive as replies to the owner's items, also in archives, and to items republished for the owner", async () => {
     const { r, files, web, fetched } = await testReceiver()
-    // As written before RFC-13: the archive link in _pups.
-    files.set('/feed.json', jsonFeed([{ id: 'p-12', content_text: 'Mine' }], { _pups: { archive_url: `${ORIGIN}/feed/feed.000000.json` } }))
+    files.set('/feed.json', jsonFeed([{ id: 'p-12', content_text: 'Mine' }], { _archive: { archive_url: `${ORIGIN}/feed/feed.000000.json` } }))
     files.set('/feed/feed.000000.json', jsonFeed([{ id: 'p-1', url: 'https://alice.pups.test/2025/old', content_text: 'Old' }]))
     const group = 'https://rm.example/groups/two/posts.json'
     web.set(group, feedDoc([{ id: 'g1', content_text: 'By Alice', _source: { accounts: { socialspec: '@alice.pups.test' } } },

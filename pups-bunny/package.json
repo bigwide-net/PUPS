@@ -12,7 +12,9 @@
   "dependencies": {
     "@bunny.net/edgescript-sdk": "^0.13.0",
     "@simplewebauthn/server": "^14.1.0",
-    "pups-ui": "file:../pups-ui"
+    "pups-feeds": "file:../lib/pups-feeds",
+    "pups-inbox": "file:../lib/pups-inbox",
+    "pups-ui": "file:../lib/pups-ui"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

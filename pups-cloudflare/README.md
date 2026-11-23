@@ -1,13 +1,13 @@
 # PUPS for Cloudflare Workers
 
-Reference implementation of the **Personal Upload Server** ([RFC-6](https://github.com/bigwide-net/RFCs/blob/main/RFC-6-Personal-Upload-Server.md), `spec_version` 0.1) as a single Cloudflare Worker. It lets apps upload files to your own domain: an app only needs your domain name, asks for permission with OAuth 2.1 + PKCE, and gets a token that can write the paths you approved. Everything uploaded is public.
+Reference implementation of the **Personal Upload Server** ([RFC-6](https://github.com/bigwide-net/RFCs/blob/main/RFC-6-Personal-Upload-Server.md), `spec_version` 0.1) as a single Cloudflare Worker. It lets apps upload files to your own domain: an app only needs your domain name, asks for permission with OAuth 2.1 + PKCE, and gets a token that can write the paths you approved. Everything uploaded is public, except the private areas.
 
 - **Worker** (TypeScript): discovery, OAuth authorization server, upload API, owner pages.
-- **R2** bucket `FILES`: uploaded files and `/.well-known/host-meta.json`.
-- **Durable Object** `PupsStore` (SQLite): owner credentials, grants, hashed tokens, codes, sessions, rate limits.
-- **Static assets** from the shared package [pups-ui](../pups-ui) (`node_modules/pups-ui/public/`): the stylesheet and script of the owner pages.
+- **R2** bucket `FILES`: uploaded files, `/.well-known/host-meta.json` and your inbox.
+- **Durable Object** `PupsStore` (SQLite): owner credentials, grants, hashed tokens, codes, sessions, rate limits, the locks of kept feeds, the homepage setting, webmentions waiting to be checked and comment status pages.
+- **Static assets** from the shared package [pups-ui](../lib/pups-ui) (`node_modules/pups-ui/public/`): the stylesheet and script of the owner pages.
 
-**The owner pages come from [pups-ui](../pups-ui)**, a package shared with the Bunny implementation: their HTML, `owner.css`, `owner.js` and the sanitizer. It is a local dependency in this repository (`file:../pups-ui`). The Deploy to Cloudflare button copies only this folder, so it can't build the Worker until pups-ui is published.
+**The owner pages come from [pups-ui](../lib/pups-ui)**, a package shared with the Bunny implementation: their HTML, `owner.css`, `owner.js`, the sanitizer, and webpup, the homepage. **The receiver comes from [pups-inbox](../lib/pups-inbox)** and **kept feeds from [pups-feeds](../lib/pups-feeds)**, also shared with Bunny. All three are local dependencies in this repository (`file:../lib/pups-ui`, …). The Deploy to Cloudflare button copies only this folder, so it can't build the Worker until they are published.
 
 ## Deploy
 
@@ -41,8 +41,10 @@ Then:
 
 | Page | What it does |
 | --- | --- |
+| `/pups/` | The start page: links to the other pages, and what your homepage is. `/` forwards here while your domain has no homepage. |
 | `/pups/setup` | First-run setup with the bootstrap secret: register a passkey and/or a password. Gone after setup. |
-| `/pups/apps` | The apps that can write to your domain, with their permissions and last use. **Remove** ends an app's access at once; **Remove and delete its files** also deletes its `/appdata/<app>/` folder. Also lists the links and properties in `host-meta.json`, each removable. |
+| `/pups/apps` | The apps that can write to your domain, with their permissions and last use. **Remove** ends an app's access at once; **Remove and delete its files** also deletes its `/appdata/<app>/` folder. Also lists the links and properties in `host-meta.json`, each removable, and what is in your inbox. |
+| `/pups/homepage` | Install webpup as the homepage of your domain, choose its theme and the theme browser, or remove it (see [Homepage](#homepage)). |
 | `/pups/password` | Change the password, or set one as a fallback if you log in with a passkey. In auth subdomain mode this logs out every other session. |
 | `/pups/login` | Auth subdomain mode only. |
 | `/oauth/authorize` | The consent screen apps send you to. |
@@ -71,6 +73,9 @@ All settings are `vars` in `wrangler.jsonc`, plus one secret.
 | `WELL_KNOWN_PATHS` | the RFC-6 list | JSON array of declared well-known paths, see below. |
 | `POST_FALLBACK` | `false` | Declares `post_endpoint`. Workers accept PUT and DELETE, so this only helps you test clients' POST fallback. |
 | `ORIGIN_FALLBACK` | `false` | Forward unknown paths to the origin (Worker on routes in front of an existing site). |
+| `MENTIONS` | `true` | Receive mentions of your domain (RFC-11) at `/pups/mention`, see [Inbox](#inbox). |
+| `COMMENTS` | `true` | Receive comments on your feeds (RFC-4) at `/pups/comments`. |
+| `WEBPUP_OWNER_LINK` | `true` | `false`: webpup without the link to the owner pages at the bottom of the page. |
 | `DEV_ALLOW_HTTP` | `false` | Local development only: accept plain HTTP (`wrangler dev`). |
 
 ### Well-known paths
@@ -116,20 +121,49 @@ Private files are read at `/files/<path>` with a bearer token whose scope covers
 
 **Storage.** Private files are in the same R2 bucket as all other files, under `appdata/<host>/private/` and `pups/private/`. That is safe only as long as nothing serves the bucket without the Worker: **don't enable public access** (`r2.dev` or a custom domain on the bucket), and don't point `PUBLIC_BASE` at one. A CDN in front of `PUBLIC_BASE` must pull from the Worker, and should bypass its cache for both private areas if it doesn't honour `no-store` or `Vary`. "Private" means hidden from the public, not encrypted: whoever has access to your Cloudflare account can read the files.
 
+## Feeds
+
+The Worker keeps your feeds ([RFC-7](https://github.com/bigwide-net/RFCs/blob/main/RFC-7-Feed-Publishing-with-PUPS.md)), as the PHP and Bunny versions do ([pups-feeds](../lib/pups-feeds)): every feed file in `/feed.json` or `/feed/<name>.json` that carries `"_pups": { "pupsControlled": true }`. Apps send posts one at a time, with `POST` of a JSON Feed item to the feed file at `/files/…`, and the Worker does the rest: it gives each post its index and, with webpup, the URL of its page, puts it into the archives `feed.000000.json`, `feed.000001.json`, … in the feed directory, 20 posts each ([RFC-13](https://github.com/bigwide-net/RFCs/blob/main/RFC-13-JSON-Feed-Archives.md)), and writes the feed file with the newest 30. Edits and deletes work the same way. Apps may also `PUT` the feed file, e.g. to change its title: the Worker compares its items with the ones it had, and adds, changes or deletes posts accordingly. Apps can't write the archives (`403`). The configuration document says `"kept_feeds": true`.
+
+Every write of a feed file or its archives runs under a lock in the Durable Object, so posts from several apps at the same time never get lost or share an index. The archives are written first and the feed file last. A feed made by hand or with another tool stays an ordinary file until it gets the `_pups` marker; then its posts go into archives on the next write.
+
+## Inbox
+
+The Worker has a small built-in receiver, the same as the PHP and Bunny implementations ([pups-inbox](../lib/pups-inbox)). It puts what other sites send you into your **inbox**, a private JSON Feed at `/pups/private/inbox.json` ([RFC-12](https://github.com/bigwide-net/RFCs/blob/main/RFC-12-Inbox-Feeds.md)). Your feed reader shows it if it supports inboxes and you allow it to read `read:/pups/private/inbox.json`. The path is declared automatically while the receiver is on. Nothing has to be set up; `MENTIONS` and `COMMENTS` turn the two parts off.
+
+- **Mentions** ([RFC-11](https://github.com/bigwide-net/RFCs/blob/main/RFC-11-Mentions.md)): other sites send a webmention to `/pups/mention` when a post names `@yourdomain` or replies to one of your posts. The generated `host-meta.json` links it (rel `https://bigwide.net/ns/mention`); a stored `host-meta.json` gets the link once, and if you remove it, it stays removed. The configuration document says `mention_endpoint`.
+- **Comments** ([RFC-4](https://github.com/bigwide-net/RFCs/blob/main/RFC-4-Feed-Submissions.md)) on your feeds, if a feed names `/pups/comments` in `_submissions.url` (`comment_endpoint` in the configuration document). They are checked against the feed's rules and land in your inbox; nothing is published. `/pups/comments/status/s-…` tells the sender how it went, for 24 hours.
+- Webmentions are answered at once (`202`, or `201` for comments) and checked after the response, with `waitUntil()`: the Worker fetches the post (1 MB, 10 s, 3 redirects; `global_fetch_strictly_public` keeps it on public addresses), and puts it into the inbox if it really names you or replies to you. At most 100 webmentions wait, 5 per site (`429` beyond). Each request checks at most 4, which keeps it under the 50 subrequests a request may make on the free plan; the next webmention picks up the rest.
+- **Limits.** The inbox holds 100 items, 10 per site. Mentions make room for new ones after 30 days or when the inbox is full; comments are never dropped, a comment that doesn't fit is refused.
+- **Dismiss.** Every item has an RFC-9 action that removes it (`/pups/inbox/action`, with a key only your inbox contains), and a link to a page that asks first (`/pups/inbox/dismiss`) for readers without actions.
+
+## Homepage
+
+On the page *Homepage* (`/pups/homepage`) you can make **webpup** the homepage of your domain: a single-page website that shows your profile, posts and pages from the files your apps write. Choose one of its themes, and whether visitors can try all themes (the theme browser). **Remove webpup** turns it off again, and `/` forwards to the owner pages.
+
+- webpup's files come with the Worker (from pups-ui); nothing is copied to R2. `/` and webpup's pretty URLs (`/p/about`, `/p/feed/photos`, …) serve its `index.html`; `/webpups.js`, `/webpup.css`, `/theme.css`, `/webpup-themes/…` and `/webpup-config.json` (with `settings-url` and `owner-link`) the rest. They are revalidated on every request (`no-cache` with an ETag).
+- **Post pages.** Every post has a page of its own, e.g. `/p/feed/post/47`. While webpup is installed, `host-meta.json` declares these URLs with the site property `https://bigwide.net/ns/post-url-template` (`https://tim.example.com/p/{feed}/post/{index}`), so apps link new posts to their page (RFC-7). Removing webpup removes the property, unless you changed it.
+- With `ORIGIN_FALLBACK`, your existing website keeps `/`, and the page *Homepage* says so. On a route setup, add `/` and `/p/*` and webpup's files to the Worker's routes if you want webpup.
+
 ## Endpoints
 
 | Host | Path | Purpose | CORS |
 | --- | --- | --- | --- |
 | owner | `/.well-known/host-meta.json` | Discovery (stored file, or a generated one with the PUPS link) | yes |
 | owner | `/personal-storage.json` | Configuration document | yes |
-| owner | `/files/<path>` | Upload API (`PUT`, `DELETE`), public reads (`GET`, `HEAD`, ranges, conditional requests), fresh reads (the same with a token) and private reads | yes |
+| owner | `/files/<path>` | Upload API (`PUT`, `DELETE`), public reads (`GET`, `HEAD`, ranges, conditional requests), fresh reads (the same with a token) and private reads; `POST` of an item to a feed file (see [Feeds](#feeds)) | yes |
 | owner | `/.well-known/about.md`, `/feed.json`, `/feed/…`, `/pups/images/…`, `/pups/pages/…` etc. | Declared well-known files at their own URL | yes |
 | owner | `/pups/host-meta` | `host_meta_endpoint`: apps add, change, order and remove links and set properties | yes |
 | owner | `/pups/post` | `post_endpoint` (only with `POST_FALLBACK`) | yes |
+| owner | `/pups/mention`, `/pups/comments`, `/pups/comments/status/s-…` | The receiver: webmentions, comments and their status (see [Inbox](#inbox)) | yes |
+| owner | `/pups/inbox/action` | Dismissing inbox items (RFC-9 action) | yes |
+| owner | `/pups/inbox/dismiss` | The page that asks before dismissing an item | no |
+| owner | `/`, `/p/…`, `/index.html`, `/webpups.js`, `/webpup.css`, `/theme.css`, `/webpup-config.json`, `/webpup-themes/…` | webpup while it is installed; otherwise `/` forwards to `/pups/` | no |
 | auth | `/.well-known/oauth-authorization-server` | RFC 8414 metadata | yes |
 | auth | `/oauth/authorize` | Authorization and consent | no |
 | auth | `/oauth/token`, `/oauth/revoke` | Token and revocation endpoints | yes |
-| auth | `/pups/setup`, `/pups/login`, `/pups/logout`, `/pups/apps`, `/pups/password` | Owner pages | no |
+| auth | `/pups/`, `/pups/setup`, `/pups/login`, `/pups/logout`, `/pups/apps`, `/pups/homepage`, `/pups/password` | Owner pages | no |
+| auth | `/pups/assets/themes/<id>.jpg` | Theme thumbnails for the page *Homepage* | no |
 | any | `/pups/assets/owner.css`, `/pups/assets/owner.js` | Static assets of the owner pages (from pups-ui) | no |
 
 In same-domain mode, "owner" and "auth" are the same host.
@@ -195,4 +229,4 @@ npm run typecheck
 npx wrangler dev    # with DEV_ALLOW_HTTP=true and BOOTSTRAP_SECRET in .dev.vars
 ```
 
-The end-to-end tests (`test/flow.test.ts`, `test/owner.test.ts`, `test/subdomain.test.ts`) run the full flow against the Worker, with a mocked network for client metadata documents: discovery, consent, loopback redirects, PKCE, code reuse, refresh-token rotation, the grace period and reuse detection, revocation, scope enforcement, ETag preconditions, path and type rules, serving headers, the POST fallback, `host-meta.json` editing, the apps and password pages, and auth subdomain mode. They cover most of the RFC-6 conformance list, but they are not the standalone conformance runner the RFC describes, which takes a base URL.
+The end-to-end tests (`test/flow.test.ts`, `test/owner.test.ts`, `test/subdomain.test.ts`) run the full flow against the Worker, with a mocked network for client metadata documents: discovery, consent, loopback redirects, PKCE, code reuse, refresh-token rotation, the grace period and reuse detection, revocation, scope enforcement, ETag preconditions, path and type rules, serving headers, the POST fallback, `host-meta.json` editing, the apps and password pages, and auth subdomain mode. `test/receiver.test.ts` covers the receiver and the homepage on the Worker, `test/feeds.test.ts` kept feeds, including concurrent posts; the detailed tests are in pups-inbox and pups-feeds. They cover most of the RFC-6 conformance list, but they are not the standalone conformance runner the RFC describes, which takes a base URL.

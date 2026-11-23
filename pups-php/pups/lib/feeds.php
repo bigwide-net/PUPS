@@ -230,9 +230,8 @@ function jsonFeed(array $j): array
         ];
     }
     $src = is_array($j['_source'] ?? null) ? $j['_source'] : [];
-    // RFC-13 archive fields, or those of earlier drafts in _pups (RFC-13 "Earlier drafts").
-    $archive = fn(string $k) => $str(is_array($j['_archive'] ?? null) ? ($j['_archive'][$k] ?? null) : null)
-        ?? $str(is_array($j['_pups'] ?? null) ? ($j['_pups'][$k] ?? null) : null);
+    // RFC-13 archive fields.
+    $archive = fn(string $k) => $str(is_array($j['_archive'] ?? null) ? ($j['_archive'][$k] ?? null) : null);
     return [
         'title' => $str($j['title'] ?? null), 'account' => is_array($src['accounts'] ?? null) ? $str($src['accounts']['socialspec'] ?? null) : null,
         'submissions' => is_array($j['_submissions'] ?? null) ? $j['_submissions'] : null,

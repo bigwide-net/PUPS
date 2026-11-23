@@ -5,6 +5,7 @@ import { Files } from './storage'
 export const ENV_KEYS = [
   'OWNER_HOST', 'AUTH_HOST', 'PUBLIC_BASE', 'MAX_UPLOAD_BYTES', 'MAX_STORAGE_BYTES', 'WRITES_PER_MINUTE', 'WELL_KNOWN_PATHS',
   'POST_FALLBACK', 'ORIGIN_URL', 'DEV_ALLOW_HTTP', 'BOOTSTRAP_SECRET', 'STORAGE_ZONE', 'STORAGE_HOST', 'STORAGE_ACCESS_KEY', 'DOH_URL',
+  'MENTIONS', 'COMMENTS', 'WEBPUP_OWNER_LINK',
 ] as const
 
 export interface Env {
@@ -29,6 +30,11 @@ export interface Env {
   ORIGIN_URL?: string
   DEV_ALLOW_HTTP?: string
   BOOTSTRAP_SECRET?: string
+  MENTIONS?: string
+  COMMENTS?: string
+  WEBPUP_OWNER_LINK?: string
+  /** Runs work after the response (Bunny.v1.waitUntil, passed in by main.ts). */
+  waitUntil?: (work: Promise<unknown>) => void
 }
 
 export const SPEC_VERSION = '0.1'
@@ -82,6 +88,12 @@ export interface Settings {
   allowHttp: boolean
   /** WebAuthn relying party ID. */
   rpId: string
+  /** Receive mentions of the owner (RFC-11) at /pups/mention and put them into the inbox. */
+  mentions: boolean
+  /** Receive comments on the owner's feeds (RFC-4) at /pups/comments and put them into the inbox. */
+  comments: boolean
+  /** With webpup as the homepage: end the page with a link to the owner pages. */
+  webpupOwnerLink: boolean
 }
 
 /** Files under /.well-known/ that may never be declared as well-known paths. */
@@ -151,6 +163,14 @@ export function parseWellKnown(json: string | undefined, origin: string): WellKn
   })
 }
 
+/** The inbox of RFC-12, which the built-in receiver writes: a private path, so it has nothing but the path. */
+export const INBOX_WELL_KNOWN: WellKnownEntry = {
+  path: '/pups/private/inbox.json', rels: [], properties: [], linkProperties: [], singleRels: [], urlProperties: [], description: 'your inbox',
+}
+
+/** A boolean variable: "true" or "false", or the default if it is empty. */
+const bool = (v: string | undefined, dflt: boolean) => v?.trim() ? v.trim() == 'true' : dflt
+
 const num = (v: string | undefined, dflt: number) => {
   const n = Number(v)
   return v?.trim() && Number.isFinite(n) && n >= 0 ? n : dflt
@@ -177,16 +197,21 @@ export function settings(env: Env, url: URL): Settings {
   if (!publicBase.endsWith('/')) publicBase += '/'
   // One passkey works in both modes when the auth host is a subdomain of the owner's domain.
   const rpId = (subdomainMode && !authHost.endsWith(`.${ownerHost}`) ? authHost : ownerHost).replace(/:\d+$/, '')
+  const mentions = bool(env.MENTIONS, true), comments = bool(env.COMMENTS, true)
+  const wellKnown = parseWellKnown(env.WELL_KNOWN_PATHS, ownerOrigin)
+  // The receiver writes the inbox, so readers must be able to ask for it.
+  if ((mentions || comments) && !wellKnown.some(e => e.path == INBOX_WELL_KNOWN.path)) wellKnown.push(INBOX_WELL_KNOWN)
   const s: Settings = {
     ownerHost, ownerOrigin, me: `${ownerOrigin}/`, authHost, issuer, subdomainMode, storageBase, publicBase,
     configUrl: `${ownerOrigin}${CONFIG_PATH}`,
     maxUploadBytes: num(env.MAX_UPLOAD_BYTES, 26214400),
     maxStorageBytes: num(env.MAX_STORAGE_BYTES, 0),
     writesPerMinute: num(env.WRITES_PER_MINUTE, 120),
-    wellKnown: parseWellKnown(env.WELL_KNOWN_PATHS, ownerOrigin),
+    wellKnown,
     postFallback: env.POST_FALLBACK == 'true',
     originUrl: env.ORIGIN_URL?.trim().replace(/\/+$/, '') || undefined,
-    allowHttp, rpId,
+    allowHttp, rpId, mentions, comments,
+    webpupOwnerLink: bool(env.WEBPUP_OWNER_LINK, true),
   }
   cache = { key, settings: s }
   return s

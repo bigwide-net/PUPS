@@ -13,10 +13,12 @@
     "./texts.json": "./texts.json"
   },
   "scripts": {
+    "sync-webpup": "node scripts/sync-webpup.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/node": "^24.19.2",
     "typescript": "^7.0.2",
     "vitest": "4.1"
   }

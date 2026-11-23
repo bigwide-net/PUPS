@@ -12,7 +12,7 @@ It takes about 15 minutes.
 
 ```
 git clone https://github.com/bigwide-net/PUPS.git
-cd PUPS/pups-bunny                                    # pups-ui, the owner pages, is next to it
+cd PUPS/pups-bunny                                    # the libraries it needs are in ../lib
 npm install
 npm run build
 ```
@@ -81,6 +81,8 @@ Done. The setup page then links to two checks:
 - `https://tim.example.com/personal-storage.json` should show its configuration.
 
 You can now connect apps. Manage them at `https://tim.example.com/pups/apps`.
+
+Your domain has no homepage yet: `https://tim.example.com/` forwards to the owner pages. On the page **Homepage** (`https://tim.example.com/pups/homepage`) you can install webpup, a homepage that shows your profile, posts and pages. Mentions and comments from other sites land in your inbox; the page *Apps* shows how many there are.
 
 ## If something doesn't work
 

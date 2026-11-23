@@ -2,7 +2,7 @@ import { ClientError } from './cimd'
 import type { Env } from './settings'
 
 /**
- * SSRF protection for client metadata fetches. Edge Scripts can't restrict fetch() to
+ * SSRF protection for client metadata fetches and the posts the built-in receiver fetches. Edge Scripts can't restrict fetch() to
  * public addresses, so the host is resolved with DNS over HTTPS first, and refused if any
  * of its A or AAAA records is not a public address.
  *
@@ -71,16 +71,16 @@ async function resolve(doh: string, host: string, type: 'A' | 'AAAA'): Promise<s
   return (body.Answer ?? []).filter(a => a.type == (type == 'A' ? 1 : 28)).map(a => a.data)
 }
 
-/** Throws a ClientError unless the host resolves, and only to public addresses. */
-export async function assertPublicHost(host: string, env: Env): Promise<void> {
+/** Throws a ClientError unless the host resolves, and only to public addresses. `what` names the URL in the message. */
+export async function assertPublicHost(host: string, env: Env, what = 'client_id'): Promise<void> {
   const doh = env.DOH_URL?.trim() || DEFAULT_DOH
   if (doh == 'off') return
   let addresses: string[]
   try {
     addresses = (await Promise.all([resolve(doh, host, 'A'), resolve(doh, host, 'AAAA')])).flat()
   } catch {
-    throw new ClientError(`The host ${host} of client_id could not be resolved`)
+    throw new ClientError(`The host ${host} of ${what} could not be resolved`)
   }
-  if (!addresses.length) throw new ClientError(`The host ${host} of client_id has no address`)
-  if (!addresses.every(isPublicAddress)) throw new ClientError(`The host ${host} of client_id resolves to a non-public address`)
+  if (!addresses.length) throw new ClientError(`The host ${host} of ${what} has no address`)
+  if (!addresses.every(isPublicAddress)) throw new ClientError(`The host ${host} of ${what} resolves to a non-public address`)
 }

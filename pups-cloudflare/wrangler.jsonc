@@ -4,7 +4,8 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-11-01",
 	// global_fetch_strictly_public: fetch() refuses non-public addresses after DNS
-	// resolution. This is the SSRF protection for client metadata document fetches.
+	// resolution. This is the SSRF protection for client metadata documents and the posts
+	// the built-in receiver fetches.
 	"compatibility_flags": [
 		"nodejs_compat",
 		"global_fetch_strictly_public"
@@ -12,7 +13,8 @@
 	"observability": {
 		"enabled": true
 	},
-	// OAuth state, owner credentials, grants and tokens: one SQLite-backed Durable Object.
+	// OAuth state, owner credentials, grants and tokens, the homepage setting, and the webmentions
+	// waiting to be checked: one SQLite-backed Durable Object.
 	"durable_objects": {
 		"bindings": [
 			{
@@ -32,7 +34,7 @@
 	"assets": {
 		"directory": "./node_modules/pups-ui/public"
 	},
-	// Uploaded files and /.well-known/host-meta.json. The code uses the binding FILES; set
+	// Uploaded files, /.well-known/host-meta.json and the inbox. The code uses the binding FILES; set
 	// bucket_name to the name of your bucket. Don't add a second binding for it. Never enable
 	// public access on the bucket: it also holds private files (RFC-6 "Private areas").
 	"r2_buckets": [
@@ -67,6 +69,12 @@
 		// "true": forward requests for unknown paths to the origin (Worker on a route in
 		// front of an existing website). Otherwise unknown paths get 404.
 		"ORIGIN_FALLBACK": "false",
+		// The built-in receiver: "false" turns off mentions (RFC-11, /pups/mention) or comments on
+		// your feeds (RFC-4, /pups/comments). Both put what they receive into your inbox.
+		"MENTIONS": "true",
+		"COMMENTS": "true",
+		// "false": webpup (the homepage) without the link to the owner pages at the bottom.
+		"WEBPUP_OWNER_LINK": "true",
 		// Local development only: accept plain HTTP. Never enable in production.
 		"DEV_ALLOW_HTTP": "false"
 	}

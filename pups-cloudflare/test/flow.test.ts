@@ -5,7 +5,7 @@ import { HOST_META_KEY } from '../src/hostmeta'
 import worker from '../src/index'
 import {
   approve, authorizeUrl, bearer, call, cimdFetches, connect, exchange, form, mockClientFetch, ORIGIN, PASSWORD, pkce, put,
-  registerClient, setupOwner, signedRequest,
+  registerClient, setupOwner, signedRequest, testCtx,
 } from './helpers'
 
 const app = registerClient('app.example')
@@ -500,6 +500,8 @@ describe('feed paths', () => {
       { path: '/pups/images/', url: `${ORIGIN}/pups/images/`, properties: ['https://bigwide.net/ns/avatar', 'https://bigwide.net/ns/banner'] },
       { path: '/pups/pages/', url: `${ORIGIN}/pups/pages/`, rels: ['https://bigwide.net/ns/webpup-pages'],
         properties: ['https://bigwide.net/ns/webpup-footer'], link_properties: ['https://bigwide.net/ns/webpup-hidden'] },
+      // Declared because the built-in receiver writes it (RFC-12).
+      { path: '/pups/private/inbox.json' },
     ])
   })
 
@@ -553,9 +555,9 @@ describe('feed paths', () => {
   it('falls back to the origin for declared files nobody uploaded, with ORIGIN_FALLBACK', async () => {
     const withFallback = { ...env, ORIGIN_FALLBACK: 'true' } as any
     vi.spyOn(globalThis, 'fetch').mockImplementationOnce(async () => new Response('from origin'))
-    expect(await (await worker.fetch(new Request(`${ORIGIN}/.well-known/contact.vcf`) as any, withFallback)).text()).toBe('from origin')
+    expect(await (await worker.fetch(new Request(`${ORIGIN}/.well-known/contact.vcf`) as any, withFallback, testCtx)).text()).toBe('from origin')
     // An uploaded file comes from storage.
-    expect(await (await worker.fetch(new Request(`${ORIGIN}/feed.json`) as any, withFallback)).text()).toContain('jsonfeed')
+    expect(await (await worker.fetch(new Request(`${ORIGIN}/feed.json`) as any, withFallback, testCtx)).text()).toContain('jsonfeed')
   })
 })
 

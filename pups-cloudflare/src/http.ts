@@ -14,7 +14,7 @@ export const json = (body: unknown, status = 200, headers: Record<string, string
     status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers },
   })
 
-export const EXPOSE_HEADERS = 'ETag, Location, WWW-Authenticate'
+export const EXPOSE_HEADERS = 'ETag, Location, WWW-Authenticate, Retry-After'
 
 /** Adds the CORS headers that every response of a CORS-enabled endpoint carries. */
 export function withCors(res: Response): Response {

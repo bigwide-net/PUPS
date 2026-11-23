@@ -88,6 +88,9 @@ export class PupsStore extends DurableObject<Env> {
       CREATE INDEX IF NOT EXISTS refresh_grant ON refresh_tokens (grant_id);
       CREATE TABLE IF NOT EXISTS write_counters (grant_id TEXT NOT NULL, minute INTEGER NOT NULL, count INTEGER NOT NULL,
         PRIMARY KEY (grant_id, minute));
+      CREATE TABLE IF NOT EXISTS mention_queue (key TEXT PRIMARY KEY, job TEXT NOT NULL, received_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS comment_status (id TEXT PRIMARY KEY, status TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, token TEXT NOT NULL, expires_at INTEGER NOT NULL);
     `)
     // Refresh state per grant: the current refresh token, the one it replaced and when, the
     // access token issued with the current one, and whether anything issued by that refresh
@@ -122,6 +125,7 @@ export class PupsStore extends DurableObject<Env> {
     this.sql.exec('DELETE FROM refresh_tokens WHERE expires_at < ?', now)
     this.sql.exec('DELETE FROM login_failures WHERE at < ?', now - 7 * 24 * 3600_000)
     this.sql.exec('DELETE FROM write_counters WHERE minute < ?', Math.floor(now / 60_000) - 1)
+    this.sql.exec('DELETE FROM comment_status WHERE expires_at < ?', now)
   }
 
   // --- Server secret ---------------------------------------------------------------
@@ -430,5 +434,71 @@ export class PupsStore extends DurableObject<Env> {
 
   storageUsed(): number {
     return Number(this.kvGet('storage_used') ?? 0)
+  }
+
+  // --- Locks ------------------------------------------------------------------------
+
+  /**
+   * Takes the lock `name` for at most `ttlMs` (in case its holder never returns it). Returns its token, or undefined
+   * while someone else holds it. The Durable Object runs one call at a time, so taking a lock is atomic.
+   */
+  lock(name: string, ttlMs: number): string | undefined {
+    const now = Date.now()
+    const held = this.one('SELECT expires_at FROM locks WHERE name = ?', name)
+    if (held && Number(held.expires_at) > now) return
+    const token = randomToken(16)
+    this.sql.exec(`INSERT INTO locks (name, token, expires_at) VALUES (?, ?, ?)
+      ON CONFLICT (name) DO UPDATE SET token = excluded.token, expires_at = excluded.expires_at`, name, token, now + ttlMs)
+    return token
+  }
+
+  unlock(name: string, token: string) {
+    this.sql.exec('DELETE FROM locks WHERE name = ? AND token = ?', name, token)
+  }
+
+  // --- Settings the owner chose, and markers -----------------------------------------
+
+  /** A JSON value, e.g. the homepage the owner chose. */
+  setting(key: string): unknown {
+    const v = this.kvGet(`setting:${key}`)
+    return v == undefined ? undefined : JSON.parse(v)
+  }
+
+  setSetting(key: string, value: unknown) {
+    if (value === undefined) this.sql.exec('DELETE FROM kv WHERE key = ?', `setting:${key}`)
+    else this.kvSet(`setting:${key}`, JSON.stringify(value))
+  }
+
+  // --- Webmentions waiting to be checked, and comment status pages (pups-inbox) ---------
+
+  queueGet(key: string): string | undefined {
+    return this.one('SELECT job FROM mention_queue WHERE key = ?', key)?.job as string | undefined
+  }
+
+  queuePut(key: string, job: string, receivedAt: number) {
+    this.sql.exec(`INSERT INTO mention_queue (key, job, received_at) VALUES (?, ?, ?)
+      ON CONFLICT (key) DO UPDATE SET job = excluded.job, received_at = excluded.received_at`, key, job, receivedAt)
+  }
+
+  queueDelete(key: string) {
+    this.sql.exec('DELETE FROM mention_queue WHERE key = ?', key)
+  }
+
+  queueCount(prefix = ''): number {
+    return Number(this.one("SELECT COUNT(*) AS n FROM mention_queue WHERE substr(key, 1, length(?)) = ?", prefix, prefix)?.n ?? 0)
+  }
+
+  queueOldest(): { key: string; job: string } | undefined {
+    const r = this.one('SELECT key, job FROM mention_queue ORDER BY received_at, key LIMIT 1')
+    return r && { key: r.key as string, job: r.job as string }
+  }
+
+  statusPut(id: string, status: string, expiresAt: number) {
+    this.sql.exec(`INSERT INTO comment_status (id, status, expires_at) VALUES (?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET status = excluded.status, expires_at = excluded.expires_at`, id, status, expiresAt)
+  }
+
+  statusGet(id: string, now = Date.now()): string | undefined {
+    return this.one('SELECT status FROM comment_status WHERE id = ? AND expires_at >= ?', id, now)?.status as string | undefined
   }
 }

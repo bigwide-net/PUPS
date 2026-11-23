@@ -507,6 +507,8 @@ describe('feed paths', () => {
       { path: '/pups/images/', url: `${ORIGIN}/pups/images/`, properties: ['https://bigwide.net/ns/avatar', 'https://bigwide.net/ns/banner'] },
       { path: '/pups/pages/', url: `${ORIGIN}/pups/pages/`, rels: ['https://bigwide.net/ns/webpup-pages'],
         properties: ['https://bigwide.net/ns/webpup-footer'], link_properties: ['https://bigwide.net/ns/webpup-hidden'] },
+      // Declared because the built-in receiver writes it (RFC-12).
+      { path: '/pups/private/inbox.json' },
     ])
   })
 

@@ -4,7 +4,7 @@
 namespace Pups\Test;
 
 test('pups-ui: the copies of owner.css, owner.js and texts.json match pups-ui, if it is checked out', function () {
-    $ui = dirname(__DIR__, 2) . '/pups-ui';
+    $ui = dirname(__DIR__, 2) . '/lib/pups-ui';
     if (!is_file("$ui/texts.json"))
         return;
     $root = dirname(__DIR__) . '/pups';

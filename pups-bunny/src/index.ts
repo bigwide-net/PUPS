@@ -1,10 +1,12 @@
-import { errorPage } from 'pups-ui'
+import { commentEndpoint, commentStatusEndpoint, dismissPage, inboxActionEndpoint, mentionEndpoint } from 'pups-inbox'
+import { errorPage, themeThumbnail, webpupResponse } from 'pups-ui'
 import { ownerCss, ownerJs } from 'pups-ui/assets'
 import { filesEndpoint, postEndpoint, serve } from './files'
-import { hostMetaEndpoint, serveHostMeta } from './hostmeta'
+import { ensureMentionLink, hostMetaEndpoint, serveHostMeta } from './hostmeta'
 import { cors, HttpError, htmlErrors, json, methodNotAllowed } from './http'
 import { authorize, configDocument, oauthMetadata, revoke, token } from './oauth'
-import { apps, login, logout, password, setup } from './owner'
+import { apps, homepage, homepageState, login, logout, password, setup, start } from './owner'
+import { receiver, work } from './receiver'
 import { covers, isPrivate, parsePath } from './paths'
 import { CONFIG_PATH, type Env, type Settings, settings, STORAGE_PREFIX } from './settings'
 
@@ -39,9 +41,16 @@ const getJson = (req: Request, body: () => unknown) => cors(req, () => {
   return json(body(), 200, { 'cache-control': 'no-cache' })
 })
 
+const notFound = () => errorPage('Not found', 'This page does not exist.', 404)
+const seeOther = (location: string) => new Response(null, { status: 303, headers: { location, 'cache-control': 'no-store' } })
+
 /** Owner pages and OAuth endpoints, on the auth host (the owner host in same-domain mode). */
 function authRoutes(req: Request, path: string, s: Settings, env: Env): Promise<Response> | undefined {
+  const thumbnail = /^\/pups\/assets\/themes\/([^/]+)\.jpg$/.exec(path)
+  if (thumbnail) return Promise.resolve(req.method == 'GET' && themeThumbnail(thumbnail[1]) || notFound())
   switch (path) {
+    case '/pups/': return htmlErrors(() => start(req, s, env))
+    case '/pups/homepage': return htmlErrors(() => homepage(req, s, env))
     case '/.well-known/oauth-authorization-server': return getJson(req, () => oauthMetadata(s))
     // The authorization endpoint and owner pages are never CORS-enabled.
     // Owner pages answer with HTML error pages, also for oversized values.
@@ -58,8 +67,46 @@ function authRoutes(req: Request, path: string, s: Settings, env: Env): Promise<
   if (a) return Promise.resolve(a)
 }
 
+/**
+ * The built-in receiver (pups-inbox): webmentions, comment status pages and the inbox actions, CORS-enabled, and the
+ * Dismiss page of readers without actions. A queued webmention is checked after the response (Bunny.v1.waitUntil).
+ */
+function receiverRoutes(req: Request, path: string, s: Settings, env: Env): Promise<Response> | undefined {
+  if (!s.mentions && !s.comments) return
+  const status = /^\/pups\/comments\/status\/([^/]+)$/.exec(path)
+  const queued = (endpoint: typeof mentionEndpoint) => cors(req, async () => {
+    const r = await receiver(s, env)
+    const res = await endpoint(req, r)
+    if (!res) throw new HttpError(404, 'not_found', 'Not found')
+    if (res.status == 201 || res.status == 202) {
+      // Without waitUntil (outside Bunny), the work runs on while the response is sent, as far as the runtime lets it.
+      const w = work(r)
+      env.waitUntil?.(w)
+    }
+    return res
+  })
+  if (path == '/pups/mention' && s.mentions) return queued(mentionEndpoint)
+  if (path == '/pups/comments' && s.comments) return queued(commentEndpoint)
+  if (status) return cors(req, async () => await commentStatusEndpoint(req, status[1], await receiver(s, env)) ?? notFound())
+  if (path == '/pups/inbox/action') return cors(req, async () => inboxActionEndpoint(req, await receiver(s, env)))
+  if (path == '/pups/inbox/dismiss') return receiver(s, env).then(r => dismissPage(req, r, s.ownerHost))
+}
+
+/** The homepage: webpup while it is installed, else / forwards to the owner pages. An existing website behind this server keeps /. */
+async function homeRoutes(req: Request, path: string, s: Settings, env: Env): Promise<Response | undefined> {
+  if (s.originUrl || (req.method != 'GET' && req.method != 'HEAD')) return
+  const webpup = ['/', '/index.html', '/webpups.js', '/webpup.css', '/theme.css', '/webpup-config.json'].includes(path) ||
+    path.startsWith('/p/') || path.startsWith('/webpup-themes/')
+  if (!webpup) return
+  const state = await homepageState(env)
+  if (!state) return path == '/' ? seeOther(s.subdomainMode ? `${s.issuer}/pups/` : '/pups/') : undefined
+  return webpupResponse(req, path, state, {
+    settingsUrl: `${s.issuer}/pups/homepage`, ...s.webpupOwnerLink && { ownerLink: `${s.issuer}/pups/` },
+  })
+}
+
 /** Discovery, the upload API and uploaded files, on the owner's domain. */
-function ownerRoutes(req: Request, url: URL, s: Settings, env: Env): Promise<Response> | undefined {
+function ownerRoutes(req: Request, url: URL, s: Settings, env: Env): Promise<Response | undefined> | undefined {
   const path = url.pathname
   switch (path) {
     case '/.well-known/host-meta.json': return cors(req, () => serveHostMeta(req, s, env))
@@ -67,6 +114,8 @@ function ownerRoutes(req: Request, url: URL, s: Settings, env: Env): Promise<Res
     case '/pups/host-meta': return cors(req, () => hostMetaEndpoint(req, s, env))
     case '/pups/post': if (s.postFallback) return cors(req, () => postEndpoint(req, s, env))
   }
+  const received = receiverRoutes(req, path, s, env)
+  if (received) return received
   if (path.startsWith(STORAGE_PREFIX)) return cors(req, () => filesEndpoint(req, path.slice(STORAGE_PREFIX.length - 1), s, env))
   // A private path at the domain root (e.g. with public_base there) needs a token that covers it, and
   // never comes from the origin.
@@ -87,6 +136,7 @@ function ownerRoutes(req: Request, url: URL, s: Settings, env: Env): Promise<Res
     const base = s.publicBase.slice(s.ownerOrigin.length)
     if (path.startsWith(base)) return cors(req, () => serve(req, path.slice(base.length - 1), s, env))
   }
+  return homeRoutes(req, path, s, env)
 }
 
 /**
@@ -111,8 +161,11 @@ async function route(req: Request, env: Env): Promise<Response> {
   const onOwner = host == s.ownerHost
   if (!onAuth && !onOwner) return errorPage('Unknown host', `This server answers for ${s.ownerHost}.`, 404)
 
-  const res = (onAuth ? authRoutes(req, url.pathname, s, env) : undefined) ?? (onOwner ? ownerRoutes(req, url, s, env) : undefined)
+  if (onOwner) await ensureMentionLink(s, env)
+  const res = await ((onAuth ? authRoutes(req, url.pathname, s, env) : undefined) ?? (onOwner ? ownerRoutes(req, url, s, env) : undefined))
   if (res) return res
+  // In auth subdomain mode, the auth host's root leads to the owner pages.
+  if (onAuth && !onOwner && url.pathname == '/') return seeOther('/pups/')
   if (s.originUrl && onOwner) return fromOrigin(req, url, s.originUrl)
   return errorPage('Not found', 'This page does not exist.', 404)
 }

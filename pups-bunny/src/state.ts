@@ -1,3 +1,4 @@
+import { type Job, STATUS_KEEP_MS, type Status } from 'pups-inbox'
 import { hashToken, randomToken } from './crypto'
 import type { Files } from './storage'
 
@@ -22,6 +23,9 @@ import type { Files } from './storage'
  *   _pups/sessions/<hash>.json   owner sessions (auth subdomain mode)
  *   _pups/clients/<hash>.json    cached client metadata documents
  *   _pups/approved/<hash>.json   apps the owner has approved before
+ *   _pups/settings/<key>.json    settings the owner chose (the homepage) and markers (the mention link)
+ *   _pups/mentions/queue/<key>.json   webmentions waiting to be checked (pups-inbox)
+ *   _pups/mentions/status/<id>.json   comment status pages, for 24 hours
  */
 
 export const STATE_PREFIX = '_pups/'
@@ -464,7 +468,8 @@ export class Store {
   /** Deletes expired codes, nonces, sessions and cached client documents, by their age. */
   async cleanup(now = Date.now()) {
     let budget = CLEANUP_MAX_DELETES
-    for (const [dir, maxAge] of [['codes', 24 * 3600_000], ['nonces', 24 * 3600_000], ['clients', 24 * 3600_000], ['sessions', SESSION_TTL]] as const) {
+    for (const [dir, maxAge] of [['codes', 24 * 3600_000], ['nonces', 24 * 3600_000], ['clients', 24 * 3600_000], ['sessions', SESSION_TTL],
+      ['mentions/status', STATUS_KEEP_MS]] as const) {
       for (const e of await this.files.list(`${STATE_PREFIX}${dir}/`)) {
         if (!budget) return
         if (e.isDirectory || !e.lastModified || e.lastModified > now - maxAge) continue
@@ -472,5 +477,46 @@ export class Store {
         budget--
       }
     }
+  }
+
+  // --- Settings the owner chose, and markers -----------------------------------------
+
+  /** A JSON value, e.g. the homepage the owner chose. */
+  setting = (key: string): Promise<unknown> => this.files.getJson(this.key('settings', key))
+
+  async setSetting(key: string, value: unknown) {
+    if (value === undefined) await this.files.delete(this.key('settings', key))
+    else await this.files.putJson(this.key('settings', key), value)
+  }
+
+  // --- Webmentions waiting to be checked, and comment status pages (pups-inbox) ---------
+
+  private queueDir = `${STATE_PREFIX}mentions/queue/`
+
+  queueGet = async (key: string) => await this.files.getJson<Job>(`${this.queueDir}${key}.json`) ?? undefined
+
+  async queuePut(key: string, job: Job) {
+    await this.files.putJson(`${this.queueDir}${key}.json`, job)
+  }
+
+  async queueDelete(key: string) {
+    await this.files.delete(`${this.queueDir}${key}.json`)
+  }
+
+  /** The waiting webmentions, oldest first: one listing. */
+  async queueKeys(prefix = ''): Promise<string[]> {
+    return (await this.files.list(this.queueDir))
+      .filter(e => !e.isDirectory && e.name.endsWith('.json') && e.name.startsWith(prefix))
+      .sort((a, b) => (a.lastModified ?? 0) - (b.lastModified ?? 0) || a.name.localeCompare(b.name))
+      .map(e => e.name.slice(0, -5))
+  }
+
+  async statusPut(id: string, status: Status, expiresAt: number) {
+    await this.files.putJson(this.key('mentions/status', id), { status, expiresAt })
+  }
+
+  async statusGet(id: string, now = Date.now()): Promise<Status | undefined> {
+    const f = await this.files.getJson<{ status: Status; expiresAt: number }>(this.key('mentions/status', id))
+    return f && f.expiresAt >= now ? f.status : undefined
   }
 }
