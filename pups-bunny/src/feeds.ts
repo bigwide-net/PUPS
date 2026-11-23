@@ -1,4 +1,7 @@
-import { archiveOwner, type Committed, FeedError, type FeedHost, isFeedPath, isKeptText, postItem, putKeptFeed, readItem } from 'pups-feeds'
+import {
+  archiveOwner, commentFeeds, type Committed, FeedError, type FeedHost, isFeedPath, isKeptText, keptFileOwner, postItem, putKeptFeed, readItem,
+} from 'pups-feeds'
+import { commentUrl } from 'pups-inbox'
 import { POST_URL_TEMPLATE_PROP } from 'pups-ui'
 import { authenticate, keyOf, requirePath, requireScope } from './files'
 import { readHostMeta } from './hostmeta'
@@ -28,6 +31,7 @@ export const feedHost = (s: Settings, env: Env): FeedHost => ({
     return hm.stored ? hm.doc.properties?.[POST_URL_TEMPLATE_PROP] : undefined
   },
   now: () => Date.now(),
+  ...s.comments && { commentEndpoint: commentUrl({ base: s.ownerOrigin }) },
 })
 
 /** Turns the errors of pups-feeds into this server's. */
@@ -58,11 +62,11 @@ export async function withFeedLock<T>(feedPath: string, fn: () => Promise<T>): P
   }
 }
 
-/** Refuses writes of a kept feed's archives (RFC-7 "Only the server writes archives"). */
-export async function refuseArchiveWrite(path: string, s: Settings, env: Env) {
-  const owner = archiveOwner(path, s.wellKnown)
+/** Refuses writes of a kept feed's archives and comment feeds (RFC-7 "Only the server writes archives", "Publishing comments"). */
+export async function refuseKeptFileWrite(path: string, s: Settings, env: Env) {
+  const owner = keptFileOwner(path, s.wellKnown)
   if (owner && isKeptText(await feedHost(s, env).read(owner)))
-    throw new HttpError(403, 'forbidden', `This server writes the archives of ${owner} (RFC-7). Change its items with PUT or POST of ${owner}.`)
+    throw new HttpError(403, 'forbidden', `This server writes the archives and comment feeds of ${owner} (RFC-7). Change its items with PUT or POST of ${owner}.`)
 }
 
 /**
@@ -77,6 +81,12 @@ async function writeCommitted(c: Committed, s: Settings, env: Env): Promise<stri
   if (!await store(env).reserveStorage(growth, s.maxStorageBytes)) throw new HttpError(507, 'insufficient_storage', 'The storage quota is reached')
   let etag = ''
   for (const f of encoded) etag = await files.put(keyOf(f.path), f.bytes)
+  for (const path of c.deletes) {
+    const old = await files.stat(keyOf(path))
+    if (!old) continue
+    await files.delete(keyOf(path))
+    await store(env).reserveStorage(-old.size, 0)
+  }
   return etag
 }
 
@@ -132,3 +142,13 @@ export async function postItemEndpoint(req: Request, rawPath: string, s: Setting
     return json(r.body, r.status, r.headers)
   })
 }
+
+/**
+ * The comment feeds of the owner's kept feeds (RFC-7 "Publishing comments", pups-feeds) for the built-in receiver: approved
+ * comments are published under the lock of their post's feed. `ownerPath` maps the URLs of posts to storage paths.
+ */
+export const serverCommentFeeds = (s: Settings, env: Env, ownerPath: (url: string) => string | undefined) => commentFeeds({
+  host: feedHost(s, env), wellKnown: s.wellKnown, ownerPath,
+  withLock: (feedPath, fn) => withFeedLock(feedPath, fn),
+  write: async c => void await feedErrors(async () => writeCommitted(c, s, env)),
+})

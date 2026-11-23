@@ -21,6 +21,7 @@
     "pups-ui": "file:../pups-ui"
   },
   "devDependencies": {
+    "pups-feeds": "file:../pups-feeds",
     "typescript": "^7.0.2",
     "vitest": "4.1"
   }

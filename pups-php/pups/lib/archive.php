@@ -9,6 +9,9 @@ namespace Pups;
  * archive when the newest is full, applies edits and deletes in the item's archive, and
  * writes the feed file with copies of the newest items. Apps never write archives.
  *
+ * If the feed's `_submissions` names this server's comment endpoint, the server also keeps the
+ * posts' `_source.comments` (RFC-1): the comment feed and the counts that comments.php writes.
+ *
  * Only feed files with `"_pups": { "pupsControlled": true }` are kept; others are ordinary
  * files. Documents are handled as objects (stdClass), so that `{}` stays `{}` and fields the
  * server doesn't know survive unchanged.
@@ -29,6 +32,8 @@ const FEED_COMMENT = 'This feed is kept by a Personal Upload Server (PUPS), foll
     . '. It contains the newest items; all items are in the archives, starting with the one at _archive.archive_url.';
 /** Top-level fields of the feed file that the server sets, not the apps. */
 const MANAGED_FIELDS = ['version', 'home_page_url', 'feed_url', 'user_comment', 'next_url', 'items', '_archive'];
+/** Names in `/feed/` that belong to the main feed, so no named feed can have them (RFC-7 "Named feeds"). */
+const RESERVED_FEED_NAMES = ['images', 'media', 'comments'];
 
 /**
  * Whether `path` is a feed file (RFC-7 "Feeds and their files"): a declared file with the feed
@@ -42,7 +47,7 @@ function isFeedPath(string $path, Config $c): bool
         if ($e['path'] === $path && str_ends_with($path, '.json'))
             return true;
         if (str_ends_with($e['path'], '/') && str_starts_with($path, $e['path'])
-                && preg_match('#^(' . FEED_NAME . ')\.json$#D', substr($path, strlen($e['path'])), $m) && !in_array($m[1], ['images', 'media'], true))
+                && preg_match('#^(' . FEED_NAME . ')\.json$#D', substr($path, strlen($e['path'])), $m) && !in_array($m[1], RESERVED_FEED_NAMES, true))
             return true;
     }
     return false;
@@ -52,6 +57,67 @@ function isFeedPath(string $path, Config $c): bool
 function archiveOwner(string $path, Config $c): ?string
 {
     return preg_match('#^(/.+)/feed\.\d{6,}\.json$#D', $path, $m) && isFeedPath("$m[1].json", $c) ? "$m[1].json" : null;
+}
+
+/**
+ * The feed file whose archives or comment feeds `path` belongs to, if it were kept
+ * (`/feed/feed.000002.json`, `/feed/comments/47.json` → `/feed.json`), or null. Only the server writes these.
+ */
+function keptFileOwner(string $path, Config $c): ?string
+{
+    return archiveOwner($path, $c)
+        ?? (preg_match('#^(/.+?)/comments/.+$#D', $path, $m) && isFeedPath("$m[1].json", $c) ? "$m[1].json" : null);
+}
+
+/**
+ * The comment feed of a post: `<feed dir>/comments/<index>.json`, e.g. /feed/comments/47.json (RFC-7
+ * "Publishing comments"). Replies to a comment will go to `<feed dir>/comments/<index>/<comment id>.json`; this
+ * server accepts comments on posts only so far.
+ */
+function commentFeedPath(string $feedPath, int $index): string
+{
+    return substr($feedPath, 0, -5) . "/comments/$index.json";
+}
+
+/** An item's `_source.comments` (RFC-1), if it has a valid `count`. */
+function commentsOf(\stdClass $item): ?\stdClass
+{
+    $c = ($item->_source ?? null) instanceof \stdClass ? ($item->_source->comments ?? null) : null;
+    return $c instanceof \stdClass && is_int($c->count ?? null) && $c->count >= 0 ? $c : null;
+}
+
+/** Sets or removes an item's `_source.comments`; `_source` goes when nothing else is left in it. */
+function setComments(\stdClass $item, ?\stdClass $comments): void
+{
+    $source = ($item->_source ?? null) instanceof \stdClass ? $item->_source : (object) ['about' => SOURCE_ABOUT];
+    if ($comments) {
+        $source = (object) (['about' => SOURCE_ABOUT] + (array) $source);
+        $source->comments = $comments;
+    } else
+        unset($source->comments);
+    if (array_diff(array_keys((array) $source), ['about']))
+        $item->_source = $source;
+    else
+        unset($item->_source);
+}
+
+/** Whether an item accepts comments, as far as it says (RFC-4 `_commenting`, default true). */
+function allowsComments(\stdClass $item): bool
+{
+    return !(($item->_commenting ?? null) instanceof \stdClass && ($item->_commenting->allowComments ?? null) === false);
+}
+
+/** Throws 507 if writing `files` (path => text) would exceed the storage quota. */
+function checkQuota(Ctx $ctx, array $files): void
+{
+    $max = $ctx->config->maxStorageBytes;
+    if (!$max)
+        return;
+    $growth = 0;
+    foreach ($files as $p => $t)
+        $growth += strlen($t) - ($ctx->files->stat($p)['size'] ?? 0);
+    if ($growth > 0 && $ctx->files->used() + $growth > $max)
+        throw new HttpError(507, 'insufficient_storage', 'The storage quota is reached');
 }
 
 function archivePath(string $feedPath, int $n): string
@@ -161,6 +227,10 @@ final class KeptFeed
     /** @var array<int, true> */
     private array $changed = [];
     private string|false|null $template = false;
+    /** Whether every post's `_source.comments` must be brought up to date on commit(). */
+    private bool $refresh = false;
+    /** Indexes of deleted posts, whose comment feeds go on commit(). */
+    private array $dropped = [];
 
     /** `stored` is the stored feed file, or null for a new feed. A feed without archives gets them now. */
     public function __construct(private Ctx $ctx, public string $path, ?\stdClass $stored)
@@ -197,6 +267,7 @@ final class KeptFeed
         $this->oldChain = is_string($this->doc->next_url ?? null) ? $this->doc->next_url : null;
         foreach (array_chunk(array_reverse($items), $this->size) as $n => $chunk)
             $this->create($n, array_reverse($chunk));
+        $this->refresh = true;
     }
 
     /** The items of a document that are objects with an id. Items without an id get one. */
@@ -351,6 +422,75 @@ final class KeptFeed
         $item->url = strtr($t, ['{feed}' => substr($this->path, 1, -5), '{index}' => (string) $index, '{id}' => rawurlencode(itemId($item))]);
     }
 
+    /** Whether this server keeps the posts' `_source.comments`: `_submissions` names its comment endpoint. */
+    private function ownsComments(): bool
+    {
+        $s = $this->doc->_submissions ?? null;
+        return $this->ctx->config->comments && $s instanceof \stdClass && ($s->url ?? null) === commentUrl($this->ctx->config);
+    }
+
+    /** Whether the feed accepts comments at this server: it has a comments policy. */
+    private function commentsOpen(): bool
+    {
+        return $this->ownsComments() && ($this->doc->_submissions->policies ?? null) instanceof \stdClass
+            && ($this->doc->_submissions->policies->comments ?? null) instanceof \stdClass;
+    }
+
+    /**
+     * Sets an item's `_source.comments` as this server keeps it: the comment feed and counts of `old`, the
+     * stored item, if it has comments; else `{count: 0, total: 0}` while the post accepts comments, and
+     * nothing otherwise. Unless `always`, only in a feed whose comments this server keeps; elsewhere the
+     * item keeps what the app sent.
+     */
+    private function withComments(\stdClass $item, ?\stdClass $old, bool $always = false): void
+    {
+        if (!$always && !$this->ownsComments())
+            return;
+        $c = $old ? commentsOf($old) : null;
+        setComments($item, $c && $c->count ? deepCopy($c)
+            : ($this->commentsOpen() && allowsComments($item) ? (object) ['count' => 0, 'total' => 0] : null));
+    }
+
+    /** Brings every post's `_source.comments` up to date, e.g. after the feed was opened for comments. */
+    private function refreshComments(): void
+    {
+        for ($n = 0; $n <= ($this->newest ?? -1); $n++)
+            foreach ($this->archive($n)?->items ?? [] as $item) {
+                $before = canonical($item);
+                $this->withComments($item, deepCopy($item), true);
+                if (canonical($item) !== $before)
+                    $this->changed[$n] = true;
+            }
+    }
+
+    /** An item by its id, in any archive: ['item', 'address'], or null. */
+    public function get(string $id): ?array
+    {
+        $at = $this->find($id, null, true);
+        return $at ? ['item' => $this->archives[$at[0]]->items[$at[1]], 'address' => $this->address($at[0], $id)] : null;
+    }
+
+    /**
+     * Sets a post's comment feed and counts (RFC-1 `_source.comments`) after a comment was published or
+     * removed. The post isn't modified otherwise and gets no `date_modified`. Returns false if there is no
+     * such post.
+     */
+    public function setCommentCounts(string $id, string $feedUrl, int $count, int $total): bool
+    {
+        $at = $this->find($id, null, true);
+        if ($at === null)
+            return false;
+        $item = $this->archives[$at[0]]->items[$at[1]];
+        $before = canonical($item);
+        if ($count)
+            setComments($item, (object) ['feedUrl' => $feedUrl, 'count' => $count, 'total' => $total]);
+        else
+            $this->withComments($item, null, true);
+        if (canonical($item) !== $before)
+            $this->changed[$at[0]] = true;
+        return true;
+    }
+
     private function now(): string
     {
         return gmdate('Y-m-d\TH:i:s\Z', intdiv($this->ctx->now(), 1000));
@@ -378,6 +518,7 @@ final class KeptFeed
             $item->date_published = $this->now();
         setIndex($item, $this->next++);
         $this->withPostUrl($item);
+        $this->withComments($item, null);
         if ($this->newest !== null && count($this->newestArchive()->items) < $this->size) {
             array_unshift($this->archives[$this->newest]->items, $item);
             $this->changed[$this->newest] = true;
@@ -399,6 +540,7 @@ final class KeptFeed
         if (is_string($old->date_published ?? null) && !is_string($item->date_published ?? null))
             $item->date_published = $old->date_published;
         $this->withPostUrl($item);
+        $this->withComments($item, $old);
         $probe = clone $item;
         if (!isset($probe->date_modified) && isset($old->date_modified))
             $probe->date_modified = $old->date_modified;
@@ -422,6 +564,8 @@ final class KeptFeed
             return null;
         [$item] = array_splice($this->archives[$at[0]]->items, $at[1], 1);
         $this->changed[$at[0]] = true;
+        if (($index = itemIndex($item)) !== null)
+            $this->dropped[] = $index;
         return ['item' => $item, 'address' => $this->address($at[0], $id)];
     }
 
@@ -457,7 +601,10 @@ final class KeptFeed
             if ($id === null || !isset($before[$id]) || canonical($item) !== canonical($before[$id]))
                 $put[] = $item;
         }
+        $comments = [$this->ownsComments(), $this->commentsOpen()];
         $this->setFields($body);
+        if ($comments !== [$this->ownsComments(), $this->commentsOpen()])
+            $this->refresh = true;
         // Items the app removed from the feed file are deleted.
         foreach (array_diff_key($before, $seen) as $id => $item)
             $this->delete((string) $id, itemIndex($item));
@@ -511,6 +658,9 @@ final class KeptFeed
      */
     public function commit(): array
     {
+        if ($this->refresh)
+            $this->refreshComments();
+        $this->refresh = false;
         $files = [];
         ksort($this->changed);
         $updates = publicUrl($this->path, $this->ctx->config);
@@ -522,16 +672,17 @@ final class KeptFeed
             $files[archivePath($this->path, $n)] = json_encode($a, FEED_JSON | JSON_PRETTY_PRINT);
         }
         $text = $files[$this->path] = json_encode($this->feedFile(), FEED_JSON | JSON_PRETTY_PRINT);
-        $c = $this->ctx->config;
-        if ($c->maxStorageBytes) {
-            $growth = 0;
-            foreach ($files as $p => $t)
-                $growth += strlen($t) - ($this->ctx->files->stat($p)['size'] ?? 0);
-            if ($growth > 0 && $this->ctx->files->used() + $growth > $c->maxStorageBytes)
-                throw new HttpError(507, 'insufficient_storage', 'The storage quota is reached');
-        }
+        checkQuota($this->ctx, $files);
         foreach ($files as $p => $t)
             $etag = $this->ctx->files->write($p, $t);
+        // A deleted post's comments go with it.
+        foreach ($this->dropped as $index) {
+            $comments = commentFeedPath($this->path, $index);
+            if ($this->ctx->files->stat($comments))
+                $this->ctx->files->delete($comments);
+            $this->ctx->files->deleteDir(substr($comments, 0, -5) . '/');
+        }
+        $this->dropped = [];
         Log::event('feed.written', ['path' => $this->path, 'archives' => array_keys($this->changed), 'newest' => $this->newest, 'next' => $this->next]);
         $this->changed = [];
         return ['text' => $text, 'etag' => $etag];

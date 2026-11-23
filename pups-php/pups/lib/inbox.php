@@ -7,6 +7,8 @@ namespace Pups;
  * mentions (RFC-11) and the comments waiting for the owner (RFC-4). This server writes it
  * as `pups`, under the storage lock. Every item has a Dismiss action (RFC-9) with a
  * capability URL, and a link to a confirmation page for readers without actions (RFC-8).
+ * Comments on feeds that republish them (RFC-4 `republish: "full"` or `"summary"`) also have an
+ * Approve action, which publishes them in the post's comment feed (comments.php).
  */
 
 const INBOX_WRITER = 'pups';
@@ -156,6 +158,7 @@ function newInbox(Ctx $ctx): array
         '_inbox' => ['about' => INBOX_ABOUT, 'writer' => INBOX_WRITER,
             'categories' => array_keys(array_filter(['mentions' => $c->mentions, 'moderation' => $c->comments]))],
         '_actions' => ['about' => ACTIONS_ABOUT, 'templates' => [
+            'approve' => ['type' => 'button', 'label' => 'Approve', 'style' => 'major', 'action' => "$c->base/pups/inbox/action?do=approve&id={id}&key=" . inboxKey($ctx)],
             'dismiss' => ['type' => 'button', 'label' => 'Dismiss', 'action' => "$c->base/pups/inbox/action?id={id}&key=" . inboxKey($ctx)],
         ]],
         'items' => [],
@@ -173,10 +176,19 @@ function isInboxKey(Ctx $ctx, ?string $key): bool
     return is_string($key) && hash_equals(inboxKey($ctx), $key);
 }
 
-/** The page where readers without actions dismiss an item (RFC-8 fallback). */
-function dismissPageUrl(Ctx $ctx, string $id): string
+/** The page where readers without actions dismiss or approve an item (RFC-8 fallback). */
+function dismissPageUrl(Ctx $ctx, string $id, string $do = 'dismiss'): string
 {
-    return $ctx->config->base . '/pups/inbox/dismiss?id=' . rawurlencode($id) . '&key=' . inboxKey($ctx);
+    return $ctx->config->base . "/pups/inbox/$do?id=" . rawurlencode($id) . '&key=' . inboxKey($ctx);
+}
+
+/** Whether an inbox item has the Approve action: a comment that the owner can publish. */
+function isApprovable(array $item): bool
+{
+    foreach ($item['_actions']['actions'] ?? [] as $a)
+        if (($a['template'] ?? null) === 'approve')
+            return true;
+    return false;
 }
 
 /** Newest first; mentions older than 30 days are dropped. */
@@ -198,26 +210,32 @@ function dropOldestMention(array &$items): bool
 }
 
 /**
- * Where an item comes from, for its action area: "Mention from @bob.example at bob.example/feed.json#p-81",
- * with the account if one was verified, else the host of the source. Returns [text before the
- * link, link text].
+ * Where an item comes from, for its action area: "Mention from @bob.example.", with the account if one
+ * was verified, else the host of the source. It links to the source.
  */
-function originText(string $type, string $source, ?string $account): array
+function originText(string $type, string $source, ?string $account, bool $edit = false): string
 {
-    $what = ['submission' => 'Comment', 'reply' => 'Reply'][$type] ?? 'Mention';
-    return ["$what from " . ($account ?? urlHost($source)) . ' at ', sanitizeText(preg_replace('#^https?://#i', '', $source), 100)];
+    $what = ['submission' => $edit ? 'Edited comment' : 'Comment', 'reply' => 'Reply'][$type] ?? 'Mention';
+    return "$what from " . ($account ?? urlHost($source)) . '.';
 }
 
 /**
  * An inbox item. `post` is the parsed item (feeds.php); `content` its HTML for the inbox. The
- * account is included only as `attribution()` verified it.
+ * account is included only as `attribution()` verified it. A comment that the owner can publish
+ * gets Approve as the first action, next to Dismiss, and `_pups.republish`: `publish`, the
+ * feed's `republish` (`full` or `summary`) that its author agreed to. `edit` says that an
+ * earlier version is published already.
  */
-function inboxItem(Ctx $ctx, string $id, string $type, string $source, string $target, array $post, string $content, ?string $author, ?string $account): array
+function inboxItem(Ctx $ctx, string $id, string $type, string $source, string $target, array $post, string $content, ?string $author, ?string $account,
+    ?string $publish = null, bool $edit = false): array
 {
+    $approve = $publish !== null;
     $url = $post['url'] ?? null;
-    [$origin, $at] = originText($type, $source, $account);
-    $fallback = '<p class="without-extension-actions">' . h($origin) . '<a href="' . h($source) . '">' . h($at) . '</a></p>'
-        . '<p class="without-extension-actions"><a href="' . h(dismissPageUrl($ctx, $id)) . '">Dismiss</a></p>';
+    $origin = originText($type, $source, $account, $edit);
+    $link = fn(string $do, string $label) => '<p class="without-extension-actions"><a href="' . h(dismissPageUrl($ctx, $id, $do)) . "\">$label</a></p>";
+    $from = '<p class="without-extension-actions"><a href="' . h($source) . '">' . h($origin) . '</a></p>';
+    $fallback = $approve ? $link('approve', 'Approve') . $link('dismiss', 'Dismiss') . $from : $from . $link('dismiss', 'Dismiss');
+    $origin = ['type' => 'display', 'text' => $origin, 'url' => $source, 'group' => 'origin'];
     return array_filter([
         'id' => $id,
         'url' => is_string($url) && preg_match('#^https?://#i', $url) && isCleanUrlString($url) ? $url : null,
@@ -227,7 +245,10 @@ function inboxItem(Ctx $ctx, string $id, string $type, string $source, string $t
         'authors' => ($name = sanitizeText($author, 100)) ? [['name' => $name]] : null,
         '_source' => $account ? ['about' => SOURCE_ABOUT, 'accounts' => ['socialspec' => $account]] : null,
         '_inbox' => array_filter(['about' => INBOX_ABOUT, 'type' => $type, 'source' => $source, 'target' => $target, 'postDate' => $post['date'] ?? null]),
-        '_actions' => ['about' => ACTIONS_ABOUT, 'actions' => [['type' => 'display', 'text' => $origin . $at, 'url' => $source], ['template' => 'dismiss']]],
+        '_pups' => $approve ? ['republish' => $publish] : null,
+        '_actions' => ['about' => ACTIONS_ABOUT, 'actions' => $approve
+            ? [['template' => 'approve', 'group' => 'decide'], ['template' => 'dismiss', 'group' => 'decide'], $origin]
+            : [$origin, ['template' => 'dismiss', 'group' => 'dismiss']]],
     ], fn($v) => $v !== null);
 }
 

@@ -5,9 +5,9 @@ The built-in **receiver** of the Personal Upload Server: it takes what other sit
 ## What it does
 
 - **Mentions** ([RFC-11](https://github.com/bigwide-net/RFCs/blob/main/RFC-11-Mentions.md)): webmentions at `/pups/mention`, answered with `202` and checked later. A post lands in the inbox if it names `@ownerdomain` in its visible text, or replies to one of the owner's items (also in archives, and items a group republished for the owner).
-- **Comments** ([RFC-4](https://github.com/bigwide-net/RFCs/blob/main/RFC-4-Feed-Submissions.md)) on the owner's feeds that name `/pups/comments` in `_submissions.url`: `201` with a status page (`/pups/comments/status/s-…`, 24 hours), checked against the feed's policy, put into the inbox, never published. Edits and deletes as the policy allows.
+- **Comments** ([RFC-4](https://github.com/bigwide-net/RFCs/blob/main/RFC-4-Feed-Submissions.md)) on the owner's feeds that name `/pups/comments` in `_submissions.url`: `201` with a status page (`/pups/comments/status/s-…`, 24 hours), checked against the feed's policy and put into the inbox. With `republish: "full"` in a kept feed, the item has an **Approve** action that publishes the comment in the post's comment feed (`/feed/comments/<index>.json`, through `Receiver.commentFeeds`); the status page says `pending` (30 days) until then. With `republish: "no"`, comments are never published. Edits and deletes as the policy allows, also of published comments; an edit of a published comment waits for approval again.
 - **Fetching posts** safely: JSON Feed, RSS and HTML pages with h-entry; 1 MB, 10 s, 3 redirects, never the server's own endpoints.
-- **Dismiss**: an RFC-9 action on every item (`/pups/inbox/action`, with a key derived from the server secret) and an RFC-8 page that asks first (`/pups/inbox/dismiss`).
+- **Dismiss** and **Approve**: RFC-9 actions (`/pups/inbox/action`, `do=approve`, with a key derived from the server secret) and RFC-8 pages that ask first (`/pups/inbox/dismiss`, `/pups/inbox/approve`). Dismissing a comment that could be approved rejects it (`moderation-rejected`).
 - **Limits** as in PHP: 100 items, 10 per host; mentions are dropped after 30 days or to make room, comments never. At most 100 webmentions wait, 5 per host (`429`).
 
 ## Used by
@@ -27,6 +27,7 @@ The package does no I/O of its own. A server passes in a `Receiver` (`src/receiv
 | --- | --- |
 | `inbox: InboxStore` | `read()` the inbox with a version, and `write(text, version)` only if it is unchanged (false otherwise; the package retries). |
 | `feeds: FeedSource` | The storage path of a URL the server serves itself (`ownerPath`), reading such a file, `fetch`, and optionally `checkUrl` (SSRF check). |
+| `commentFeeds?: CommentFeeds` | The comment feeds of the owner's kept feeds, usually pups-feeds' `commentFeeds()` with the server's lock and writes. Without it, comments are never published. |
 | `queue: JobQueue` | The webmentions waiting to be checked: get, put, delete, count by key prefix, the oldest. |
 | `statuses: StatusStore` | The comment status pages, with their expiry. |
 | the rest | The owner's origin and host, the switches, `inboxKey(secret)`, a clock, a logger. |

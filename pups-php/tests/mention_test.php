@@ -109,11 +109,11 @@ test('mentions: a post that names the owner reaches the inbox, attributed and wi
     $item = $feed['items'][0];
     eq([$item['_inbox']['type'], $item['_inbox']['source'], $item['_inbox']['target'], $item['_inbox']['postDate']], ['mention', "$src#p-81", ORIGIN . '/', '2026-11-19T09:00:00Z']);
     eq([$item['title'], $item['url'], $item['authors'][0]['name'], $item['_source']['accounts']['socialspec']], ['Feeds are back', 'https://bob.example/2026/feeds', 'Bob', '@bob.example']);
-    contains($item['content_html'], '<p>Great talk by @alice.pups.test yesterday.</p><p class="without-extension-actions">Mention from @bob.example at '
-        . "<a href=\"$src#p-81\">bob.example/feed/feed.000004.json#p-81</a></p>"
+    contains($item['content_html'], '<p>Great talk by @alice.pups.test yesterday.</p><p class="without-extension-actions">'
+        . "<a href=\"$src#p-81\">Mention from @bob.example.</a></p>"
         . '<p class="without-extension-actions"><a href="' . ORIGIN . '/pups/inbox/dismiss?id=' . $item['id'] . '&amp;key=');
-    eq($item['_actions']['actions'], [['type' => 'display', 'text' => 'Mention from @bob.example at bob.example/feed/feed.000004.json#p-81', 'url' => "$src#p-81"],
-        ['template' => 'dismiss']]);
+    eq($item['_actions']['actions'], [['type' => 'display', 'text' => 'Mention from @bob.example.', 'url' => "$src#p-81", 'group' => 'origin'],
+        ['template' => 'dismiss', 'group' => 'dismiss']]);
     contains($feed['_actions']['templates']['dismiss']['action'], ORIGIN . '/pups/inbox/action?id={id}&key=');
 
     // The same webmention again changes nothing; once the handle is gone, the mention is removed.
@@ -239,8 +239,7 @@ test('replies: to the owner\'s items, also in archives, and to items republished
     $r3 = array_values(array_filter(inbox($t)['items'], fn($i) => $i['_inbox']['source'] === "$comments#r3"))[0];
     eq($r3['_source']['accounts']['socialspec'], '@bob.example', 'stated by the server that republished it');
     $r1 = array_values(array_filter(inbox($t)['items'], fn($i) => $i['_inbox']['source'] === "$comments#r1"))[0];
-    eq([$r3['_actions']['actions'][0]['text'], $r1['_actions']['actions'][0]['text']], ['Reply from @bob.example at rm.example/groups/two/comments/g1.json#r3',
-        'Reply from rm.example at rm.example/groups/two/comments/g1.json#r1'], 'the host without a verified account');
+    eq([$r3['_actions']['actions'][0]['text'], $r1['_actions']['actions'][0]['text']], ['Reply from @bob.example.', 'Reply from rm.example.'], 'the host without a verified account');
 });
 
 test('comments: on the owner\'s posts, checked against the feed\'s rules, into the inbox, not published', function () {
@@ -268,7 +267,7 @@ test('comments: on the owner\'s posts, checked against the feed\'s rules, into t
     $item = $items[0];
     eq([$item['_inbox']['type'], $item['_inbox']['target'], $item['authors'][0]['name'], $item['_source']['accounts']['socialspec']], ['submission', ORIGIN . '/feed.json#p-12', 'Bob', '@bob.example']);
     contains($item['content_html'], '<p>Agreed, but discovery is <b>hard</b>.</p>', 'only the allowlist, only http(s) links');
-    eq($item['_actions']['actions'][0], ['type' => 'display', 'text' => 'Comment from @bob.example at bob.example/comments.json#c-17', 'url' => 'https://bob.example/comments.json#c-17']);
+    eq($item['_actions']['actions'][0], ['type' => 'display', 'text' => 'Comment from @bob.example.', 'url' => 'https://bob.example/comments.json#c-17', 'group' => 'origin']);
     notContains($item['content_html'], 'script');
     notContains($item['content_html'], 'onclick');
     notContains(json_decode($t->ctx->files->read('/feed.json'), true)['items'][0]['content_html'], 'Agreed', 'nothing is published');

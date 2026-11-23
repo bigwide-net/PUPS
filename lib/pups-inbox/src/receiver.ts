@@ -1,6 +1,7 @@
 import { isCleanUrlString, sanitizeText } from 'pups-ui'
 import { accountHost, handles, handleText, plainText, postHtml } from './content'
 import { type Feed, FetchError, type FeedSource, findItem, loadFeed, type Post, readLimited, resolveUrl, sameRef, splitRef, urlHost } from './feeds'
+import { type CommentFeeds, isSameComment, PUBLISHING } from './comments'
 import {
   checkRoomForSubmission, excerptHtml, findInboxItem, ForeignInbox, type InboxContext, InboxFull, inboxItem, putInboxItem, removeInboxItem,
 } from './inbox'
@@ -8,7 +9,9 @@ import {
 /**
  * The built-in receiver: mentions of the owner (RFC-11) at /pups/mention, linked from host-meta.json, and comments on
  * the owner's posts (RFC-4) at /pups/comments, named in the feeds' `_submissions` by the client. Both go into the
- * inbox (RFC-12); comments are not republished (`republish: "no"`), the owner reads and dismisses them.
+ * inbox (RFC-12). Comments on a feed with `republish: "full"` or `"summary"` wait there for the owner's approval, and
+ * are then published in the post's comment feed (Receiver.commentFeeds), in full or as an abstract; with
+ * `republish: "no"` (or a value this server doesn't know), the owner only reads them.
  *
  * The endpoints do the cheap checks and queue the rest. The queue is worked through after the response has been
  * sent (processQueue(), with the platform's waitUntil), because every check fetches documents from other servers.
@@ -20,12 +23,13 @@ export const MAX_QUEUE = 100
 export const MAX_QUEUE_PER_HOST = 5
 /** A job that fails this often (e.g. because it crashed the worker) is dropped. */
 const MAX_ATTEMPTS = 3
-/** Comment status pages are kept this long (RFC-4: at least an hour). */
+/** Comment status pages are kept this long (RFC-4: at least an hour); those of comments waiting for approval longer. */
 export const STATUS_KEEP_MS = 24 * 3600_000
+export const PENDING_KEEP_MS = 30 * 24 * 3600_000
 /** A comment keeps its own date if it is at most this far from the time of submission (RFC-4). */
 const DATE_SLACK_MS = 30 * 60_000
 /** The policy defaults of RFC-4 "Policies". */
-const POLICY_DEFAULTS = { title: 'none', minLength: 2, maxLength: 2000, requireSocialSpec: false, allowEdit: false, allowDelete: false }
+const POLICY_DEFAULTS = { title: 'none', minLength: 2, maxLength: 2000, requireSocialSpec: false, allowEdit: false, allowDelete: false, commentLimit: 1000 }
 type Policy = typeof POLICY_DEFAULTS
 const MAX_TITLE_CHARS = 300
 const URL_LIMIT = 2048
@@ -70,6 +74,8 @@ export interface Receiver extends InboxContext {
   feeds: FeedSource
   queue: JobQueue
   statuses: StatusStore
+  /** The comment feeds of the owner's kept feeds, if the server keeps feeds: approved comments are published there. */
+  commentFeeds?: CommentFeeds
   log(event: string, data?: Record<string, unknown>): void
 }
 
@@ -182,7 +188,7 @@ export async function commentEndpoint(req: Request, r: Receiver): Promise<Respon
     })
     if (existing && !sameRef(existing._inbox?.target, target))
       throw new ReceiverError(400, 'in-reply-to-mismatch', 'This source was submitted to another post')
-    if (existing && !post.policy.allowEdit && !post.policy.allowDelete)
+    if ((existing || await r.commentFeeds?.published(target, id)) && !post.policy.allowEdit && !post.policy.allowDelete)
       throw new ReceiverError(400, 'edit-not-allowed', 'This comment was submitted already, and the feed allows neither edits nor deletes')
     try {
       await checkRoomForSubmission(r, id, urlHost(source))
@@ -209,13 +215,15 @@ export async function commentStatusEndpoint(req: Request, id: string, r: Receive
 }
 
 /**
- * The post a comment answers, if it may be commented on here. Throws 400 otherwise (RFC-4: the cheap checks are
- * synchronous).
+ * The post a comment answers, if it may be commented on here, with the feed's `republish`. Throws 400 otherwise (RFC-4:
+ * the cheap checks are synchronous).
  */
-async function commentTarget(r: Receiver, target: string): Promise<{ feed: Feed; item: Post; policy: Policy }> {
+async function commentTarget(r: Receiver, target: string): Promise<{ feed: Feed; item: Post; policy: Policy; republish: string }> {
   const [url, id] = splitRef(target)
   if (id == undefined) throw new ReceiverError(400, 'invalid_request', 'Only comments on posts are accepted: target must be a feed URL + #id')
   if (r.feeds.ownerPath(url) == undefined) throw new ReceiverError(400, 'invalid_request', 'target is not a feed on this server')
+  if (r.commentFeeds?.isCommentFeed(url))
+    throw new ReceiverError(400, 'max-depth', 'Replies to comments are not accepted here yet, only comments on posts')
   let found
   try {
     found = await findItem(r.feeds, target)
@@ -230,7 +238,7 @@ async function commentTarget(r: Receiver, target: string): Promise<{ feed: Feed;
   if (!policy) throw new ReceiverError(400, 'comments-disabled', 'This feed accepts no comments')
   if (!found.item) throw new ReceiverError(400, 'target-gone', "The post doesn't exist")
   if (!found.item.allowComments) throw new ReceiverError(400, 'comments-disabled', 'The post is closed for comments')
-  return { feed: found.feed, item: found.item, policy: toPolicy(policy) }
+  return { feed: found.feed, item: found.item, policy: toPolicy(policy), republish: typeof s.republish == 'string' ? s.republish : 'no' }
 }
 
 /**
@@ -258,7 +266,8 @@ function toPolicy(p: Record<string, unknown>): Policy {
   return out
 }
 
-const writeStatus = (r: Receiver, id: string, status: Status) => r.statuses.put(id, { ...status, guid: id }, r.now() + STATUS_KEEP_MS)
+export const writeStatus = (r: Receiver, id: string, status: Status) =>
+  r.statuses.put(id, { ...status, guid: id }, r.now() + (status.status == 'pending' ? PENDING_KEEP_MS : STATUS_KEEP_MS))
 
 // --- Queue ---------------------------------------------------------------------------------
 
@@ -393,7 +402,7 @@ function attribution(post: Post, feed: Feed, sourceUrl: string): [string | undef
   return [post.author ?? urlHost(sourceUrl), trusted ? `@${host}` : undefined]
 }
 
-// --- Comments (RFC-4, republish: no) -------------------------------------------------------
+// --- Comments (RFC-4) ----------------------------------------------------------------------
 
 async function processComment(r: Receiver, job: Job) {
   const { source } = job
@@ -411,6 +420,7 @@ async function processComment(r: Receiver, job: Job) {
   }
   const { policy } = target
   const existing = await findInboxItem(r, id)
+  const published = await r.commentFeeds?.published(job.target, id)
   let found, gone = false
   try {
     found = await findItem(r.feeds, source)
@@ -421,8 +431,9 @@ async function processComment(r: Receiver, job: Job) {
     gone = true
   }
   if (gone) {
-    if (existing && policy.allowDelete) {
+    if ((existing || published) && policy.allowDelete) {
       await removeInboxItem(r, id)
+      await r.commentFeeds?.unpublish(job.target, id)
       await writeStatus(r, id, { status: 'deleted' })
       r.log('comment.deleted', { source })
       return
@@ -432,9 +443,11 @@ async function processComment(r: Receiver, job: Job) {
   const post = found!.item
   if (!post) return fail(found!.feed.page ? 'invalid-feed' : 'ambiguous-source', 'The comment could not be found in the author feed.')
   if (found!.feed.page) return fail('invalid-feed', 'The author feed must be an RSS 2.0 or JSON Feed.')
-  if (existing && !policy.allowEdit) return fail('edit-not-allowed', "This comment was submitted already, and the feed doesn't allow edits.")
+  if ((existing || published) && !policy.allowEdit) return fail('edit-not-allowed', "This comment was submitted already, and the feed doesn't allow edits.")
   if (post.inReplyTo == undefined) return fail('in-reply-to-missing', 'The comment has no inReplyTo.')
   if (!sameRef(post.inReplyTo, job.target)) return fail('in-reply-to-mismatch', "The comment's inReplyTo is not the post it was submitted to.")
+  if (target.republish == 'summary' && !(typeof post.url == 'string' && /^https?:\/\//i.test(post.url) && isCleanUrlString(post.url)))
+    return fail('link-missing', 'Only an abstract of the comment is published here, so it needs a link to its full text.')
   let account = post.account ?? found!.feed.account
   const sourceHost = urlHost(found!.feed.url)
   if (policy.requireSocialSpec && account == undefined) return fail('socialspec-missing', 'The comment needs a socialspec account.')
@@ -454,13 +467,23 @@ async function processComment(r: Receiver, job: Job) {
   const now = r.now()
   const date = post.date != undefined && Math.abs(Date.parse(post.date) - now) <= DATE_SLACK_MS ? post.date
     : new Date(Math.floor(now / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  // Published after the owner approves it, in full or as an abstract, and only in a kept feed, which has comment feeds.
+  const approve = PUBLISHING.includes(target.republish) && !!await r.commentFeeds?.isKeptPost(job.target)
+  const item = inboxItem(r, id, 'submission', source, job.target, { ...post, date }, postHtml(post),
+    post.author ?? sourceHost, account == undefined ? undefined : `@${accountHost(account)}`, approve ? target.republish : undefined, !!published)
+  if (published && isSameComment(item, published.item)) {
+    // Sent again without a change: nothing to approve.
+    await removeInboxItem(r, id)
+    await writeStatus(r, id, { status: 'success', pubDate: published.item.date_published ?? date, pubUrl: published.address })
+    r.log('comment.unchanged', { source, target: job.target })
+    return
+  }
   try {
-    await putInboxItem(r, inboxItem(r, id, 'submission', source, job.target, { ...post, date }, postHtml(post),
-      post.author ?? sourceHost, account == undefined ? undefined : `@${accountHost(account)}`))
+    await putInboxItem(r, item)
   } catch (e) {
     if (!(e instanceof InboxFull)) throw e
     return fail('moderation-unavailable', e.message)
   }
-  await writeStatus(r, id, { status: 'success', pubDate: date })
-  r.log('comment.delivered', { source, target: job.target, edit: !!existing })
+  await writeStatus(r, id, approve ? { status: 'pending' } : { status: 'success', pubDate: date })
+  r.log('comment.delivered', { source, target: job.target, edit: !!(existing || published), approve })
 }

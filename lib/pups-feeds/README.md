@@ -10,7 +10,8 @@ A feed file in `/feed.json` or `/feed/<name>.json` that carries `"_pups": { "pup
 - **Archives.** Every post is in exactly one archive, `feed.000000.json`, `feed.000001.json`, … in the feed directory, 20 posts each, newest first, chained with `next_url`. Items never move; deleted ones leave a gap.
 - **The feed file** holds copies of the newest 30 posts and points to the newest archive. A `PUT` of the feed file is applied: its items are compared with the stored ones, and posts are added, changed or deleted accordingly; its other fields become the feed's settings.
 - **Handed-over feeds** (made by hand or with another tool) get archives with their items on the next write, continuing their `next_url`.
-- Apps can't write the archives; the servers refuse it with `403`.
+- **Comment feeds** ([RFC-7 "Publishing comments"](https://github.com/bigwide-net/RFCs/blob/main/RFC-7-Feed-Publishing-with-PUPS.md#publishing-comments)): comments the owner approved in the inbox go into `<feed dir>/comments/<index>.json`, newest first (`src/comments.ts`, used by pups-inbox through `commentFeeds()`). While the feed's `_submissions` names the server's comment endpoint (`FeedHost.commentEndpoint`), the server keeps every post's `_source.comments` (RFC-1): `{count: 0, total: 0}` while it takes comments, then the comment feed and the counts. A deleted post's comment feed goes with it. `comments` is therefore no feed name.
+- Apps can't write the archives or the comment feeds; the servers refuse it with `403`.
 
 ## Used by
 
@@ -29,7 +30,7 @@ The package does no I/O of its own. A server passes in a `FeedHost` (`src/kept.t
 - `putKeptFeed(host, path, body, stored)` for a `PUT` of a feed file with the marker, after the preconditions.
 - `readItem(contentType, body)` and `postItem(host, path, item, stored)` for a `POST` of an item.
 
-Both return what to write: the changed archives, the oldest first, and the feed file last (RFC-13 "The archive comes first"). The server checks its storage quota, writes the files in this order, and answers. Errors are `FeedError`s with an HTTP status and an RFC-6 error code.
+Both return what to write: the changed archives, the oldest first, and the feed file last (RFC-13 "The archive comes first"), and the comment feeds of deleted posts to delete afterwards. The server checks its storage quota, writes the files in this order, and answers. Errors are `FeedError`s with an HTTP status and an RFC-6 error code.
 
 ```json
 "dependencies": { "pups-feeds": "file:../lib/pups-feeds" }

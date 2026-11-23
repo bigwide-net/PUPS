@@ -1,0 +1,208 @@
+<?php
+// Comment feeds (RFC-7 "Publishing comments"): posts' `_source.comments`, approving comments in the inbox, edits and deletes.
+
+namespace Pups\Test;
+
+use function Pups\processQueue;
+
+/** A server with the receiver, an app for the main feed, and the feed with comments at the built-in endpoint. */
+function commentSetup(array $policy = [], string $republish = 'full'): array
+{
+    $t = new T(['mentions' => true, 'comments' => true, 'writes_per_minute' => 10000]);
+    $tok = $t->connect($t->registerClient('app.example'), 'write:/feed.json write:/feed/')['access_token'];
+    createFeed($t, $tok, '/feed.json', ['_submissions' => submissions($policy, $republish)]);
+    return [$t, $tok];
+}
+
+function submissions(array $policy = [], string $republish = 'full'): array
+{
+    return ['url' => COMMENTS, 'republish' => $republish, 'policies' => ['comments' => $policy + ['minLength' => 2, 'maxLength' => 200]]];
+}
+
+/** Bob's comment on the post `p` at https://bob.example/comments.json#<id>, submitted and processed. Returns the status URL path. */
+function comment(T $t, string $id = 'c-17', string $html = '<p>Agreed, but discovery is <b>hard</b>.</p>', string $p = 'p-12', array $more = []): string
+{
+    $mine = ['id' => $id, 'authors' => [['name' => 'Bob']], 'url' => "https://bob.example/c/$id", 'content_html' => $html,
+        '_source' => ['accounts' => ['socialspec' => '@bob.example'], 'inReplyTo' => ORIGIN . "/feed.json#$p"]];
+    serve($t, 'https://bob.example/comments.json', [$mine, ...$more]);
+    $res = webmention($t, COMMENTS, "https://bob.example/comments.json#$id", ORIGIN . "/feed.json#$p");
+    eq($res->status, 201, $res->text);
+    processQueue($t->ctx);
+    return substr($res->header('location'), strlen(ORIGIN));
+}
+
+function inboxAction(T $t, string $id, string $do): Res
+{
+    $action = str_replace('{id}', rawurlencode($id), inbox($t)['_actions']['templates'][$do]['action']);
+    return $t->req('POST', substr($action, strlen(ORIGIN)), ['content-type' => 'application/json'], '{}');
+}
+
+function post(T $t, string $id = 'p-12'): array
+{
+    return array_values(array_filter(stored($t, '/feed.json')['items'], fn($i) => $i['id'] === $id))[0];
+}
+
+test('comment feeds: posts carry _source.comments while the feed takes comments here', function () {
+    [$t, $tok] = commentSetup();
+    postTo($t, $tok, ['id' => 'p-12', 'content_text' => 'Open', '_source' => ['comments' => ['count' => 99, 'feedUrl' => 'https://x.example/']]]);
+    postTo($t, $tok, ['id' => 'p-13', 'content_text' => 'Closed', '_commenting' => ['allowComments' => false]]);
+    eq(post($t)['_source'], ['about' => 'https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md', 'comments' => ['count' => 0, 'total' => 0]],
+        'no URL without comments; what the app sent is replaced');
+    ok(!isset(post($t, 'p-13')['_source']), 'not on a closed post');
+    eq(post($t, 'p-12')['_archive']['index'], 0);
+
+    // Off: the posts lose it, also in the archives; on again: they get it back.
+    $feed = stored($t, '/feed.json');
+    $put = function (array $doc) use ($t, $tok) {
+        $etag = $t->get('/feed.json', ['authorization' => "Bearer $tok"])->header('etag');
+        eq($t->put('/feed.json', $tok, json_encode($doc, JSON_UNESCAPED_SLASHES), ['if-match' => $etag])->status, 200);
+    };
+    $put(array_diff_key($feed, ['_submissions' => 0]));
+    ok(!isset(post($t)['_source']) && !isset(stored($t, '/feed/feed.000000.json')['items'][1]['_source']), 'removed everywhere');
+    $put(stored($t, '/feed.json') + ['_submissions' => submissions()]);
+    eq(stored($t, '/feed/feed.000000.json')['items'][1]['_source']['comments'], ['count' => 0, 'total' => 0], 'back in the archive');
+
+    // Another comment server keeps its own counts.
+    $put(['_submissions' => ['url' => 'https://comments.example.org/mention'] + submissions()] + stored($t, '/feed.json'));
+    postTo($t, $tok, ['id' => 'p-14', 'content_text' => 'Elsewhere', '_source' => ['comments' => ['count' => 3, 'feedUrl' => 'https://comments.example.org/14.json']]]);
+    eq(post($t, 'p-14')['_source']['comments'], ['count' => 3, 'feedUrl' => 'https://comments.example.org/14.json']);
+    ok(!isset(post($t)['_source']), 'its own zero counts are gone');
+
+    // "comments" is no feed name: /feed/comments/ holds the main feed's comment feeds.
+    eq(createFeed($t, $tok, '/feed/comments.json')->json()['_pups'] ?? null, null, 'stored as a plain file');
+});
+
+test('comment feeds: Approve publishes the comment, counts it, and tells its author', function () {
+    [$t, $tok] = commentSetup(['allowEdit' => true, 'allowDelete' => true]);
+    postTo($t, $tok, ['id' => 'p-12', 'title' => 'Is RSS the better social network?', 'content_text' => 'I think so.']);
+    $status = comment($t);
+    eq($t->get($status)->json()['status'], 'pending');
+    $item = inbox($t)['items'][0];
+    eq(array_map(fn($a) => $a['template'] ?? $a['type'], $item['_actions']['actions']), ['approve', 'dismiss', 'display'], 'Approve first');
+    eq(array_column($item['_actions']['actions'], 'group'), ['decide', 'decide', 'origin']);
+    eq(inbox($t)['_actions']['templates']['approve']['style'], 'major');
+    contains($item['content_html'], '>Approve</a></p><p class="without-extension-actions"><a href="' . ORIGIN . '/pups/inbox/dismiss?');
+
+    $res = inboxAction($t, $item['id'], 'approve');
+    $address = ORIGIN . '/feed/comments/0.json#' . $item['id'];
+    eq([$res->status, $res->json()['actions']], [200, [['type' => 'display', 'text' => 'Approved and published.', 'url' => $address]]]);
+    eq(inbox($t)['items'], [], 'out of the inbox');
+    eq($t->get($status)->json(), ['status' => 'success', 'pubDate' => $item['_inbox']['postDate'], 'pubUrl' => $address, 'guid' => $item['id']]);
+    $feed = stored($t, '/feed/comments/0.json');
+    eq([$feed['title'], $feed['feed_url'], $feed['home_page_url']], ['Comments on “Is RSS the better social network?”', ORIGIN . '/feed/comments/0.json', ORIGIN . '/']);
+    eq($feed['items'], [['id' => $item['id'], 'url' => 'https://bob.example/c/c-17', 'content_html' => '<p>Agreed, but discovery is <b>hard</b>.</p>',
+        'date_published' => $item['_inbox']['postDate'], 'authors' => [['name' => 'Bob']],
+        '_source' => ['about' => 'https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md', 'inReplyTo' => ORIGIN . '/feed.json#p-12',
+            'accounts' => ['socialspec' => '@bob.example']]]]);
+    eq(post($t)['_source']['comments'], ['feedUrl' => ORIGIN . '/feed/comments/0.json', 'count' => 1, 'total' => 1]);
+    ok(!isset(post($t)['date_modified']), 'a comment is no edit of the post');
+    eq($t->put('/feed/comments/0.json', $tok, '{"items":[]}')->status, 403, 'only the server writes comment feeds');
+    eq(inboxAction($t, $item['id'], 'approve')->status, 404, 'approved already');
+
+    // The second, approved on the fallback page, comes first.
+    $t->offset += 60_000;
+    comment($t, 'c-18', '<p>Me too.</p>');
+    $second = inbox($t)['items'][0];
+    preg_match('/href="([^"]+)">Approve</', $second['content_html'], $m);
+    $page = $t->get(substr(html_entity_decode($m[1]), strlen(ORIGIN)));
+    contains($page->text, 'Approve and publish this comment?');
+    eq(count(inbox($t)['items']), 1, 'the link alone approves nothing');
+    contains($t->post('/pups/inbox/approve', ['id' => hidden($page->text, 'id'), 'key' => hidden($page->text, 'key')])->text, 'The comment is published.');
+    eq(itemIds(stored($t, '/feed/comments/0.json')), [$second['id'], $item['id']]);
+    eq(post($t)['_source']['comments']['count'], 2);
+
+    // An edit waits for approval; the published version stays until then.
+    $t->offset += 120_000;
+    comment($t, 'c-17', '<p>Agreed, discovery is hard.</p>');
+    $edit = inbox($t)['items'][0];
+    eq([$edit['id'], $edit['_actions']['actions'][2]['text']], [$item['id'], 'Edited comment from @bob.example.']);
+    contains(stored($t, '/feed/comments/0.json')['items'][1]['content_html'], 'but discovery');
+    inboxAction($t, $edit['id'], 'approve');
+    $c = stored($t, '/feed/comments/0.json')['items'][1];
+    eq([$c['content_html'], $c['date_published'], isset($c['date_modified'])], ['<p>Agreed, discovery is hard.</p>', $item['_inbox']['postDate'], true]);
+    eq(post($t)['_source']['comments']['count'], 2);
+
+    // Sent again unchanged: nothing to approve.
+    $status = comment($t, 'c-17', '<p>Agreed, discovery is hard.</p>');
+    eq([inbox($t)['items'], $t->get($status)->json()['status']], [[], 'success']);
+
+    // Deleted by its author: gone from the comment feed and the counts.
+    serve($t, 'https://bob.example/comments.json', []);
+    webmention($t, COMMENTS, 'https://bob.example/comments.json#c-17', ORIGIN . '/feed.json#p-12');
+    processQueue($t->ctx);
+    eq(itemIds(stored($t, '/feed/comments/0.json')), [$second['id']]);
+    eq(post($t)['_source']['comments'], ['feedUrl' => ORIGIN . '/feed/comments/0.json', 'count' => 1, 'total' => 1]);
+
+    // No replies to comments yet.
+    $res = webmention($t, COMMENTS, 'https://bob.example/r.json#r', ORIGIN . '/feed/comments/0.json#' . $second['id']);
+    eq([$res->status, $res->json()['error']], [400, 'max-depth']);
+
+    // A deleted post takes its comments along.
+    eq(postTo($t, $tok, ['id' => 'p-12', '_pups' => ['delete' => true]])->status, 200);
+    eq($t->ctx->files->stat('/feed/comments/0.json'), null);
+});
+
+test('comment feeds: Dismiss rejects; the comment limit; feeds that only deliver comments', function () {
+    [$t, $tok] = commentSetup(['commentLimit' => 1]);
+    postTo($t, $tok, ['id' => 'p-12', 'content_text' => 'A post']);
+    $status = comment($t);
+    inboxAction($t, inbox($t)['items'][0]['id'], 'dismiss');
+    eq(array_intersect_key($t->get($status)->json(), ['status' => 0, 'code' => 0]), ['status' => 'failure', 'code' => 'moderation-rejected']);
+    ok(!$t->ctx->files->stat('/feed/comments/0.json'), 'nothing published');
+
+    comment($t, 'c-18');
+    comment($t, 'c-19');
+    [$b, $a] = inbox($t)['items'];
+    eq(inboxAction($t, $a['id'], 'approve')->status, 200);
+    $res = inboxAction($t, $b['id'], 'approve');
+    eq([$res->status, $res->json()['message']], [409, 'The post has 1 comments, as many as the feed allows.']);
+    eq(inboxIds($t), [$b['id']], 'stays in the inbox');
+
+    // republish: no: the owner only reads the comments.
+    [$u, $tok] = commentSetup([], 'no');
+    postTo($u, $tok, ['id' => 'p-12', 'content_text' => 'A post']);
+    $status = comment($u);
+    eq(array_column(inbox($u)['items'][0]['_actions']['actions'], 'template'), ['dismiss']);
+    eq($u->get($status)->json()['status'], 'success');
+    eq(inboxAction($u, inbox($u)['items'][0]['id'], 'approve')->status, 409);
+});
+
+test('comment feeds: republish summary publishes an abstract, linked to the full text', function () {
+    [$t, $tok] = commentSetup(['maxLength' => 1000], 'summary');
+    postTo($t, $tok, ['id' => 'p-12', 'content_text' => 'A post']);
+    $long = '<p>' . str_repeat('Feeds are <b>great</b>, ', 12) . 'really.</p>';
+    comment($t, 'c-17', $long);
+    $item = inbox($t)['items'][0];
+    eq([$item['_pups'], $t->get(substr(\Pups\commentUrl($t->ctx->config), strlen(ORIGIN)) . '/status/' . $item['id'])->json()['status']],
+        [['republish' => 'summary'], 'pending']);
+    contains($item['content_html'], '<b>great</b>', 'the owner sees it all');
+    inboxAction($t, $item['id'], 'approve');
+    $c = stored($t, '/feed/comments/0.json')['items'][0];
+    ok(!isset($c['content_html']), 'no HTML');
+    eq([mb_strlen($c['content_text']), mb_substr($c['content_text'], -1), $c['url']], [150, '…', 'https://bob.example/c/c-17']);
+    ok(str_starts_with($c['content_text'], 'Feeds are great, Feeds are great,'), 'the plain text');
+
+    // Without a link to the full text, the comment is refused.
+    serve($t, 'https://bob.example/comments.json', [['id' => 'c-18', 'content_text' => 'No link', '_source' => ['inReplyTo' => ORIGIN . '/feed.json#p-12']]]);
+    $res = webmention($t, COMMENTS, 'https://bob.example/comments.json#c-18', ORIGIN . '/feed.json#p-12');
+    processQueue($t->ctx);
+    eq($t->get(substr($res->header('location'), strlen(ORIGIN)))->json()['code'], 'link-missing');
+
+    // Submitted for full republishing, approved after the feed changed to summary: an abstract.
+    [$u, $tok] = commentSetup();
+    postTo($u, $tok, ['id' => 'p-12', 'content_text' => 'A post']);
+    comment($u);
+    $feed = stored($u, '/feed.json');
+    $feed['_submissions']['republish'] = 'summary';
+    $u->put('/feed.json', $tok, json_encode($feed, JSON_UNESCAPED_SLASHES), ['if-match' => $u->get('/feed.json', ['authorization' => "Bearer $tok"])->header('etag')]);
+    inboxAction($u, inbox($u)['items'][0]['id'], 'approve');
+    eq(stored($u, '/feed/comments/0.json')['items'][0]['content_text'], 'Agreed, but discovery is hard.');
+
+    // And when it no longer publishes comments at all, nothing is published.
+    comment($u, 'c-18');
+    $feed = stored($u, '/feed.json');
+    $feed['_submissions']['republish'] = 'no';
+    $u->put('/feed.json', $tok, json_encode($feed, JSON_UNESCAPED_SLASHES), ['if-match' => $u->get('/feed.json', ['authorization' => "Bearer $tok"])->header('etag')]);
+    $res = inboxAction($u, inbox($u)['items'][0]['id'], 'approve');
+    eq([$res->status, $res->json()['message']], [409, 'The feed doesn\'t publish comments anymore.']);
+});

@@ -2,8 +2,8 @@ import { alert, escapeHtml as h, page, status } from './html'
 import { visible } from './sanitize'
 
 /**
- * Pages of the built-in receiver (pups-inbox): the confirmation page that the Dismiss link of an inbox item opens
- * (RFC-8 fallback, RFC-9), and the inbox section of the apps page.
+ * Pages of the built-in receiver (pups-inbox): the confirmation pages that the Dismiss and Approve links of an inbox
+ * item open (RFC-8 fallback, RFC-9), and the inbox section of the apps page.
  */
 
 export const INBOX_PATH = '/pups/private/inbox.json'
@@ -18,20 +18,29 @@ export interface DismissItem {
   title?: string
   /** Plain text. */
   excerpt: string
+  /** What the button does: Dismiss (the default), or Approve and publish a comment. */
+  action?: 'dismiss' | 'approve'
 }
 
-/** The page with the Dismiss button. Following the link alone dismisses nothing. */
-export const dismissConfirmPage = (site: string, i: DismissItem) => page(`Dismiss this ${i.what}?`, `<h1>Dismiss this ${i.what}?</h1>
+/** The page with the Dismiss or Approve button. Following the link alone does nothing. */
+export function dismissConfirmPage(site: string, i: DismissItem): Response {
+  const [verb, question] = i.action == 'approve' ? ['Approve', `Approve and publish this ${i.what}?`] : ['Dismiss', `Dismiss this ${i.what}?`]
+  return page(question, `<h1>${h(question)}</h1>
 <p>${i.author ? `From <strong>${h(visible(i.author))}</strong>${i.account ? ` (${h(visible(i.account))})` : ''}, ` : ''}source <code>${h(visible(i.source))}</code></p>
 ${i.title ? `<p><strong>${h(visible(i.title))}</strong></p>` : ''}
 <blockquote>${h(i.excerpt)}</blockquote>
 <form method="post">
 <input type="hidden" name="id" value="${h(i.id)}">
 <input type="hidden" name="key" value="${h(i.key)}">
-<p><button type="submit">Dismiss</button></p>
+<p><button type="submit">${verb}</button></p>
 </form>`, { site })
+}
 
-export const dismissedPage = (site: string, message: string) => page('Dismissed', `<h1>Dismissed</h1>\n${status(message)}`, { site })
+export const dismissedPage = (site: string, message: string, title = 'Dismissed') => page(title, `<h1>${title}</h1>\n${status(message)}`, { site })
+
+/** After Approve: the comment is published at `url`. */
+export const approvedPage = (site: string, url: string) =>
+  page('Approved', `<h1>Approved</h1>\n${status('The comment is published.')}\n<p><a href="${h(url)}">${h(visible(url))}</a></p>`, { site })
 
 /** What the receiver has put into the inbox. */
 export interface InboxSummary {

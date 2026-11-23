@@ -1,5 +1,5 @@
 import { hashToken } from './crypto'
-import { feedOf, isKeptPut, postItemEndpoint, putKept, refuseArchiveWrite, withFeedLock } from './feeds'
+import { feedOf, isKeptPut, postItemEndpoint, putKept, refuseKeptFileWrite, withFeedLock } from './feeds'
 import { checkUploadType, checkUtf8, fileType, servedType } from './filetypes'
 import { header, HttpError, LIMITS, methodNotAllowed, readLimited, readQuery } from './http'
 import { covers, isPrivate, parsePath, readPrefixes, writePrefixes } from './paths'
@@ -57,9 +57,9 @@ export async function write(req: Request, method: string, rawPath: string, s: Se
   const ifNoneMatch = header(req, 'if-none-match')
   const db = store(env)
   // Feed files and their archives are written under the feed's lock (RFC-7 "Kept feeds"); apps never write the
-  // archives of a kept feed.
+  // archives and comment feeds of a kept feed.
   const feed = feedOf(path, s)
-  if (feed && feed != path) await refuseArchiveWrite(path, s, env)
+  if (feed != path) await refuseKeptFileWrite(path, s, env)
   const locked = (fn: () => Promise<Response>) => feed ? withFeedLock(env, feed, fn) : fn()
 
   if (method == 'DELETE') return locked(async () => {

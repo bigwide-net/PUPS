@@ -1,5 +1,6 @@
 import { INBOX_PATH, inboxKey, isOwnEndpoint, processQueue, type Receiver } from 'pups-inbox'
 import { keyOf } from './files'
+import { serverCommentFeeds } from './feeds'
 import { isPrivate, parsePath, pathFromPublicUrl } from './paths'
 import { type Env, type Settings, store } from './settings'
 import { assertPublicHost } from './ssrf'
@@ -74,6 +75,7 @@ export async function receiver(s: Settings, env: Env): Promise<Receiver> {
       put: (id, status, expiresAt) => db.statusPut(id, status, expiresAt),
       get: id => db.statusGet(id),
     },
+    commentFeeds: serverCommentFeeds(s, env, url => ownerPath(url, s)),
     log: (event, data) => console.log(event, JSON.stringify(data ?? {})),
   }
 }

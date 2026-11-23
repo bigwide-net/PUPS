@@ -60,8 +60,8 @@ function writeFile(Request $req, string $method, string $rawPath, Ctx $ctx): Res
     $ifMatch = reqHeader($req, 'if-match');
     $ifNoneMatch = reqHeader($req, 'if-none-match');
     $files = $ctx->files;
-    if (($owner = archiveOwner($path, $c)) && isKeptFile($ctx, $owner))
-        throw new HttpError(403, 'forbidden', "This server writes the archives of $owner (RFC-7). Change its items with PUT or POST of $owner.");
+    if (($owner = keptFileOwner($path, $c)) && isKeptFile($ctx, $owner))
+        throw new HttpError(403, 'forbidden', "This server writes the archives and comment feeds of $owner (RFC-7). Change its items with PUT or POST of $owner.");
 
     if ($method === 'DELETE')
         return $files->locked(function () use ($files, $path, $ifMatch, $grant) {

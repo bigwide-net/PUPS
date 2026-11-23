@@ -6,13 +6,13 @@
 
 namespace Pups;
 
-foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox'] as $f)
+foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments'] as $f)
     require_once __DIR__ . "/lib/$f.php";
 foreach (['discovery', 'hostmeta', 'files', 'oauth', 'admin', 'setup', 'homepage', 'mentions', 'inbox'] as $f)
     require_once __DIR__ . "/handler/$f.php";
 
 /** Paths (relative to the base) that are never CORS-enabled: the owner pages and their assets. */
-const OWNER_PAGES = ['/pups/', '/pups/homepage', '/oauth/authorize', '/pups/apps', '/pups/sign-in', '/pups/server', '/pups/setup', '/pups/inbox/dismiss', '/pups/assets/owner.css', '/pups/assets/owner.js'];
+const OWNER_PAGES = ['/pups/', '/pups/homepage', '/oauth/authorize', '/pups/apps', '/pups/sign-in', '/pups/server', '/pups/setup', '/pups/inbox/dismiss', '/pups/inbox/approve', '/pups/assets/owner.css', '/pups/assets/owner.js'];
 
 /** Handles one request. Never throws. */
 function handle(Request $req, Ctx $ctx): Response
@@ -93,6 +93,8 @@ function dispatch(Request $req, string $abs, ?string $rel, Ctx $ctx): ?Response
             return inboxActionEndpoint($req, $ctx);
         case '/pups/inbox/dismiss':
             return htmlErrors($c, fn() => dismissPage($req, $ctx));
+        case '/pups/inbox/approve':
+            return htmlErrors($c, fn() => dismissPage($req, $ctx, 'approve'));
     }
     if ($rel !== null && str_starts_with($rel, '/pups/comments/status/'))
         return commentStatusEndpoint($req, substr($rel, 22), $ctx);

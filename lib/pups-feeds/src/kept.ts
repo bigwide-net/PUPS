@@ -5,6 +5,9 @@
  * edits and deletes in the item's archive, and writes the feed file with copies of the newest items. Apps never write
  * archives.
  *
+ * If the feed's `_submissions` names the server's comment endpoint, the server also keeps the posts'
+ * `_source.comments` (RFC-1): the comment feed and the counts that comments.ts writes.
+ *
  * Only feed files with `"_pups": { "pupsControlled": true }` are kept; others are ordinary files. Documents stay plain
  * JSON values, so that fields the server doesn't know survive unchanged.
  *
@@ -16,6 +19,7 @@ export const FEED_REL = 'https://bigwide.net/ns/feed'
 export const FEED_SPEC = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-7-Feed-Publishing-with-PUPS.md'
 export const ARCHIVE_SPEC = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-13-JSON-Feed-Archives.md'
 export const POST_URL_TEMPLATE_PROP = 'https://bigwide.net/ns/post-url-template'
+export const SOURCE_SPEC = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md'
 const JSON_FEED_VERSION = 'https://jsonfeed.org/version/1.1'
 /** Items in the feed file (RFC-7 "Feed size"). */
 export const FEED_ITEMS = 30
@@ -27,6 +31,8 @@ const FEED_COMMENT = `This feed is kept by a Personal Upload Server (PUPS), foll
   'It contains the newest items; all items are in the archives, starting with the one at _archive.archive_url.'
 /** Top-level fields of the feed file that the server sets, not the apps. */
 const MANAGED_FIELDS = ['version', 'home_page_url', 'feed_url', 'user_comment', 'next_url', 'items', '_archive']
+/** Names in `/feed/` that belong to the main feed, so no named feed can have them (RFC-7 "Named feeds"). */
+export const RESERVED_FEED_NAMES = ['images', 'media', 'comments']
 
 export type Json = null | boolean | number | string | Json[] | JsonObject
 export interface JsonObject { [key: string]: Json }
@@ -53,6 +59,11 @@ export interface FeedHost {
   postUrlTemplate(): Promise<unknown>
   /** ms since the epoch. */
   now(): number
+  /**
+   * The built-in receiver's comment endpoint, if it takes comments (RFC-6 "Built-in receiver"). Posts of feeds whose
+   * `_submissions.url` names it get their `_source.comments` from the server.
+   */
+  commentEndpoint?: string
 }
 
 /** A declared well-known path, as far as kept feeds care. */
@@ -79,7 +90,7 @@ export function isFeedPath(path: string, wellKnown: FeedPathEntry[]): boolean {
     if (!e.rels.includes(FEED_REL)) continue
     if (e.path == path && path.endsWith('.json')) return true
     const m = e.path.endsWith('/') && path.startsWith(e.path) ? new RegExp(`^(${FEED_NAME})\\.json$`).exec(path.slice(e.path.length)) : null
-    if (m && m[1] != 'images' && m[1] != 'media') return true
+    if (m && !RESERVED_FEED_NAMES.includes(m[1]!)) return true
   }
   return false
 }
@@ -89,6 +100,22 @@ export function archiveOwner(path: string, wellKnown: FeedPathEntry[]): string |
   const m = /^(\/.+)\/feed\.\d{6,}\.json$/.exec(path)
   return m && isFeedPath(`${m[1]}.json`, wellKnown) ? `${m[1]}.json` : undefined
 }
+
+/**
+ * The feed file whose archives or comment feeds `path` belongs to, if it were kept (`/feed/feed.000002.json`,
+ * `/feed/comments/47.json` → `/feed.json`), or undefined. Only the server writes these.
+ */
+export function keptFileOwner(path: string, wellKnown: FeedPathEntry[]): string | undefined {
+  const m = /^(\/.+?)\/comments\/.+$/.exec(path)
+  return archiveOwner(path, wellKnown) ?? (m && isFeedPath(`${m[1]}.json`, wellKnown) ? `${m[1]}.json` : undefined)
+}
+
+/**
+ * The comment feed of a post: `<feed dir>/comments/<index>.json`, e.g. /feed/comments/47.json (RFC-7 "Comment
+ * feeds"). Replies to a comment will go to `<feed dir>/comments/<index>/<comment id>.json`; the servers accept
+ * comments on posts only so far.
+ */
+export const commentFeedPath = (feedPath: string, index: number) => `${feedPath.slice(0, -5)}/comments/${index}.json`
 
 export const archivePath = (feedPath: string, n: number) => `${feedPath.slice(0, -5)}/feed.${String(n).padStart(6, '0')}.json`
 
@@ -129,14 +156,34 @@ function setIndex(item: Item, index: number | undefined) {
   else delete item._archive
 }
 
+/** An item's `_source.comments` (RFC-1), if it has a valid `count`. */
+export function commentsOf(item: JsonObject): JsonObject | undefined {
+  const c = isObject(item._source) ? item._source.comments : undefined
+  return isObject(c) && Number.isInteger(c.count) && (c.count as number) >= 0 ? c : undefined
+}
+
+/** Sets or removes an item's `_source.comments`; `_source` goes when nothing else is left in it. */
+export function setComments(item: JsonObject, comments: JsonObject | undefined) {
+  let source: JsonObject = isObject(item._source) ? item._source : { about: SOURCE_SPEC }
+  if (comments) {
+    source = { about: SOURCE_SPEC, ...source }
+    source.comments = comments
+  } else delete source.comments
+  if (Object.keys(source).some(k => k != 'about')) item._source = source
+  else delete item._source
+}
+
+/** Whether an item accepts comments, as far as it says (RFC-4 `_commenting`, default true). */
+export const allowsComments = (item: JsonObject) => !(isObject(item._commenting) && item._commenting.allowComments === false)
+
 /** A JSON value with the keys of every object sorted, for comparing items. */
-function canonical(v: unknown): string {
+export function canonical(v: unknown): string {
   const sort = (v: unknown): unknown => Array.isArray(v) ? v.map(sort)
     : isObject(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sort(v[k])])) : v
   return JSON.stringify(sort(v))
 }
 
-const deepCopy = <T>(v: T): T => JSON.parse(JSON.stringify(v))
+export const deepCopy = <T>(v: T): T => JSON.parse(JSON.stringify(v))
 const utf8Length = (s: string) => new TextEncoder().encode(s).byteLength
 
 /** An item with an id first: `{ id, ...item }`. */
@@ -166,6 +213,8 @@ export interface PutResult {
 export interface Committed {
   /** The files to write, in this order: the changed archives, the oldest first, and the feed file last. */
   files: { path: string; text: string }[]
+  /** The files to delete afterwards: the comment feeds of deleted posts. */
+  deletes: string[]
   /** The feed file as written. */
   text: string
 }
@@ -190,6 +239,10 @@ export class KeptFeed {
   private archives = new Map<number, JsonObject | undefined>()
   private changed = new Set<number>()
   private template: string | undefined | false = false
+  /** Whether every post's `_source.comments` must be brought up to date on commit(). */
+  private refresh = false
+  /** Indexes of deleted posts, whose comment feeds go on commit(). */
+  private dropped: number[] = []
 
   private constructor(private host: FeedHost, public path: string, stored: JsonObject | undefined) {
     this.doc = stored ?? { version: JSON_FEED_VERSION, items: [] }
@@ -235,6 +288,7 @@ export class KeptFeed {
     const oldestFirst = [...items].reverse()
     for (let n = 0; n * this.size < oldestFirst.length; n++)
       await this.create(n, oldestFirst.slice(n * this.size, (n + 1) * this.size).reverse())
+    this.refresh = true
   }
 
   /** The items of a document that are objects with an id. Items without an id get one. */
@@ -362,6 +416,60 @@ export class KeptFeed {
     item.url = t.replace(/\{(feed|index|id)\}/g, (_, k: string) => vars[k]!)
   }
 
+  /** Whether the server keeps the posts' `_source.comments`: `_submissions` names its comment endpoint. */
+  private ownsComments(): boolean {
+    const s = this.doc._submissions
+    return !!this.host.commentEndpoint && isObject(s) && s.url === this.host.commentEndpoint
+  }
+
+  /** Whether the feed accepts comments at this server: it has a comments policy. */
+  private commentsOpen(): boolean {
+    const s = this.doc._submissions
+    return this.ownsComments() && isObject(s) && isObject(s.policies) && isObject(s.policies.comments)
+  }
+
+  /**
+   * Sets an item's `_source.comments` as the server keeps it: the comment feed and counts of `old`, the stored item,
+   * if it has comments; else `{count: 0, total: 0}` while the post accepts comments, and nothing otherwise. Unless
+   * `always`, only in a feed whose comments the server keeps; elsewhere the item keeps what the app sent.
+   */
+  private withComments(item: Item, old: Item | undefined, always = false) {
+    if (!always && !this.ownsComments()) return
+    const c = old && commentsOf(old)
+    setComments(item, c && c.count ? deepCopy(c) : this.commentsOpen() && allowsComments(item) ? { count: 0, total: 0 } : undefined)
+  }
+
+  /** Brings every post's `_source.comments` up to date, e.g. after the feed was opened for comments. */
+  private async refreshComments() {
+    for (let n = 0; n <= (this.newest ?? -1); n++)
+      for (const item of (await this.archive(n))?.items as Item[] ?? []) {
+        const before = canonical(item)
+        this.withComments(item, deepCopy(item), true)
+        if (canonical(item) != before) this.changed.add(n)
+      }
+  }
+
+  /** An item by its id, in any archive, and its address. */
+  async get(id: string): Promise<{ item: Item; address: string } | undefined> {
+    const at = await this.find(id, undefined, true)
+    return at && { item: this.archiveItems(at[0])[at[1]]!, address: this.address(at[0], id) }
+  }
+
+  /**
+   * Sets a post's comment feed and counts (RFC-1 `_source.comments`) after a comment was published or removed. The
+   * post isn't modified otherwise and gets no `date_modified`. False if there is no such post.
+   */
+  async setCommentCounts(id: string, feedUrl: string, count: number, total: number): Promise<boolean> {
+    const at = await this.find(id, undefined, true)
+    if (!at) return false
+    const item = this.archiveItems(at[0])[at[1]]!
+    const before = canonical(item)
+    if (count) setComments(item, { feedUrl, count, total })
+    else this.withComments(item, undefined, true)
+    if (canonical(item) != before) this.changed.add(at[0])
+    return true
+  }
+
   private nowIso = () => new Date(this.host.now()).toISOString().slice(0, 19) + 'Z'
 
   /**
@@ -383,6 +491,7 @@ export class KeptFeed {
     if (typeof item.date_published != 'string') item.date_published = this.nowIso()
     setIndex(item, this.next++)
     await this.withPostUrl(item)
+    this.withComments(item, undefined)
     if (this.newest != undefined && ((await this.newestArchive()).items as Item[]).length < this.size) {
       this.archiveItems(this.newest).unshift(item)
       this.changed.add(this.newest)
@@ -400,6 +509,7 @@ export class KeptFeed {
     setIndex(item, itemIndex(old))
     if (typeof old.date_published == 'string' && typeof item.date_published != 'string') item.date_published = old.date_published
     await this.withPostUrl(item)
+    this.withComments(item, old)
     const probe = { ...item }
     if (probe.date_modified == undefined && old.date_modified != undefined) probe.date_modified = old.date_modified
     if (canonical(probe) == canonical(old)) return false
@@ -415,6 +525,8 @@ export class KeptFeed {
     if (!at) return
     const [item] = this.archiveItems(at[0]).splice(at[1], 1)
     this.changed.add(at[0])
+    const i = itemIndex(item)
+    if (i != undefined) this.dropped.push(i)
     return { item: item!, address: this.address(at[0], id) }
   }
 
@@ -440,7 +552,10 @@ export class KeptFeed {
       if (id != undefined) seen.add(id)
       if (id == undefined || !before.has(id) || canonical(item) != canonical(before.get(id))) put.push(item)
     }
+    const comments = () => `${this.ownsComments()} ${this.commentsOpen()}`
+    const was = comments()
     this.setFields(body)
+    if (comments() != was) this.refresh = true
     // Items the app removed from the feed file are deleted.
     for (const [id, item] of before)
       if (!seen.has(id)) await this.delete(id, itemIndex(item))
@@ -485,6 +600,8 @@ export class KeptFeed {
 
   /** The changed archives, from the oldest to the newest, and then the feed file: the server writes them in this order. */
   async commit(): Promise<Committed> {
+    if (this.refresh) await this.refreshComments()
+    this.refresh = false
     const files: { path: string; text: string }[] = []
     const updates = this.host.publicUrl(this.path)
     for (const n of [...this.changed].sort((a, b) => a - b)) {
@@ -500,7 +617,10 @@ export class KeptFeed {
     const text = JSON.stringify(await this.feedFile(), null, 4)
     files.push({ path: this.path, text })
     this.changed.clear()
-    return { files, text }
+    // A deleted post's comments go with it.
+    const deletes = this.dropped.map(index => commentFeedPath(this.path, index))
+    this.dropped = []
+    return { files, deletes, text }
   }
 }
 

@@ -6,14 +6,15 @@ import { type Post, urlHost } from './feeds'
  * The owner's inbox (RFC-12): a private JSON Feed at /pups/private/inbox.json with the mentions (RFC-11) and the
  * comments waiting for the owner (RFC-4). This server writes it as `pups`, with conditional writes. Every item has a
  * Dismiss action (RFC-9) with a capability URL, and a link to a confirmation page for readers without actions
- * (RFC-8).
+ * (RFC-8). Comments on feeds that republish them (RFC-4 `republish: "full"`) also have an Approve action, which
+ * publishes them in the post's comment feed (comments.ts).
  */
 
 export const INBOX_PATH = '/pups/private/inbox.json'
 export const INBOX_WRITER = 'pups'
 const INBOX_ABOUT = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-12-Inbox-Feeds.md'
 const ACTIONS_ABOUT = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-9-Feed-Actions.md'
-const SOURCE_ABOUT = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md'
+export const SOURCE_ABOUT = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md'
 /** Mentions are kept this long (RFC-12 "Size"). Submissions stay until dismissed. */
 export const MENTION_KEEP_MS = 30 * 24 * 3600_000
 /**
@@ -74,8 +75,12 @@ export function isInboxKey(c: InboxContext, key: unknown): boolean {
   return !diff
 }
 
-/** The page where readers without actions dismiss an item (RFC-8 fallback). */
-export const dismissPageUrl = (c: InboxContext, id: string) => `${c.base}/pups/inbox/dismiss?id=${encodeURIComponent(id)}&key=${c.key}`
+/** The page where readers without actions dismiss or approve an item (RFC-8 fallback). */
+export const dismissPageUrl = (c: InboxContext, id: string, action: 'dismiss' | 'approve' = 'dismiss') =>
+  `${c.base}/pups/inbox/${action}?id=${encodeURIComponent(id)}&key=${c.key}`
+
+/** Whether an inbox item has the Approve action: a comment that the owner can publish. */
+export const isApprovable = (item: InboxItem) => Array.isArray(item._actions?.actions) && item._actions.actions.some((a: any) => a?.template == 'approve')
 
 /** The host of an item's source, for the limit per host. */
 const itemSourceHost = (item: InboxItem) => typeof item._inbox?.source == 'string' ? urlHost(item._inbox.source) : undefined
@@ -114,6 +119,7 @@ function newInbox(c: InboxContext): InboxFeed {
     _inbox: { about: INBOX_ABOUT, writer: INBOX_WRITER, categories: [...c.mentions ? ['mentions'] : [], ...c.comments ? ['moderation'] : []] },
     _actions: {
       about: ACTIONS_ABOUT, templates: {
+        approve: { type: 'button', label: 'Approve', style: 'major', action: `${c.base}/pups/inbox/action?do=approve&id={id}&key=${c.key}` },
         dismiss: { type: 'button', label: 'Dismiss', action: `${c.base}/pups/inbox/action?id={id}&key=${c.key}` },
       },
     },
@@ -198,21 +204,28 @@ export async function checkRoomForSubmission(c: InboxContext, id: string, host: 
 }
 
 /**
- * Where an item comes from, for its action area: "Mention from @bob.example at bob.example/feed.json#p-81", with the
- * account if one was verified, else the host of the source. Returns [text before the link, link text].
+ * Where an item comes from, for its action area: "Mention from @bob.example.", with the account if one was verified,
+ * else the host of the source. It links to the source.
  */
-function originText(type: ItemType, source: string, account: string | undefined): [string, string] {
-  const what = { submission: 'Comment', reply: 'Reply', mention: 'Mention' }[type]
-  return [`${what} from ${account ?? urlHost(source)} at `, sanitizeText(source.replace(/^https?:\/\//i, ''), 100) ?? '']
-}
+const originText = (type: ItemType, source: string, account: string | undefined, edit = false) =>
+  `${{ submission: edit ? 'Edited comment' : 'Comment', reply: 'Reply', mention: 'Mention' }[type]} from ${account ?? urlHost(source)}.`
 
-/** An inbox item. `content` is the post's HTML for the inbox. The account is included only as attribution() verified it. */
+/**
+ * An inbox item. `content` is the post's HTML for the inbox. The account is included only as attribution() verified it.
+ * A comment that the owner can publish gets Approve as the first action, next to Dismiss, and `_pups.republish`:
+ * `publish`, the feed's `republish` (`full` or `summary`) that its author agreed to. `edit` says that an earlier version
+ * is published already.
+ */
 export function inboxItem(c: InboxContext, id: string, type: ItemType, source: string, target: string, post: Partial<Post>,
-  content: string, author: string | undefined, account: string | undefined): InboxItem {
+  content: string, author: string | undefined, account: string | undefined, publish?: string, edit = false): InboxItem {
+  const approve = publish != undefined
   const url = post.url
-  const [origin, at] = originText(type, source, account)
-  const fallback = `<p class="without-extension-actions">${h(origin)}<a href="${h(source)}">${h(at)}</a></p>` +
-    `<p class="without-extension-actions"><a href="${h(dismissPageUrl(c, id))}">Dismiss</a></p>`
+  const text = originText(type, source, account, edit)
+  const link = (action: 'dismiss' | 'approve', label: string) =>
+    `<p class="without-extension-actions"><a href="${h(dismissPageUrl(c, id, action))}">${label}</a></p>`
+  const from = `<p class="without-extension-actions"><a href="${h(source)}">${h(text)}</a></p>`
+  const fallback = approve ? link('approve', 'Approve') + link('dismiss', 'Dismiss') + from : from + link('dismiss', 'Dismiss')
+  const origin = { type: 'display', text, url: source, group: 'origin' }
   const name = sanitizeText(author, 100)
   const title = sanitizeText(post.title, 200)
   return {
@@ -224,7 +237,11 @@ export function inboxItem(c: InboxContext, id: string, type: ItemType, source: s
     ...name && { authors: [{ name }] },
     ...account && { _source: { about: SOURCE_ABOUT, accounts: { socialspec: account } } },
     _inbox: { about: INBOX_ABOUT, type, source, target, ...post.date && { postDate: post.date } },
-    _actions: { about: ACTIONS_ABOUT, actions: [{ type: 'display', text: origin + at, url: source }, { template: 'dismiss' }] },
+    ...approve && { _pups: { republish: publish } },
+    _actions: {
+      about: ACTIONS_ABOUT,
+      actions: approve ? [{ template: 'approve', group: 'decide' }, { template: 'dismiss', group: 'decide' }, origin] : [origin, { template: 'dismiss', group: 'dismiss' }],
+    },
   }
 }
 

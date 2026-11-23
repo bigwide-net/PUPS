@@ -55,11 +55,11 @@ describe('mentions', () => {
     expect(item._inbox).toMatchObject({ type: 'mention', source: `${src}#p-81`, target: `${ORIGIN}/`, postDate: '2026-11-19T09:00:00Z' })
     expect([item.title, item.url, item.authors[0].name, item._source.accounts.socialspec])
       .toEqual(['Feeds are back', 'https://bob.example/2026/feeds', 'Bob', '@bob.example'])
-    expect(item.content_html).toContain('<p>Great talk by @alice.pups.test yesterday.</p><p class="without-extension-actions">Mention from @bob.example at ' +
-      `<a href="${src}#p-81">bob.example/feed/feed.000004.json#p-81</a></p>` +
+    expect(item.content_html).toContain('<p>Great talk by @alice.pups.test yesterday.</p><p class="without-extension-actions">' +
+      `<a href="${src}#p-81">Mention from @bob.example.</a></p>` +
       `<p class="without-extension-actions"><a href="${ORIGIN}/pups/inbox/dismiss?id=${item.id}&amp;key=`)
     expect(item._actions.actions).toEqual([
-      { type: 'display', text: 'Mention from @bob.example at bob.example/feed/feed.000004.json#p-81', url: `${src}#p-81` }, { template: 'dismiss' }])
+      { type: 'display', text: 'Mention from @bob.example.', url: `${src}#p-81`, group: 'origin' }, { template: 'dismiss', group: 'dismiss' }])
     expect(feed._actions.templates.dismiss.action).toContain(`${ORIGIN}/pups/inbox/action?id={id}&key=`)
 
     // The same webmention again changes nothing; once the handle is gone, the mention is removed.
@@ -189,7 +189,7 @@ describe('mentions', () => {
     const r1 = items.find((i: any) => i._inbox.source == `${comments}#r1`)
     expect(r3._source.accounts.socialspec).toBe('@bob.example')
     expect([r3._actions.actions[0].text, r1._actions.actions[0].text]).toEqual([
-      'Reply from @bob.example at rm.example/groups/two/comments/g1.json#r3', 'Reply from rm.example at rm.example/groups/two/comments/g1.json#r1'])
+      'Reply from @bob.example.', 'Reply from rm.example.'])
   })
 })
 
@@ -224,7 +224,7 @@ describe('comments', () => {
       .toEqual(['submission', `${ORIGIN}/feed.json#p-12`, 'Bob', '@bob.example'])
     expect(item.content_html).toContain('<p>Agreed, but discovery is <b>hard</b>.</p>')
     expect(item._actions.actions[0]).toEqual({
-      type: 'display', text: 'Comment from @bob.example at bob.example/comments.json#c-17', url: 'https://bob.example/comments.json#c-17',
+      type: 'display', text: 'Comment from @bob.example.', url: 'https://bob.example/comments.json#c-17', group: 'origin',
     })
     expect(item.content_html).not.toMatch(/script|onclick/)
     expect(files.get('/feed.json')).not.toContain('Agreed')

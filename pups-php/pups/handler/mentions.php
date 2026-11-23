@@ -5,8 +5,10 @@ namespace Pups;
 /**
  * The built-in receiver: mentions of the owner (RFC-11) at /pups/mention, linked from
  * host-meta.json, and comments on the owner's posts (RFC-4) at /pups/comments, named in
- * the feeds' `_submissions` by the client. Both go into the inbox (RFC-12); comments are
- * not republished (`republish: "no"`), the owner reads and dismisses them.
+ * the feeds' `_submissions` by the client. Both go into the inbox (RFC-12). Comments on a
+ * feed with `republish: "full"` or `"summary"` wait there for the owner's approval, and are then
+ * published in the post's comment feed (comments.php), in full or as an abstract; with
+ * `republish: "no"` (or a value this server doesn't know), the owner only reads them.
  *
  * The endpoints do the cheap checks and queue the rest in data/mentions/queue/. The queue
  * is worked through after the response has been sent (see processQueue()), because every
@@ -19,12 +21,14 @@ const MAX_QUEUE = 100;
 const MAX_QUEUE_PER_HOST = 5;
 /** A job that fails this often (e.g. because it crashed the worker) is dropped. */
 const MAX_ATTEMPTS = 3;
-/** Comment status pages are kept this long (RFC-4: at least an hour). */
+/** Comment status pages are kept this long (RFC-4: at least an hour); those of comments waiting for approval longer. */
 const STATUS_KEEP_MS = 24 * 3600_000;
+const PENDING_KEEP_MS = 30 * 24 * 3600_000;
 /** A comment keeps its own date if it is at most this far from the time of submission (RFC-4). */
 const DATE_SLACK_MS = 30 * 60_000;
 /** The policy defaults of RFC-4 "Policies". */
-const POLICY_DEFAULTS = ['title' => 'none', 'minLength' => 2, 'maxLength' => 2000, 'requireSocialSpec' => false, 'allowEdit' => false, 'allowDelete' => false];
+const POLICY_DEFAULTS = ['title' => 'none', 'minLength' => 2, 'maxLength' => 2000, 'requireSocialSpec' => false, 'allowEdit' => false, 'allowDelete' => false,
+    'commentLimit' => COMMENT_POLICY_LIMIT];
 const MAX_TITLE_CHARS = 300;
 
 function mentionUrl(Config $c): string
@@ -105,6 +109,7 @@ function commentEndpoint(Request $req, Ctx $ctx): ?Response
     $existing = findInboxItem($ctx, $id);
     if ($existing && !sameRef($existing['_inbox']['target'] ?? null, $target))
         throw new HttpError(400, 'in-reply-to-mismatch', 'This source was submitted to another post');
+    $existing ??= isPublished($ctx, $target, $id);
     if ($existing && !$post['policy']['allowEdit'] && !$post['policy']['allowDelete'])
         throw new HttpError(400, 'edit-not-allowed', 'This comment was submitted already, and the feed allows neither edits nor deletes');
     try {
@@ -119,16 +124,19 @@ function commentEndpoint(Request $req, Ctx $ctx): ?Response
 }
 
 /**
- * The post a comment answers, if it may be commented on here: ['feed', 'item', 'policy'].
- * Throws 400 otherwise (RFC-4: the cheap checks are synchronous).
+ * The post a comment answers, if it may be commented on here: ['feed', 'item', 'policy',
+ * 'republish']. Throws 400 otherwise (RFC-4: the cheap checks are synchronous).
  */
 function commentTarget(Ctx $ctx, string $target): array
 {
     [$url, $id] = splitRef($target);
     if ($id === null)
         throw new HttpError(400, 'invalid_request', 'Only comments on posts are accepted: target must be a feed URL + #id');
-    if (ownerStoragePath($url, $ctx->config) === null)
+    $path = ownerStoragePath($url, $ctx->config);
+    if ($path === null)
         throw new HttpError(400, 'invalid_request', 'target is not a feed on this server');
+    if (keptFileOwner($path, $ctx->config) !== null && archiveOwner($path, $ctx->config) === null)
+        throw new HttpError(400, 'max-depth', 'Replies to comments are not accepted here yet, only comments on posts');
     try {
         $found = findItem($ctx, $target);
     } catch (FetchError $e) {
@@ -144,7 +152,7 @@ function commentTarget(Ctx $ctx, string $target): array
         throw new HttpError(400, 'target-gone', 'The post doesn\'t exist');
     if (!$found['item']['allowComments'])
         throw new HttpError(400, 'comments-disabled', 'The post is closed for comments');
-    return ['feed' => $found['feed'], 'item' => $found['item'], 'policy' => policy($policy)];
+    return ['feed' => $found['feed'], 'item' => $found['item'], 'policy' => policy($policy), 'republish' => is_string($s['republish'] ?? null) ? $s['republish'] : 'no'];
 }
 
 /**
@@ -194,7 +202,8 @@ function statusFile(Ctx $ctx, string $id): string
 function writeStatus(Ctx $ctx, string $id, array $status): void
 {
     @mkdir(dirname(statusFile($ctx, $id)), 0755, true);
-    writeAtomic(statusFile($ctx, $id), json_encode($status + ['guid' => $id, 'expiresAt' => $ctx->now() + STATUS_KEEP_MS], JSON_FLAGS), 0644);
+    $keep = $status['status'] === 'pending' ? PENDING_KEEP_MS : STATUS_KEEP_MS;
+    writeAtomic(statusFile($ctx, $id), json_encode($status + ['guid' => $id, 'expiresAt' => $ctx->now() + $keep], JSON_FLAGS), 0644);
 }
 
 function readStatus(Ctx $ctx, string $id): ?array
@@ -403,7 +412,7 @@ function attribution(array $post, array $feed, string $sourceUrl): array
     return [$post['author'] ?? urlHost($sourceUrl), $trusted ? '@' . $host : null];
 }
 
-// --- Comments (RFC-4, republish: no) ---------------------------------------------------------
+// --- Comments (RFC-4) ------------------------------------------------------------------------
 
 function processComment(Ctx $ctx, array $job)
 {
@@ -419,6 +428,7 @@ function processComment(Ctx $ctx, array $job)
     }
     $policy = $target['policy'];
     $existing = findInboxItem($ctx, $id);
+    $published = publishedComment($ctx, $target['ref'], $id);
     try {
         $found = findItem($ctx, $source);
         $gone = !$found['item'] && $found['complete'];
@@ -428,8 +438,9 @@ function processComment(Ctx $ctx, array $job)
         $gone = true;
     }
     if ($gone) {
-        if ($existing && $policy['allowDelete']) {
+        if (($existing || $published) && $policy['allowDelete']) {
             removeInboxItem($ctx, $id);
+            unpublishComment($ctx, $target['ref'], $id);
             writeStatus($ctx, $id, ['status' => 'deleted']);
             Log::event('comment.deleted', ['source' => $source]);
             return;
@@ -441,10 +452,12 @@ function processComment(Ctx $ctx, array $job)
         return $fail($found['feed']['page'] ? 'invalid-feed' : 'ambiguous-source', 'The comment could not be found in the author feed.');
     if ($found['feed']['page'])
         return $fail('invalid-feed', 'The author feed must be an RSS 2.0 or JSON Feed.');
-    if ($existing && !$policy['allowEdit'])
+    if (($existing || $published) && !$policy['allowEdit'])
         return $fail('edit-not-allowed', 'This comment was submitted already, and the feed doesn\'t allow edits.');
     if ($post['inReplyTo'] === null)
         return $fail('in-reply-to-missing', 'The comment has no inReplyTo.');
+    if ($target['republish'] === 'summary' && !(is_string($post['url'] ?? null) && preg_match('#^https?://#i', $post['url']) && isCleanUrlString($post['url'])))
+        return $fail('link-missing', 'Only an abstract of the comment is published here, so it needs a link to its full text.');
     if (!sameRef($post['inReplyTo'], $target['ref']))
         return $fail('in-reply-to-mismatch', 'The comment\'s inReplyTo is not the post it was submitted to.');
     $account = $post['account'] ?? $found['feed']['account'];
@@ -473,14 +486,24 @@ function processComment(Ctx $ctx, array $job)
 
     $now = $ctx->now();
     $date = $post['date'] !== null && abs(strtotime($post['date']) * 1000 - $now) <= DATE_SLACK_MS ? $post['date'] : gmdate('Y-m-d\TH:i:s\Z', intdiv($now, 1000));
+    // Published after the owner approves it, in full or as an abstract, and only in a kept feed, which has comment feeds.
+    $approve = in_array($target['republish'], PUBLISHING, true) && keptPost($ctx, $target['ref']) !== null;
+    $item = inboxItem($ctx, $id, 'submission', $source, $target['ref'], ['date' => $date] + $post, postHtml($post),
+        $post['author'] ?? $sourceHost, $account === null ? null : '@' . accountHost($account), $approve ? $target['republish'] : null, (bool) $published);
+    if ($published && isSameComment($item, $published)) {
+        // Sent again without a change: nothing to approve.
+        removeInboxItem($ctx, $id);
+        writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $published->date_published ?? $date, 'pubUrl' => commentAddress($ctx, $target['ref'], $id)]);
+        Log::event('comment.unchanged', ['source' => $source, 'target' => $target['ref']]);
+        return;
+    }
     try {
-        putInboxItem($ctx, inboxItem($ctx, $id, 'submission', $source, $target['ref'], ['date' => $date] + $post, postHtml($post),
-            $post['author'] ?? $sourceHost, $account === null ? null : '@' . accountHost($account)));
+        putInboxItem($ctx, $item);
     } catch (InboxFull $e) {
         return $fail('moderation-unavailable', $e->getMessage());
     }
-    writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $date]);
-    Log::event('comment.delivered', ['source' => $source, 'target' => $target['ref'], 'edit' => (bool) $existing]);
+    writeStatus($ctx, $id, $approve ? ['status' => 'pending'] : ['status' => 'success', 'pubDate' => $date]);
+    Log::event('comment.delivered', ['source' => $source, 'target' => $target['ref'], 'edit' => $existing || $published, 'approve' => $approve]);
 }
 
 // --- Discovery -----------------------------------------------------------------------------

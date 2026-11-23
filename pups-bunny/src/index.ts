@@ -90,6 +90,7 @@ function receiverRoutes(req: Request, path: string, s: Settings, env: Env): Prom
   if (status) return cors(req, async () => await commentStatusEndpoint(req, status[1], await receiver(s, env)) ?? notFound())
   if (path == '/pups/inbox/action') return cors(req, async () => inboxActionEndpoint(req, await receiver(s, env)))
   if (path == '/pups/inbox/dismiss') return receiver(s, env).then(r => dismissPage(req, r, s.ownerHost))
+  if (path == '/pups/inbox/approve') return receiver(s, env).then(r => dismissPage(req, r, s.ownerHost, 'approve'))
 }
 
 /** The homepage: webpup while it is installed, else / forwards to the owner pages. An existing website behind this server keeps /. */

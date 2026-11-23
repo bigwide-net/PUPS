@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { bearer, call, connect, mockClientFetch, ORIGIN, put, registerClient, setupOwner, useEnv } from './helpers'
+import { bearer, call, connect, form, mockClientFetch, ORIGIN, put, registerClient, settle, setupOwner, useEnv, web } from './helpers'
 
 /** Kept feeds (RFC-7) on the Worker. pups-feeds has the detailed tests of the archives. */
 const app = registerClient('feed-app.example')
@@ -99,5 +99,37 @@ describe('kept feeds', () => {
     const res = await post('/feed.json', { id: 'w1', content_text: 'With a page' })
     const item = (await res.json() as any).item
     expect(item.url).toBe(`${ORIGIN}/p/feed/post/${item._archive.index}`)
+  })
+
+  it('publish approved comments in comment feeds, which only the server writes', async () => {
+    const COMMENTS = `${ORIGIN}/pups/comments`
+    const submissions = { url: COMMENTS, republish: 'full', policies: { comments: { minLength: 2 } } }
+    expect((await put('/feed/talk.json', token, feedBody({ _submissions: submissions }), { 'if-none-match': '*' })).status).toBe(201)
+    expect((await post('/feed/talk.json', { id: 'p-1', content_text: 'Talk to me' })).status).toBe(201)
+    expect((await stored('/feed/talk.json')).items[0]._source.comments).toEqual({ count: 0, total: 0 })
+
+    const src = 'https://bob.example/talk.json'
+    web.set(src, { body: JSON.stringify({ version: 'https://jsonfeed.org/version/1.1', title: 'Bob', items: [
+      { id: 'c-1', content_text: 'Agreed.', authors: [{ name: 'Bob' }], _source: { inReplyTo: `${ORIGIN}/feed/talk.json#p-1` } }] }) })
+    const res = await call(COMMENTS, { method: 'POST', body: form({ source: `${src}#c-1`, target: `${ORIGIN}/feed/talk.json#p-1` }), headers: { origin: 'https://bob.example' } })
+    expect(res.status).toBe(201)
+    await settle()
+    const statusUrl = res.headers.get('location')!
+    expect((await (await call(statusUrl)).json() as any).status).toBe('pending')
+    const inbox = await stored('/pups/private/inbox.json')
+    const item = inbox.items.find((i: any) => i._inbox.target == `${ORIGIN}/feed/talk.json#p-1`)
+    expect(item._actions.actions.map((a: any) => a.template ?? a.type)).toEqual(['approve', 'dismiss', 'display'])
+    const approve = await call(inbox._actions.templates.approve.action.replace('{id}', item.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    const address = `${ORIGIN}/feed/talk/comments/0.json#${item.id}`
+    expect([approve.status, (await approve.json() as any).actions[0].url]).toEqual([200, address])
+    expect((await stored('/feed/talk/comments/0.json')).items.map((i: any) => [i.id, i.content_html])).toEqual([[item.id, '<p>Agreed.</p>']])
+    expect((await stored('/feed/talk.json')).items[0]._source.comments).toEqual({ feedUrl: `${ORIGIN}/feed/talk/comments/0.json`, count: 1, total: 1 })
+    expect(await (await call(statusUrl)).json()).toMatchObject({ status: 'success', pubUrl: address })
+    expect((await put('/feed/talk/comments/0.json', token, feedBody())).status).toBe(403)
+    expect((await call('/feed/talk/comments/0.json')).status).toBe(200)
+
+    // A deleted post takes its comments along.
+    expect((await post('/feed/talk.json', { id: 'p-1', _pups: { delete: true } })).status).toBe(200)
+    expect((await call('/feed/talk/comments/0.json')).status).toBe(404)
   })
 })
