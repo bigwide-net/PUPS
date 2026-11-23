@@ -1,0 +1,27 @@
+{
+  "name": "pups-inbox",
+  "version": "0.1.0",
+  "description": "The built-in receiver of the Personal Upload Server: mentions (RFC-11) and comments (RFC-4) into the owner's inbox (RFC-12), with Dismiss (RFC-9, RFC-8). Shared by the TypeScript implementations",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "domhandler": "^6.0.0",
+    "domutils": "^4.0.2",
+    "htmlparser2": "^12.0.0",
+    "pups-ui": "file:../pups-ui"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "4.1"
+  }
+}

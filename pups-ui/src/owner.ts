@@ -1,4 +1,6 @@
 import { alert, confirmFields, type ConfirmOptions, escapeHtml as h, jsonScript, page, status, time } from './html'
+import { type HomepageKind, homepageSummary } from './homepage'
+import { inboxSection, type InboxSummary } from './inbox'
 import { sanitizeText, visible } from './sanitize'
 import { t } from './texts'
 
@@ -18,7 +20,7 @@ export interface OwnerSite {
   subdomainMode: boolean
 }
 
-export type OwnerPath = '/pups/apps' | '/pups/password'
+export type OwnerPath = '/pups/apps' | '/pups/homepage' | '/pups/password' | ''
 
 export function ownerNav(site: OwnerSite, current: OwnerPath) {
   const item = (href: string, label: string) =>
@@ -26,6 +28,7 @@ export function ownerNav(site: OwnerSite, current: OwnerPath) {
   return `<nav aria-label="Owner pages">
 <ul>
 ${item('/pups/apps', 'Apps')}
+${item('/pups/homepage', 'Homepage')}
 ${item('/pups/password', 'Password')}
 ${site.subdomainMode ? '<li><form method="post" action="/pups/logout"><button type="submit">Log out</button></form></li>' : ''}
 </ul>
@@ -88,6 +91,8 @@ export interface SetupComplete {
   configUrl: string
   issuer: string
   hasPasskey: boolean
+  /** Who owns the domain's homepage (homepage.ts). */
+  homepage?: HomepageKind
 }
 
 export const setupCompletePage = (site: OwnerSite, o: SetupComplete) => page('Setup complete', `<h1>Setup complete</h1>
@@ -100,6 +105,7 @@ links to the configuration document <a href="${h(o.configUrl)}">${h(o.configUrl)
 <p role="note">Your login now proves that you are <strong>${h(site.ownerHost)}</strong>. Anyone who gets it can sign in as you to
 every app that uses “sign in with your domain”, not just change your files.${o.hasPasskey ? '' : ' Consider using a passkey.'}</p>
 ${sameDomainWarning(site)}
+${o.homepage ? `<h2>Your homepage</h2>\n${homepageSummary(site, o.homepage)}` : ''}
 <p><a href="${h(o.issuer)}/pups/apps">Manage your apps</a></p>`, { site: site.ownerHost })
 
 // --- Login -----------------------------------------------------------------------------
@@ -157,6 +163,8 @@ export interface AppsPage {
   /** The storage quota; 0 or missing for none. */
   maxBytes?: number
   confirm: ConfirmOptions
+  /** What the built-in receiver has put into the inbox, if it is on. */
+  inbox?: InboxSummary
   message?: string
   error?: string
 }
@@ -232,6 +240,7 @@ ${site.subdomainMode ? `<section aria-labelledby="sessions-heading">
 <p><button type="submit" name="signout_all" value="1">Log out everywhere</button></p>
 </section>` : ''}
 </form>
+${o.inbox ? inboxSection(o.inbox) : ''}
 ${o.usedBytes == undefined ? '' : `<p>Storage used: ${(o.usedBytes / 1048576).toFixed(1)} MiB${o.maxBytes ? ` of ${(o.maxBytes / 1048576).toFixed(0)} MiB` : ''}.</p>`}`,
   { site: site.ownerHost, nav: ownerNav(site, '/pups/apps') })
 }

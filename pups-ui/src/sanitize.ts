@@ -17,6 +17,9 @@ const UNSAFE_ALL = new RegExp(UNSAFE.source, 'g')
 /** Does a value contain control, invisible or specials characters? */
 export const hasUnsafeChars = (s: string) => UNSAFE.test(s)
 
+/** Replaces control, invisible and specials characters, by default with nothing. */
+export const stripUnsafe = (s: string, by = '') => s.replace(UNSAFE_ALL, by)
+
 /**
  * Self-declared text for display (e.g. client_name): line breaks and tabs become spaces,
  * unsafe characters are removed, whitespace is collapsed, and the result has at most `max`

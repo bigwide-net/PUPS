@@ -52,7 +52,7 @@ ${body}
       'x-frame-options': 'DENY',
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'no-referrer',
-      'content-security-policy': `default-src 'none'; script-src 'self'; style-src 'self'; img-src https: data:; ` +
+      'content-security-policy': `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; ` +
         `form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`,
     },
   })
