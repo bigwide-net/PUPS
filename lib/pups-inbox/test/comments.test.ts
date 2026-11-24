@@ -80,6 +80,7 @@ async function setup(policy: Record<string, unknown> = {}, republish = 'full') {
 }
 
 const ids = (doc: any) => doc.items.map((i: any) => i.id)
+const ownFeed = (items: unknown[]) => ({ version: 'https://jsonfeed.org/version/1.1', title: 'Mine', items })
 
 describe('comment feeds', () => {
   it('posts carry _source.comments while the feed takes comments here', async () => {
@@ -234,6 +235,39 @@ describe('comment feeds', () => {
     expect(files.has(`/feed/comments/0/${erin}.json`)).toBe(true)
     await app.post({ id: 'p-12', _pups: { delete: true } })
     expect([...files.keys()].filter(p => p.startsWith('/feed/comments/'))).toEqual([])
+  })
+
+  it("the owner's own comments are published at once, never in the inbox", async () => {
+    const { r, files, app, stored, post, status, comment, action } = await setup({ allowEdit: true })
+    await app.post({ id: 'p-12', content_text: 'A post' })
+    await comment()
+    const bob = inbox(files).items[0].id
+    await action(bob, 'approve')
+    /** Alice's comment in a feed on her own server, submitted and processed. Returns its status. */
+    const mine = async (html: string, target: string) => {
+      files.set('/feed/mine.json', JSON.stringify(ownFeed([{ id: 'a-1', url: `${ORIGIN}/a-1`, content_html: html, authors: [{ name: 'Alice' }], _source: { inReplyTo: target } }])))
+      const res = (await commentEndpoint(webmention(COMMENTS, `${ORIGIN}/feed/mine.json#a-1`, target), r))!
+      expect(res.status, await res.clone().text()).toBe(201)
+      await processQueue(r)
+      return status(res.headers.get('location')!)
+    }
+    const s = await mine('<p>Thanks, Bob!</p>', `${ORIGIN}/feed/comments/0.json#${bob}`)
+    expect([inbox(files).items, s.status, s.pubUrl]).toEqual([[], 'success', `${ORIGIN}/feed/comments/0/${bob}.json#${s.guid}`])
+    const reply = stored(`/feed/comments/0/${bob}.json`).items[0]
+    expect([reply.content_html, reply.authors]).toEqual(['<p>Thanks, Bob!</p>', [{ name: 'Alice' }]])
+    expect(post()._source.comments.total).toBe(2)
+
+    // An edit is published at once, too.
+    await mine('<p>Thanks a lot, Bob!</p>', `${ORIGIN}/feed/comments/0.json#${bob}`)
+    expect([inbox(files).items, stored(`/feed/comments/0/${bob}.json`).items[0].content_html]).toEqual([[], '<p>Thanks a lot, Bob!</p>'])
+
+    // A feed that only delivers comments: nothing to publish, and nothing for the inbox.
+    const u = await setup({}, 'no')
+    await u.app.post({ id: 'p-12', content_text: 'A post' })
+    u.files.set('/feed/mine.json', JSON.stringify(ownFeed([{ id: 'a-1', content_html: '<p>My own words.</p>', _source: { inReplyTo: `${ORIGIN}/feed.json#p-12` } }])))
+    const res = (await commentEndpoint(webmention(COMMENTS, `${ORIGIN}/feed/mine.json#a-1`, `${ORIGIN}/feed.json#p-12`), u.r))!
+    await processQueue(u.r)
+    expect([u.files.has('/pups/private/inbox.json') ? inbox(u.files).items : [], (await u.status(res.headers.get('location')!)).status]).toEqual([[], 'success'])
   })
 
   it('Dismiss rejects; the comment limit; feeds that only deliver comments', async () => {

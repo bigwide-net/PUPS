@@ -210,6 +210,43 @@ test('comment feeds: replies to comments, as deep as the policy allows, counted 
     eq([$t->ctx->files->stat('/feed/comments/0.json'), $t->ctx->files->stat("/feed/comments/0/$erin.json")], [null, null]);
 });
 
+test('comment feeds: the owner\'s own comments are published at once, never in the inbox', function () {
+    [$t, $tok] = commentSetup(['allowEdit' => true]);
+    postTo($t, $tok, ['id' => 'p-12', 'content_text' => 'A post']);
+    comment($t);
+    $bob = inbox($t)['items'][0]['id'];
+    inboxAction($t, $bob, 'approve');
+    /** Alice's comment in a feed on her own server, submitted and processed. Returns its status. */
+    $mine = function (string $html, string $target) use ($t, $tok) {
+        $res = $t->put('/feed/mine.json', $tok, json_encode(['version' => 'https://jsonfeed.org/version/1.1', 'title' => 'Mine', 'items' => [
+            ['id' => 'a-1', 'url' => ORIGIN . '/a-1', 'content_html' => $html, 'authors' => [['name' => 'Alice']], '_source' => ['inReplyTo' => $target]]]], JSON_UNESCAPED_SLASHES));
+        ok(in_array($res->status, [200, 201], true), $res->text);
+        $res = webmention($t, COMMENTS, ORIGIN . '/feed/mine.json#a-1', $target);
+        eq($res->status, 201, $res->text);
+        processQueue($t->ctx);
+        return $t->get(substr($res->header('location'), strlen(ORIGIN)))->json();
+    };
+    $status = $mine('<p>Thanks, Bob!</p>', ORIGIN . "/feed/comments/0.json#$bob");
+    eq([inbox($t)['items'], $status['status']], [[], 'success'], 'not in the inbox');
+    eq($status['pubUrl'], ORIGIN . "/feed/comments/0/$bob.json#" . $status['guid']);
+    $reply = stored($t, "/feed/comments/0/$bob.json")['items'][0];
+    eq([$reply['content_html'], $reply['authors']], ['<p>Thanks, Bob!</p>', [['name' => 'Alice']]]);
+    eq(post($t)['_source']['comments']['total'], 2);
+
+    // An edit is published at once, too.
+    $mine('<p>Thanks a lot, Bob!</p>', ORIGIN . "/feed/comments/0.json#$bob");
+    eq([inbox($t)['items'], stored($t, "/feed/comments/0/$bob.json")['items'][0]['content_html']], [[], '<p>Thanks a lot, Bob!</p>']);
+
+    // A feed that only delivers comments: nothing to publish, and nothing for the inbox.
+    [$u, $tok] = commentSetup([], 'no');
+    postTo($u, $tok, ['id' => 'p-12', 'content_text' => 'A post']);
+    $u->put('/feed/mine.json', $tok, json_encode(['version' => 'https://jsonfeed.org/version/1.1', 'items' => [
+        ['id' => 'a-1', 'content_html' => '<p>My own words.</p>', '_source' => ['inReplyTo' => ORIGIN . '/feed.json#p-12']]]], JSON_UNESCAPED_SLASHES));
+    $res = webmention($u, COMMENTS, ORIGIN . '/feed/mine.json#a-1', ORIGIN . '/feed.json#p-12');
+    processQueue($u->ctx);
+    eq([inbox($u)['items'] ?? [], $u->get(substr($res->header('location'), strlen(ORIGIN)))->json()['status']], [[], 'success']);
+});
+
 test('comment feeds: Dismiss rejects; the comment limit; feeds that only deliver comments', function () {
     [$t, $tok] = commentSetup(['commentLimit' => 1]);
     postTo($t, $tok, ['id' => 'p-12', 'content_text' => 'A post']);

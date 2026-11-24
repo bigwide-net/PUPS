@@ -1,7 +1,7 @@
 import { isCleanUrlString, sanitizeText } from 'pups-ui'
 import { accountHost, handles, handleText, plainText, postHtml } from './content'
 import { type Feed, FetchError, type FeedSource, findItem, loadFeed, type Post, readLimited, resolveUrl, sameRef, splitRef, urlHost } from './feeds'
-import { type CommentFeeds, isSameComment, PUBLISHING } from './comments'
+import { commentItem, type CommentFeeds, isSameComment, PUBLISHING, refusal } from './comments'
 import {
   checkRoomForSubmission, excerptHtml, findInboxItem, ForeignInbox, type InboxContext, InboxFull, inboxItem, putInboxItem, removeInboxItem,
 } from './inbox'
@@ -80,6 +80,9 @@ export interface Receiver extends InboxContext {
   commentFeeds?: CommentFeeds
   log(event: string, data?: Record<string, unknown>): void
 }
+
+/** Whether a URL is the owner's: on the owner's host, or served by this server for the owner. */
+const isOwnerUrl = (r: Receiver, url: string) => urlHost(url) == r.ownerHost || r.feeds.ownerPath(url) != undefined
 
 export const mentionUrl = (r: { base: string }) => `${r.base}/pups/mention`
 export const commentUrl = (r: { base: string }) => `${r.base}/pups/comments`
@@ -193,7 +196,8 @@ export async function commentEndpoint(req: Request, r: Receiver): Promise<Respon
     if ((existing || await r.commentFeeds?.published(target, id)) && !post.policy.allowEdit && !post.policy.allowDelete)
       throw new ReceiverError(400, 'edit-not-allowed', 'This comment was submitted already, and the feed allows neither edits nor deletes')
     try {
-      await checkRoomForSubmission(r, id, urlHost(source))
+      // The owner's own comments don't go into the inbox.
+      if (!isOwnerUrl(r, source)) await checkRoomForSubmission(r, id, urlHost(source))
     } catch (e) {
       if (e instanceof InboxFull) throw new ReceiverError(400, 'moderation-unavailable', `${e.message} Try again later.`)
       throw e
@@ -487,6 +491,27 @@ async function processComment(r: Receiver, job: Job) {
     await removeInboxItem(r, id)
     await writeStatus(r, id, { status: 'success', pubDate: published.item.date_published ?? date, pubUrl: published.address })
     r.log('comment.unchanged', { source, target: job.target })
+    return
+  }
+  if (isOwnerUrl(r, source) && isOwnerUrl(r, found!.feed.url)) {
+    // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
+    await removeInboxItem(r, id)
+    const pubDate = published?.item.date_published ?? date
+    if (!approve) {
+      await writeStatus(r, id, { status: 'success', pubDate })
+      r.log('comment.own', { source, target: job.target, published: false })
+      return
+    }
+    let pubUrl
+    try {
+      pubUrl = await r.commentFeeds!.publish(job.target, now => commentItem(item, now == 'summary' ? 'summary' : undefined))
+    } catch (e) {
+      const x = refusal(e)
+      if (!x) throw e
+      return fail(x.code == 'conflict' ? 'target-gone' : x.code, x.message)
+    }
+    await writeStatus(r, id, { status: 'success', pubDate, pubUrl })
+    r.log('comment.own', { source, target: job.target, published: true, url: pubUrl })
     return
   }
   try {

@@ -52,6 +52,12 @@ function ownerHost(Config $c): string
     return strtolower($c->rpId);
 }
 
+/** Whether a URL is the owner's: on the owner's host, or served by this server for the owner. */
+function isOwnerUrl(Ctx $ctx, string $url): bool
+{
+    return urlHost($url) === ownerHost($ctx->config) || ownerStoragePath($url, $ctx->config) !== null;
+}
+
 /** A short, stable id for inbox items and jobs. */
 function refId(string ...$parts): string
 {
@@ -114,7 +120,9 @@ function commentEndpoint(Request $req, Ctx $ctx): ?Response
     if ($existing && !$post['policy']['allowEdit'] && !$post['policy']['allowDelete'])
         throw new HttpError(400, 'edit-not-allowed', 'This comment was submitted already, and the feed allows neither edits nor deletes');
     try {
-        checkRoomForSubmission($ctx, $id, urlHost($source));
+        // The owner's own comments don't go into the inbox.
+        if (!isOwnerUrl($ctx, $source))
+            checkRoomForSubmission($ctx, $id, urlHost($source));
     } catch (InboxFull $e) {
         throw new HttpError(400, 'moderation-unavailable', $e->getMessage() . ' Try again later.');
     }
@@ -506,6 +514,24 @@ function processComment(Ctx $ctx, array $job)
         removeInboxItem($ctx, $id);
         writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $published->date_published ?? $date, 'pubUrl' => commentAddress($ctx, $target['ref'], $id)]);
         Log::event('comment.unchanged', ['source' => $source, 'target' => $target['ref']]);
+        return;
+    }
+    if (isOwnerUrl($ctx, $source) && isOwnerUrl($ctx, $found['feed']['url'])) {
+        // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
+        removeInboxItem($ctx, $id);
+        $pubDate = $published->date_published ?? $date;
+        if (!$approve) {
+            writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $pubDate]);
+            Log::event('comment.own', ['source' => $source, 'target' => $target['ref'], 'published' => false]);
+            return;
+        }
+        try {
+            $url = publishComment($ctx, $item);
+        } catch (HttpError $e) {
+            return $fail($e->error === 'conflict' ? 'target-gone' : $e->error, $e->getMessage());
+        }
+        writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $pubDate, 'pubUrl' => $url]);
+        Log::event('comment.own', ['source' => $source, 'target' => $target['ref'], 'published' => true, 'url' => $url]);
         return;
     }
     try {
