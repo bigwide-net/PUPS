@@ -28,7 +28,7 @@ const PENDING_KEEP_MS = 30 * 24 * 3600_000;
 const DATE_SLACK_MS = 30 * 60_000;
 /** The policy defaults of RFC-4 "Policies". */
 const POLICY_DEFAULTS = ['title' => 'none', 'minLength' => 2, 'maxLength' => 2000, 'requireSocialSpec' => false, 'allowEdit' => false, 'allowDelete' => false,
-    'commentLimit' => COMMENT_POLICY_LIMIT];
+    'commentLimit' => COMMENT_POLICY_LIMIT, 'maxDepth' => MAX_DEPTH_DEFAULT];
 const MAX_TITLE_CHARS = 300;
 
 function mentionUrl(Config $c): string
@@ -95,8 +95,9 @@ function mentionEndpoint(Request $req, Ctx $ctx): ?Response
 }
 
 /**
- * POST /pups/comments (RFC-4 "Submitting"): only comments on posts of the owner's feeds whose
- * `_submissions.url` is this endpoint. Answers 201 with a status page.
+ * POST /pups/comments (RFC-4 "Submitting"): comments on posts of the owner's feeds whose
+ * `_submissions.url` is this endpoint, and replies to the comments published in their comment feeds.
+ * Answers 201 with a status page.
  */
 function commentEndpoint(Request $req, Ctx $ctx): ?Response
 {
@@ -124,35 +125,44 @@ function commentEndpoint(Request $req, Ctx $ctx): ?Response
 }
 
 /**
- * The post a comment answers, if it may be commented on here: ['feed', 'item', 'policy',
- * 'republish']. Throws 400 otherwise (RFC-4: the cheap checks are synchronous).
+ * What a comment answers, if it may be commented on here: a post, or a comment published in a comment
+ * feed of a kept feed (a reply). Returns ['policy', 'republish'] of the post's feed. Throws 400
+ * otherwise (RFC-4: the cheap checks are synchronous).
  */
 function commentTarget(Ctx $ctx, string $target): array
 {
     [$url, $id] = splitRef($target);
     if ($id === null)
-        throw new HttpError(400, 'invalid_request', 'Only comments on posts are accepted: target must be a feed URL + #id');
+        throw new HttpError(400, 'invalid_request', 'Only comments on posts and comments are accepted: target must be a feed URL + #id');
     $path = ownerStoragePath($url, $ctx->config);
     if ($path === null)
         throw new HttpError(400, 'invalid_request', 'target is not a feed on this server');
-    if (keptFileOwner($path, $ctx->config) !== null && archiveOwner($path, $ctx->config) === null)
-        throw new HttpError(400, 'max-depth', 'Replies to comments are not accepted here yet, only comments on posts');
-    try {
-        $found = findItem($ctx, $target);
-    } catch (FetchError $e) {
-        throw new HttpError(400, 'target-gone', 'The target feed can\'t be read: ' . $e->getMessage());
+    if (keptFileOwner($path, $ctx->config) !== null && archiveOwner($path, $ctx->config) === null) {
+        // A reply: the feed's rules apply, also to the post that the thread belongs to.
+        $thread = commentThread($ctx, $target) ?? throw new HttpError(400, 'target-gone', 'The comment isn\'t published (anymore)');
+        $s = json_decode(json_encode($thread['feed']->doc->_submissions ?? null), true);
+        [$exists, $open, $depth] = [true, allowsComments($thread['post']), $thread['depth']];
+    } else {
+        try {
+            $found = findItem($ctx, $target);
+        } catch (FetchError $e) {
+            throw new HttpError(400, 'target-gone', 'The target feed can\'t be read: ' . $e->getMessage());
+        }
+        $s = submissionsOf($ctx, $found['feed']);
+        [$exists, $open, $depth] = [(bool) $found['item'], $found['item']['allowComments'] ?? false, 1];
     }
-    $s = submissionsOf($ctx, $found['feed']);
     if (($s['url'] ?? null) !== commentUrl($ctx->config))
         throw new HttpError(400, 'invalid_request', 'This feed doesn\'t accept comments at this endpoint');
-    $policy = is_array($s['policies'] ?? null) && is_array($s['policies']['comments'] ?? null) ? $s['policies']['comments'] : null;
+    $policy = is_array($s['policies'] ?? null) && is_array($s['policies']['comments'] ?? null) ? policy($s['policies']['comments']) : null;
     if ($policy === null)
         throw new HttpError(400, 'comments-disabled', 'This feed accepts no comments');
-    if (!$found['item'])
+    if (!$exists)
         throw new HttpError(400, 'target-gone', 'The post doesn\'t exist');
-    if (!$found['item']['allowComments'])
+    if (!$open)
         throw new HttpError(400, 'comments-disabled', 'The post is closed for comments');
-    return ['feed' => $found['feed'], 'item' => $found['item'], 'policy' => policy($policy), 'republish' => is_string($s['republish'] ?? null) ? $s['republish'] : 'no'];
+    if ($depth > $policy['maxDepth'])
+        throw new HttpError(400, 'max-depth', "Replies are nested at most {$policy['maxDepth']} levels deep here");
+    return ['policy' => $policy, 'republish' => is_string($s['republish'] ?? null) ? $s['republish'] : 'no'];
 }
 
 /**
@@ -180,6 +190,7 @@ function policy(array $p): array
     foreach (POLICY_DEFAULTS as $k => $default)
         if (isset($p[$k]) && gettype($p[$k]) === gettype($default) && ($k !== 'title' || in_array($p[$k], ['required', 'allowed', 'none'], true)))
             $out[$k] = $p[$k];
+    $out['maxDepth'] = maxDepthOf($out['maxDepth']);
     return $out;
 }
 
@@ -487,7 +498,7 @@ function processComment(Ctx $ctx, array $job)
     $now = $ctx->now();
     $date = $post['date'] !== null && abs(strtotime($post['date']) * 1000 - $now) <= DATE_SLACK_MS ? $post['date'] : gmdate('Y-m-d\TH:i:s\Z', intdiv($now, 1000));
     // Published after the owner approves it, in full or as an abstract, and only in a kept feed, which has comment feeds.
-    $approve = in_array($target['republish'], PUBLISHING, true) && keptPost($ctx, $target['ref']) !== null;
+    $approve = in_array($target['republish'], PUBLISHING, true) && commentThread($ctx, $target['ref']) !== null;
     $item = inboxItem($ctx, $id, 'submission', $source, $target['ref'], ['date' => $date] + $post, postHtml($post),
         $post['author'] ?? $sourceHost, $account === null ? null : '@' . accountHost($account), $approve ? $target['republish'] : null, (bool) $published);
     if ($published && isSameComment($item, $published)) {

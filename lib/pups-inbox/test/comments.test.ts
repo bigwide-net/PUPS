@@ -62,9 +62,21 @@ async function setup(policy: Record<string, unknown> = {}, republish = 'full') {
     await processQueue(r)
     return res.headers.get('location')!
   }
+  /** A reply by `host` to `target`, submitted and processed. Returns the status URL. */
+  const replyTo = async (host: string, target: string, id = 'r-1', html = '<p>Indeed, it is.</p>') => {
+    const name = host.split('.')[0]!
+    t.web.set(`https://${host}/comments.json`, feedDoc([{
+      id, authors: [{ name: name[0]!.toUpperCase() + name.slice(1) }], url: `https://${host}/c/${id}`, content_html: html,
+      _source: { accounts: { socialspec: `@${host}` }, inReplyTo: target },
+    }]))
+    const res = (await commentEndpoint(webmention(COMMENTS, `https://${host}/comments.json#${id}`, target), r))!
+    expect(res.status, await res.clone().text()).toBe(201)
+    await processQueue(r)
+    return res.headers.get('location')!
+  }
   const action = (id: string, what: 'approve' | 'dismiss') => inboxActionEndpoint(new Request(
     inbox(files)._actions.templates[what].action.replace('{id}', encodeURIComponent(id)), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }), r)
-  return { ...t, host, app, stored, post, status, comment, action }
+  return { ...t, host, app, stored, post, status, comment, replyTo, action }
 }
 
 const ids = (doc: any) => doc.items.map((i: any) => i.id)
@@ -96,20 +108,21 @@ describe('comment feeds', () => {
       .toEqual([false, '/feed.json', '/feed/photos.json'])
   })
 
-  it('Approve publishes the comment, counts it, and tells its author', async () => {
+  it('Publish Comment publishes the comment, counts it, and tells its author', async () => {
     const { r, files, t, web, app, stored, post, status, comment, action } = await setup({ allowEdit: true, allowDelete: true })
     await app.post({ id: 'p-12', title: 'Is RSS the better social network?', content_text: 'I think so.' })
     let statusUrl = await comment()
     expect((await status(statusUrl)).status).toBe('pending')
     const item = inbox(files).items[0]
-    expect(item._actions.actions.map((a: any) => a.template ?? a.type)).toEqual(['approve', 'dismiss', 'display'])
-    expect(item._actions.actions.map((a: any) => a.group)).toEqual(['decide', 'decide', 'origin'])
-    expect(inbox(files)._actions.templates.approve.style).toBe('major')
-    expect(item.content_html).toContain(`>Approve</a></p><p class="without-extension-actions"><a href="${ORIGIN}/pups/inbox/dismiss?`)
+    expect(item._actions.actions.map((a: any) => a.template ?? a.type)).toEqual(['display', 'approve', 'dismiss'])
+    expect(item._actions.actions.map((a: any) => a.group)).toEqual(['origin', 'decide', 'decide'])
+    expect(inbox(files)._actions.templates.approve).toMatchObject({ label: 'Publish Comment', style: 'major' })
+    expect(item.content_html).toContain(`>Comment from @bob.example.</a></p><p class="without-extension-actions"><a href="${ORIGIN}/pups/inbox/approve?`)
+    expect(item.content_html).toContain(`>Publish Comment</a></p><p class="without-extension-actions"><a href="${ORIGIN}/pups/inbox/dismiss?`)
 
     const res = await action(item.id, 'approve')
     const address = `${ORIGIN}/feed/comments/0.json#${item.id}`
-    expect([res.status, (await res.json()).actions]).toEqual([200, [{ type: 'display', text: 'Approved and published.', url: address }]])
+    expect([res.status, (await res.json()).actions]).toEqual([200, [{ type: 'display', text: 'Comment published.', url: address }]])
     expect(inbox(files).items).toEqual([])
     expect(await status(statusUrl)).toEqual({ status: 'success', pubDate: item._inbox.postDate, pubUrl: address, guid: item.id })
     const feed = stored('/feed/comments/0.json')
@@ -117,7 +130,7 @@ describe('comment feeds', () => {
     expect(feed.items).toEqual([{
       id: item.id, url: 'https://bob.example/c/c-17', content_html: '<p>Agreed, but discovery is <b>hard</b>.</p>',
       date_published: item._inbox.postDate, authors: [{ name: 'Bob' }],
-      _source: { about: SOURCE_SPEC, inReplyTo: `${ORIGIN}/feed.json#p-12`, accounts: { socialspec: '@bob.example' } },
+      _source: { about: SOURCE_SPEC, inReplyTo: `${ORIGIN}/feed.json#p-12`, accounts: { socialspec: '@bob.example' }, comments: { count: 0, total: 0 } },
     }])
     expect(post()._source.comments).toEqual({ feedUrl: `${ORIGIN}/feed/comments/0.json`, count: 1, total: 1 })
     expect(post().date_modified).toBeUndefined()
@@ -127,9 +140,9 @@ describe('comment feeds', () => {
     t.now += 60_000
     await comment('c-18', '<p>Me too.</p>')
     const second = inbox(files).items[0]
-    const link = /href="([^"]+)">Approve</.exec(second.content_html)![1]!.replace(/&amp;/g, '&')
+    const link = /href="([^"]+)">Publish Comment</.exec(second.content_html)![1]!.replace(/&amp;/g, '&')
     const html = await (await dismissPage(new Request(link), r, 'alice.pups.test', 'approve')).text()
-    expect(html).toContain('Approve and publish this comment?')
+    expect(html).toContain('Publish this comment?')
     expect(inbox(files).items).toHaveLength(1)
     const hidden = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)![1]!
     const done = await dismissPage(new Request(`${ORIGIN}/pups/inbox/approve`, {
@@ -143,7 +156,7 @@ describe('comment feeds', () => {
     t.now += 120_000
     await comment('c-17', '<p>Agreed, discovery is hard.</p>')
     const edit = inbox(files).items[0]
-    expect([edit.id, edit._actions.actions[2].text]).toEqual([item.id, 'Edited comment from @bob.example.'])
+    expect([edit.id, edit._actions.actions[0].text]).toEqual([item.id, 'Edited comment from @bob.example.'])
     expect(stored('/feed/comments/0.json').items[1].content_html).toContain('but discovery')
     await action(edit.id, 'approve')
     const c = stored('/feed/comments/0.json').items[1]
@@ -161,13 +174,66 @@ describe('comment feeds', () => {
     expect(ids(stored('/feed/comments/0.json'))).toEqual([second.id])
     expect(post()._source.comments).toEqual({ feedUrl: `${ORIGIN}/feed/comments/0.json`, count: 1, total: 1 })
 
-    // No replies to comments yet.
-    const reply = (await commentEndpoint(webmention(COMMENTS, 'https://bob.example/r.json#r', `${ORIGIN}/feed/comments/0.json#${second.id}`), r))!
-    expect([reply.status, (await reply.json()).error]).toEqual([400, 'max-depth'])
-
     // A deleted post takes its comments along.
     expect((await app.post({ id: 'p-12', _pups: { delete: true } })).status).toBe(200)
     expect(files.has('/feed/comments/0.json')).toBe(false)
+  })
+
+  it('replies to comments, as deep as the policy allows, counted up to the post', async () => {
+    const { r, files, web, app, stored, post, status, comment, replyTo, action } = await setup({ allowDelete: true, maxDepth: 3, commentLimit: 3 })
+    await app.post({ id: 'p-12', title: 'Is RSS the better social network?', content_text: 'I think so.' })
+    await comment()
+    const bob = inbox(files).items[0].id
+    await action(bob, 'approve')
+    const top = `${ORIGIN}/feed/comments/0.json`
+
+    // Carol answers Bob: her reply goes into the comment feed of Bob's comment.
+    const statusUrl = await replyTo('carol.example', `${top}#${bob}`)
+    expect(inbox(files).items[0]._actions.actions[0].text).toBe('Reply from @carol.example.')
+    const carol = inbox(files).items[0].id
+    await action(carol, 'approve')
+    const bobs = `${ORIGIN}/feed/comments/0/${bob}.json`
+    expect((await status(statusUrl)).pubUrl).toBe(`${bobs}#${carol}`)
+    const feed = stored(`/feed/comments/0/${bob}.json`)
+    expect([feed.title, feed.feed_url, feed.home_page_url, feed._pups.inReplyTo])
+      .toEqual(['Replies to a comment by Bob on “Is RSS the better social network?”', bobs, 'https://bob.example/c/c-17', `${top}#${bob}`])
+    expect([feed.items[0]._source.inReplyTo, feed.items[0]._source.comments]).toEqual([`${top}#${bob}`, { count: 0, total: 0 }])
+    expect(stored('/feed/comments/0.json').items[0]._source.comments).toEqual({ feedUrl: bobs, count: 1, total: 1 })
+    expect(post()._source.comments).toEqual({ feedUrl: top, count: 1, total: 2 })
+
+    // Dave answers Carol, at the deepest level: no replies to his.
+    await replyTo('dave.example', `${bobs}#${carol}`)
+    const dave = inbox(files).items[0].id
+    await action(dave, 'approve')
+    const carols = `${ORIGIN}/feed/comments/0/${carol}.json`
+    expect(stored(`/feed/comments/0/${carol}.json`).items[0]._source.comments).toBeUndefined()
+    expect(stored(`/feed/comments/0/${bob}.json`).items[0]._source.comments).toEqual({ feedUrl: carols, count: 1, total: 1 })
+    expect(stored('/feed/comments/0.json').items[0]._source.comments).toEqual({ feedUrl: bobs, count: 1, total: 2 })
+    expect(post()._source.comments).toEqual({ feedUrl: top, count: 1, total: 3 })
+    for (const [target, error] of [[`${carols}#${dave}`, 'max-depth'], [`${top}#s-unpublished`, 'target-gone']]) {
+      const res = (await commentEndpoint(webmention(COMMENTS, 'https://erin.example/comments.json#r-1', target!), r))!
+      expect([res.status, (await res.json()).error]).toEqual([400, error])
+    }
+
+    // The comment limit counts all levels.
+    await replyTo('erin.example', `${ORIGIN}/feed.json#p-12`)
+    const erin = inbox(files).items[0].id
+    expect((await (await action(erin, 'approve')).json()).message).toBe('The post has 3 comments, as many as the feed allows.')
+
+    // Bob deletes his comment: the replies go with it.
+    web.set('https://bob.example/comments.json', feedDoc([]))
+    await commentEndpoint(webmention(COMMENTS, 'https://bob.example/comments.json#c-17', `${ORIGIN}/feed.json#p-12`), r)
+    await processQueue(r)
+    expect(['/feed/comments/0.json', `/feed/comments/0/${bob}.json`, `/feed/comments/0/${carol}.json`].filter(p => files.has(p))).toEqual([])
+    expect(post()._source.comments).toEqual({ count: 0, total: 0 })
+    expect((await action(erin, 'approve')).status).toBe(200)
+
+    // A deleted post takes the whole thread along.
+    await replyTo('carol.example', `${top}#${erin}`, 'r-2')
+    await action(inbox(files).items[0].id, 'approve')
+    expect(files.has(`/feed/comments/0/${erin}.json`)).toBe(true)
+    await app.post({ id: 'p-12', _pups: { delete: true } })
+    expect([...files.keys()].filter(p => p.startsWith('/feed/comments/'))).toEqual([])
   })
 
   it('Dismiss rejects; the comment limit; feeds that only deliver comments', async () => {

@@ -56,7 +56,7 @@ function inboxActionEndpoint(Request $req, Ctx $ctx): Response
     try {
         if (field($q, 'do') === 'approve') {
             $url = approveItem($ctx, $id, 'action');
-            return json(['message' => 'Published', 'actions' => [['type' => 'display', 'text' => 'Approved and published.', 'url' => $url]]], 200, ['Cache-Control' => 'no-store']);
+            return json(['message' => 'Published', 'actions' => [['type' => 'display', 'text' => 'Comment published.', 'url' => $url]]], 200, ['Cache-Control' => 'no-store']);
         }
         // Idempotent: dismissing a dismissed item dismisses it.
         dismissItem($ctx, $id, 'action');
@@ -82,9 +82,9 @@ function dismissPage(Request $req, Ctx $ctx, string $do = 'dismiss'): Response
             try {
                 $url = approveItem($ctx, $id, 'page');
             } catch (HttpError $e) {
-                return errorPage($c, 'Not approved', $e->getMessage(), $e->status);
+                return errorPage($c, 'Not published', $e->getMessage(), $e->status);
             }
-            return page($c, 'Approved', '<h1>Approved</h1>
+            return page($c, 'Comment published', '<h1>Comment published</h1>
 ' . status('The comment is published.') . '
 <p><a href="' . h($url) . '">' . h(visible($url)) . '</a></p>');
         }
@@ -103,9 +103,9 @@ function dismissPage(Request $req, Ctx $ctx, string $do = 'dismiss'): Response
         return page($c, 'Not in your inbox', '<h1>Not in your inbox</h1>
 ' . status('The item is not in your inbox anymore.'));
     if ($do === 'approve' && !isApprovable($item))
-        return errorPage($c, 'Not approved', 'This item can\'t be approved.', 409);
+        return errorPage($c, 'Not published', 'This item can\'t be approved.', 409);
     $what = match ($item['_inbox']['type'] ?? null) { 'submission' => 'comment', 'reply' => 'reply', default => 'mention' };
-    [$verb, $question] = $do === 'approve' ? ['Approve', "Approve and publish this $what?"] : ['Dismiss', "Dismiss this $what?"];
+    [$verb, $question] = $do === 'approve' ? ['Publish Comment', "Publish this $what?"] : ['Dismiss', "Dismiss this $what?"];
     $author = $item['authors'][0]['name'] ?? null;
     $account = $item['_source']['accounts']['socialspec'] ?? null;
     $source = $item['_inbox']['source'] ?? '';

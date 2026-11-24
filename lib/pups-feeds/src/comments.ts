@@ -1,70 +1,152 @@
 import {
-  archiveOwner, canonical, commentFeedPath, commentsOf, type Committed, FEED_SPEC, FeedError, type FeedHost, type FeedPathEntry,
-  isFeedPath, isKept, itemId, itemIndex, type JsonObject, keptFileOwner, KeptFeed, parseJsonFeed, setComments,
+  allowsComments, archiveOwner, canonical, COMMENT_ID, commentFeedParts, commentFeedPath, commentsOf, type Committed, FEED_SPEC, FeedError,
+  type FeedHost, type FeedPathEntry, isFeedPath, isKept, itemId, itemIndex, type JsonObject, keptFileOwner, KeptFeed, parseJsonFeed, replyFeeds,
+  setComments,
 } from './kept'
 
 /**
- * Comment feeds (RFC-7 "Publishing comments"): the comments on the owner's posts that the owner approved in the inbox,
- * republished by the server (RFC-4 `republish: "full"`); a port of pups-php's lib/comments.php. A post of a kept feed
- * has at most one comment feed, `<feed dir>/comments/<index>.json`, newest first, and its `_source.comments` (RFC-1)
- * names it with the counts. Only comments on posts are accepted so far; replies to comments will get comment feeds of
- * their own (see commentFeedPath()).
+ * Comment feeds (RFC-7 "Publishing comments"): the comments on the owner's posts, and the replies to them, that the
+ * owner approved in the inbox, republished by the server (RFC-4 `republish: "full"` or `"summary"`); a port of
+ * pups-php's lib/comments.php. Every post or comment with replies has one comment feed of its direct replies, newest
+ * first: a post's is `<feed dir>/comments/<index>.json`, a comment's `<feed dir>/comments/<index>/<comment id>.json`,
+ * whatever its depth (see commentFeedPath()). The item's `_source.comments` (RFC-1) names it with the counts, and the
+ * comment feed names the item it answers in `_pups.inReplyTo`. Replies are nested as deep as the feed's policy allows
+ * (RFC-4 `maxDepth`), and at most MAX_DEPTH_LIMIT levels.
  *
- * Like kept.ts, this does no I/O of its own: publishComment() and unpublishComment() return what to write.
+ * Like kept.ts, this does no I/O of its own but reading: publishComment() and unpublishComment() return what to write.
  */
 
-/** RFC-4's default `commentLimit`: the comments a post may have on all levels. */
+/** RFC-4's default `commentLimit`: the comments a post may have, on all levels. */
 export const COMMENT_LIMIT = 1000
+/** RFC-4's default `maxDepth`, and the deepest nesting the server publishes. */
+export const MAX_DEPTH = 5
+export const MAX_DEPTH_LIMIT = 10
 const RFC4_SPEC = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-4-Feed-Submissions.md'
 
-export interface KeptPost {
+/** A policy's `maxDepth` as the server applies it: RFC-4's default if it is missing, and between 1 and MAX_DEPTH_LIMIT. */
+export const maxDepthOf = (v: unknown) => Number.isInteger(v) ? Math.max(1, Math.min(MAX_DEPTH_LIMIT, v as number)) : MAX_DEPTH
+
+/** A comment feed of a thread: its path, the id of the item it answers, and the document as stored. */
+interface Level {
+  path: string
+  parent: string
+  doc?: JsonObject
+}
+
+/** Where a comment goes: see commentThread(). */
+export interface Thread {
   /** The feed file. */
   path: string
   feed: KeptFeed
   post: JsonObject
-  /** The post's address: its archive's URL + `#id`. */
-  address: string
+  /** The post's index and address (its archive's URL + `#id`). */
   index: number
+  address: string
+  /** The item that the comment answers, the post or a comment, and its address. */
+  parent: JsonObject
+  parentAddress: string
+  /** The new comment's depth, 1 for a comment on the post. */
+  depth: number
+  /** The comment feeds from the post's down to the one for the comment. Level k holds comments of depth k + 1, and the item it answers is in level k - 1. */
+  levels: Level[]
 }
+
+/** What finding a thread needs from the server. */
+export type ThreadHost = Pick<CommentFeedOptions, 'host' | 'wellKnown' | 'ownerPath'>
 
 const isObject = (v: unknown): v is JsonObject => typeof v == 'object' && v != null && !Array.isArray(v)
 const isoNow = (host: FeedHost) => new Date(host.now()).toISOString().slice(0, 19) + 'Z'
+const last = <T>(a: T[]) => a[a.length - 1]!
+const find = (doc: JsonObject | undefined, id: string) => (doc?.items as unknown[] ?? []).find(i => isObject(i) && itemId(i) == id) as JsonObject | undefined
 
-/** The post `id` in the kept feed that `storagePath`, a feed file or one of its archives, belongs to. */
-export async function keptPost(host: FeedHost, wellKnown: FeedPathEntry[], storagePath: string, id: string): Promise<KeptPost | undefined> {
-  const path = isFeedPath(storagePath, wellKnown) ? storagePath : archiveOwner(storagePath, wellKnown)
-  const stored = path ? parseJsonFeed(await host.read(path)) : undefined
-  if (!path || !isKept(stored)) return
-  const feed = await KeptFeed.open(host, path, stored)
-  const found = await feed.get(id)
-  const index = found && itemIndex(found.item)
-  return index == undefined ? undefined : { path, feed, post: found!.item, address: found!.address, index }
+/** A URL and the id in its fragment, if any. */
+function splitRef(target: string): [string, string | undefined] {
+  const i = target.indexOf('#')
+  if (i < 0) return [target, undefined]
+  try {
+    return [target.slice(0, i), decodeURIComponent(target.slice(i + 1)) || undefined]
+  } catch {
+    return [target.slice(0, i), undefined]
+  }
 }
 
-const commentFeedOf = (p: KeptPost) => commentFeedPath(p.path, p.index)
+/** `url#id`, encoded as PHP's rawurlencode() does. */
+const withId = (url: string, id: string) =>
+  `${url}#${encodeURIComponent(id).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase())}`
 
-/** The comment feed of a post as stored. */
-const loadCommentFeed = async (host: FeedHost, p: KeptPost) => parseJsonFeed(await host.read(commentFeedOf(p)))
+const commentPolicy = (feed: KeptFeed) => {
+  const s = feed.doc._submissions
+  return isObject(s) && isObject(s.policies) && isObject(s.policies.comments) ? s.policies.comments : undefined
+}
 
-/** A new comment feed for a post. */
-function newCommentFeed(host: FeedHost, p: KeptPost): JsonObject {
-  const title = typeof p.post.title == 'string' && p.post.title ? p.post.title : undefined
-  const feedTitle = typeof p.feed.doc.title == 'string' ? p.feed.doc.title : undefined
-  const url = p.post.url
+/**
+ * Where a comment on `target` goes: `target` is a post of a kept feed of the owner, or a comment published in one of
+ * its comment feeds. Undefined otherwise, also for a comment that isn't published (anymore). Under the feed's lock if
+ * anything is to be changed.
+ */
+export async function commentThread(o: ThreadHost, target: string): Promise<Thread | undefined> {
+  const [url, id] = splitRef(target)
+  const path = id == undefined ? undefined : o.ownerPath(url)
+  if (path == undefined) return
+  const parts = commentFeedParts(path, o.wellKnown)
+  const feedPath = parts?.feedPath ?? (isFeedPath(path, o.wellKnown) ? path : archiveOwner(path, o.wellKnown))
+  const stored = feedPath ? parseJsonFeed(await o.host.read(feedPath)) : undefined
+  if (!feedPath || !isKept(stored)) return
+  const feed = await KeptFeed.open(o.host, feedPath, stored)
+  const found = parts ? await feed.get(undefined, parts.index) : await feed.get(id)
+  const index = found && itemIndex(found.item)
+  if (index == undefined) return
+  const postId = itemId(found!.item)!
+  const thread = { path: feedPath, feed, post: found!.item, index, address: found!.address, parent: found!.item, parentAddress: found!.address }
+  const levels: Level[] = []
+  if (parts) {
+    // The comment feed that holds the comment, and above it those of its ancestors, up to the post's.
+    let p = path
+    for (;;) {
+      const doc = parseJsonFeed(await o.host.read(p))
+      const at = commentFeedParts(p, o.wellKnown)
+      if (!doc || at?.feedPath != feedPath || at.index != index || levels.length >= MAX_DEPTH_LIMIT) return
+      levels.unshift({ path: p, parent: at.commentId ?? postId, doc })
+      if (at.commentId == undefined) break
+      const up = isObject(doc._pups) ? doc._pups.inReplyTo : undefined
+      const [u, upId] = typeof up == 'string' ? splitRef(up) : ['', undefined]
+      const next = upId == at.commentId ? o.ownerPath(u) : undefined
+      if (next == undefined) return
+      p = next
+    }
+    const comment = find(last(levels).doc, id!)
+    if (!comment || !COMMENT_ID.test(id!)) return
+    levels.push({ path: commentFeedPath(feedPath, index, id), parent: id! })
+    thread.parent = comment
+    thread.parentAddress = withId(o.host.publicUrl(path), id!)
+  } else levels.push({ path: commentFeedPath(feedPath, index), parent: postId })
+  last(levels).doc = parseJsonFeed(await o.host.read(last(levels).path))
+  return { ...thread, levels, depth: levels.length }
+}
+
+/** A new comment feed, for the comments on what `t` answers. */
+function newCommentFeed(host: FeedHost, t: Thread): JsonObject {
+  const title = typeof t.post.title == 'string' && t.post.title ? t.post.title : undefined
+  const feedTitle = typeof t.feed.doc.title == 'string' ? t.feed.doc.title : undefined
+  const on = title != undefined ? `“${title}”` : feedTitle != undefined ? `a post in “${feedTitle}”` : undefined
+  const by = (t.parent.authors as JsonObject[] | undefined)?.[0]?.name
+  const name = t.depth == 1 ? on != undefined ? `Comments on ${on}` : 'Comments'
+    : `Replies to a comment${typeof by == 'string' && by ? ` by ${by}` : ''}${on != undefined ? ` on ${on}` : ''}`
+  const http = (u: unknown) => typeof u == 'string' && /^https?:\/\//i.test(u) ? u : undefined
   return {
     version: 'https://jsonfeed.org/version/1.1',
-    title: title != undefined ? `Comments on “${title}”` : feedTitle != undefined ? `Comments on a post in “${feedTitle}”` : 'Comments',
-    home_page_url: typeof url == 'string' && /^https?:\/\//i.test(url) ? url : host.me,
-    feed_url: host.publicUrl(commentFeedOf(p)),
-    user_comment: `The comments on ${p.address} that the owner approved, republished by a Personal Upload Server (PUPS) following ${FEED_SPEC} and ${RFC4_SPEC}.`,
-    _pups: { about: FEED_SPEC, pupsControlled: true },
+    title: name,
+    home_page_url: http(t.parent.url) ?? http(t.post.url) ?? host.me,
+    feed_url: host.publicUrl(last(t.levels).path),
+    user_comment: `${t.depth == 1 ? 'The comments on' : 'The replies to'} ${t.parentAddress} that the owner approved, republished by a Personal Upload Server (PUPS) following ${FEED_SPEC} and ${RFC4_SPEC}.`,
+    _pups: { about: FEED_SPEC, pupsControlled: true, inReplyTo: t.parentAddress },
     items: [],
   }
 }
 
 /** The counts of a comment feed for `_source.comments` (RFC-1): its items, and with all replies to them, as far as the items say. */
-export function commentCounts(doc: JsonObject): [number, number] {
-  const items = doc.items as JsonObject[]
+export function commentCounts(doc: JsonObject | undefined): [number, number] {
+  const items = doc?.items as JsonObject[] ?? []
   let total = 0
   for (const item of items) {
     const c = isObject(item) ? commentsOf(item) : undefined
@@ -73,69 +155,82 @@ export function commentCounts(doc: JsonObject): [number, number] {
   return [items.length, total]
 }
 
-/** What writing a comment feed means: the comment feed, or its deletion when empty, then the post's counts. */
-async function writeCommentFeed(host: FeedHost, p: KeptPost, doc: JsonObject): Promise<Committed> {
-  const path = commentFeedOf(p)
-  const [count, total] = commentCounts(doc)
-  await p.feed.setCommentCounts(itemId(p.post)!, host.publicUrl(path), count, total)
-  const c = await p.feed.commit()
-  return count
-    ? { ...c, files: [{ path, text: JSON.stringify(doc, null, 4) }, ...c.files] }
-    : { ...c, deletes: [...await host.read(path) != undefined ? [path] : [], ...c.deletes] }
+/**
+ * What writing the comment feeds of a thread means after the deepest one changed, from the bottom up: each one, or its
+ * deletion when it is empty, then the counts of the item it answers in the level above, and last the post's. A comment
+ * without replies has `{count: 0, total: 0}` while it can get replies, at a depth below the policy's `maxDepth`.
+ * `drop` are further files to delete.
+ */
+async function writeThread(host: FeedHost, t: Thread, drop: string[] = []): Promise<Committed> {
+  const maxDepth = maxDepthOf(commentPolicy(t.feed)?.maxDepth)
+  const files: Committed['files'] = []
+  const deletes = [...drop]
+  for (let k = t.levels.length - 1; k >= 0; k--) {
+    const { path, parent, doc } = t.levels[k]!
+    const [count, total] = commentCounts(doc)
+    if (count) files.push({ path, text: JSON.stringify(doc, null, 4) })
+    else if (await host.read(path) != undefined) deletes.push(path)
+    const url = host.publicUrl(path)
+    if (!k) await t.feed.setCommentCounts(parent, url, count, total)
+    else {
+      const item = find(t.levels[k - 1]!.doc, parent)
+      if (item) setComments(item, count ? { feedUrl: url, count, total } : k < maxDepth ? { count: 0, total: 0 } : undefined)
+    }
+  }
+  const c = await t.feed.commit()
+  return { ...c, files: [...files, ...c.files], deletes: [...deletes, ...c.deletes] }
 }
-
-/** The comment `id` as published on the post, and its address. */
-export async function publishedComment(host: FeedHost, p: KeptPost | undefined, id: string): Promise<{ item: JsonObject; address: string } | undefined> {
-  const item = p && ((await loadCommentFeed(host, p))?.items as JsonObject[] ?? []).find(i => itemId(i) == id)
-  return item && { item, address: commentAddress(host, p!, id) }
-}
-
-/** The address of a comment on a post: its comment feed's URL + `#id`. */
-export const commentAddress = (host: FeedHost, p: KeptPost, id: string) =>
-  `${host.publicUrl(commentFeedOf(p))}#${encodeURIComponent(id).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase())}`
 
 /**
- * Publishes an approved comment in the comment feed of its post, or replaces it there (an approved edit, which keeps
- * the date of publication), and updates the post's counts. Under the feed's lock. `build` makes the comment for the
- * feed's current RFC-4 `republish`, `full` or `summary`. Returns the comment's address and what to write. Throws 409 if
- * the feed doesn't publish comments anymore, or the post has as many comments as its policy allows.
+ * Publishes an approved comment in the comment feed of the post or comment it answers, or replaces it there (an approved
+ * edit, which keeps the date of publication and the replies), and updates the counts up to the post. Under the feed's
+ * lock. `build` makes the comment for the feed's current RFC-4 `republish`, `full` or `summary`. Returns the comment's
+ * address and what to write. Throws 409 if the feed doesn't publish comments (this deep) anymore, or the post has as
+ * many comments, on all levels, as its policy allows.
  */
-export async function publishComment(host: FeedHost, p: KeptPost, build: (republish: 'full' | 'summary') => JsonObject)
+export async function publishComment(host: FeedHost, t: Thread, build: (republish: 'full' | 'summary') => JsonObject)
   : Promise<{ address: string; committed: Committed }> {
-  const s = p.feed.doc._submissions
+  const s = t.feed.doc._submissions
   const republish = isObject(s) ? s.republish : undefined
   if (republish != 'full' && republish != 'summary') throw new FeedError(409, 'conflict', "The feed doesn't publish comments anymore.")
+  const policy = commentPolicy(t.feed)
+  const maxDepth = maxDepthOf(policy?.maxDepth)
+  if (t.depth > maxDepth) throw new FeedError(409, 'max-depth', "The feed doesn't take replies this deep anymore.")
+  const level = last(t.levels)
+  const doc = level.doc ??= newCommentFeed(host, t)
   const comment = build(republish)
-  const doc = await loadCommentFeed(host, p) ?? newCommentFeed(host, p)
+  const open = t.depth < maxDepth ? { count: 0, total: 0 } : undefined
   const items = doc.items as JsonObject[]
   const id = itemId(comment)!
   const at = items.findIndex(i => itemId(i) == id)
   if (at < 0) {
-    const limit = isObject(s) && isObject(s.policies) && isObject(s.policies.comments) && Number.isInteger(s.policies.comments.commentLimit)
-      ? s.policies.comments.commentLimit as number : COMMENT_LIMIT
-    if (commentCounts(doc)[1] >= limit) throw new FeedError(409, 'comment-limit', `The post has ${limit} comments, as many as the feed allows.`)
+    const limit = Number.isInteger(policy?.commentLimit) ? policy!.commentLimit as number : COMMENT_LIMIT
+    if (commentCounts(t.levels[0]!.doc)[1] >= limit) throw new FeedError(409, 'comment-limit', `The post has ${limit} comments, as many as the feed allows.`)
+    setComments(comment, open)
     items.unshift(comment)
   } else {
-    // An edit keeps the date of publication (RFC-4 "Edits and deletes").
+    // An edit keeps the date of publication and the replies (RFC-4 "Edits and deletes").
     const old = items[at]!
     if (typeof old.date_published == 'string') comment.date_published = old.date_published
-    const replies = commentsOf(old)
-    if (replies) setComments(comment, replies)
+    setComments(comment, commentsOf(old) ?? open)
     const { date_modified: _, ...oldRest } = old
     if (canonical(comment) != canonical(oldRest)) comment.date_modified = isoNow(host)
     else if (old.date_modified != undefined) comment.date_modified = old.date_modified
     items[at] = comment
   }
-  return { address: commentAddress(host, p, id), committed: await writeCommentFeed(host, p, doc) }
+  return { address: withId(host.publicUrl(level.path), id), committed: await writeThread(host, t) }
 }
 
-/** Removes a published comment from the comment feed of its post and updates the post's counts. Undefined if it wasn't there. */
-export async function unpublishComment(host: FeedHost, p: KeptPost, id: string): Promise<Committed | undefined> {
-  const doc = await loadCommentFeed(host, p)
+/**
+ * Removes a published comment, with all replies to it (RFC-4 "Edits and deletes"), from the comment feed of what it
+ * answers, and updates the counts up to the post. Undefined if it wasn't there.
+ */
+export async function unpublishComment(host: FeedHost, t: Thread, id: string): Promise<Committed | undefined> {
+  const doc = last(t.levels).doc
   const items = doc?.items as JsonObject[] | undefined
   if (!items?.some(i => itemId(i) == id)) return
   doc!.items = items.filter(i => itemId(i) != id)
-  return writeCommentFeed(host, p, doc!)
+  return writeThread(host, t, await replyFeeds(host, t.path, t.index, [id]))
 }
 
 /** What the comment feeds need from the server. */
@@ -151,44 +246,54 @@ export interface CommentFeedOptions {
 }
 
 /**
- * The comment feeds of a server's kept feeds, by the URLs of the posts that comments answer: what the built-in receiver
- * (pups-inbox) needs to publish approved comments. Refusals are FeedErrors, with an HTTP `status` and a `code`.
+ * The comment feeds of a server's kept feeds, by the URLs of the posts and comments that comments answer: what the
+ * built-in receiver (pups-inbox) needs to publish approved comments. Refusals are FeedErrors, with an HTTP `status` and
+ * a `code`.
  */
 export function commentFeeds(o: CommentFeedOptions) {
-  const locate = (target: string) => {
-    const i = target.indexOf('#')
-    const id = i < 0 ? '' : decodeURIComponent(target.slice(i + 1))
-    const path = id ? o.ownerPath(target.slice(0, i)) : undefined
-    return path == undefined ? undefined : { path, id, feedPath: isFeedPath(path, o.wellKnown) ? path : archiveOwner(path, o.wellKnown) }
+  const thread = (target: string) => commentThread(o, target)
+  /** The feed file whose lock covers comments on `target`. */
+  const feedOf = (target: string) => {
+    const path = o.ownerPath(splitRef(target)[0])
+    return path == undefined ? undefined
+      : commentFeedParts(path, o.wellKnown)?.feedPath ?? (isFeedPath(path, o.wellKnown) ? path : archiveOwner(path, o.wellKnown))
   }
-  const post = async (target: string) => {
-    const t = locate(target)
-    return t && keptPost(o.host, o.wellKnown, t.path, t.id)
-  }
-  const locked = async <T>(target: string, fn: (p: KeptPost | undefined) => Promise<T>) => {
-    const t = locate(target)
-    return t?.feedPath ? o.withLock(t.feedPath, async () => fn(await post(target))) : fn(undefined)
+  const locked = async <T>(target: string, fn: (t: Thread | undefined) => Promise<T>) => {
+    const feedPath = feedOf(target)
+    return feedPath ? o.withLock(feedPath, async () => fn(await thread(target))) : fn(undefined)
   }
   return {
-    /** Whether `target` is a post of a kept feed, whose comments can be published. */
-    isKeptPost: async (target: string) => !!await post(target),
+    /** Whether comments on `target` can be published: it is a post of a kept feed, or a comment published in one of its comment feeds. */
+    isPublishable: async (target: string) => !!await thread(target),
     /** Whether a URL is in a comment feed: comments on it would be replies to comments. */
     isCommentFeed(url: string) {
-      const path = o.ownerPath(url.split('#')[0]!)
+      const path = o.ownerPath(splitRef(url)[0])
       return path != undefined && keptFileOwner(path, o.wellKnown) != undefined && archiveOwner(path, o.wellKnown) == undefined
     },
-    /** The comment `id` as published on the post `target`, and its address. */
-    published: async (target: string, id: string) => publishedComment(o.host, await post(target), id),
-    /** Publishes or replaces a comment on the post `target`, made by `build` for the feed's `republish`; returns its address. */
-    publish: (target: string, build: (republish: 'full' | 'summary') => JsonObject) => locked(target, async p => {
-      if (!p) throw new FeedError(409, 'conflict', "The post doesn't exist anymore, or its feed isn't kept by this server.")
-      const r = await publishComment(o.host, p, build)
+    /**
+     * For a reply to the published comment `target`: its depth, the `_submissions` of the post's feed, and whether the
+     * post takes comments. Undefined if the comment isn't published.
+     */
+    async reply(target: string) {
+      const t = await thread(target)
+      return t && { depth: t.depth, submissions: isObject(t.feed.doc._submissions) ? t.feed.doc._submissions : undefined, open: allowsComments(t.post) }
+    },
+    /** The comment `id` as published in answer to `target`, and its address. */
+    async published(target: string, id: string) {
+      const t = await thread(target)
+      const item = t && find(last(t.levels).doc, id)
+      return item && { item, address: withId(o.host.publicUrl(last(t!.levels).path), id) }
+    },
+    /** Publishes or replaces a comment in answer to `target`, made by `build` for the feed's `republish`; returns its address. */
+    publish: (target: string, build: (republish: 'full' | 'summary') => JsonObject) => locked(target, async t => {
+      if (!t) throw new FeedError(409, 'conflict', "What the comment answers doesn't exist anymore, or its feed isn't kept by this server.")
+      const r = await publishComment(o.host, t, build)
       await o.write(r.committed)
       return r.address
     }),
-    /** Removes a published comment from the post `target`. Returns whether it was there. */
-    unpublish: (target: string, id: string) => locked(target, async p => {
-      const c = p && await unpublishComment(o.host, p, id)
+    /** Removes a published comment, with its replies, from those on `target`. Returns whether it was there. */
+    unpublish: (target: string, id: string) => locked(target, async t => {
+      const c = t && await unpublishComment(o.host, t, id)
       if (c) await o.write(c)
       return !!c
     }),

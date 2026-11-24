@@ -69,14 +69,29 @@ function keptFileOwner(string $path, Config $c): ?string
         ?? (preg_match('#^(/.+?)/comments/.+$#D', $path, $m) && isFeedPath("$m[1].json", $c) ? "$m[1].json" : null);
 }
 
+/** The ids of comments that this server publishes, and that name the files of their replies. */
+const COMMENT_ID = '[A-Za-z0-9_-]{1,64}';
+
 /**
- * The comment feed of a post: `<feed dir>/comments/<index>.json`, e.g. /feed/comments/47.json (RFC-7
- * "Publishing comments"). Replies to a comment will go to `<feed dir>/comments/<index>/<comment id>.json`; this
- * server accepts comments on posts only so far.
+ * A comment feed (RFC-7 "Publishing comments"): with the post's `index` alone, that of the post,
+ * `<feed dir>/comments/<index>.json`, e.g. /feed/comments/47.json; with a comment's id, the replies to
+ * that comment, on any level, `<feed dir>/comments/<index>/<comment id>.json`.
  */
-function commentFeedPath(string $feedPath, int $index): string
+function commentFeedPath(string $feedPath, int $index, ?string $commentId = null): string
 {
-    return substr($feedPath, 0, -5) . "/comments/$index.json";
+    if ($commentId !== null && !preg_match('/^' . COMMENT_ID . '$/D', $commentId))
+        throw new \InvalidArgumentException("Not a comment id: $commentId");
+    return substr($feedPath, 0, -5) . "/comments/$index" . ($commentId === null ? '' : "/$commentId") . '.json';
+}
+
+/**
+ * The parts of a comment feed's path: [feed file, post index, comment id or null], if `path` is one
+ * of a feed file (see commentFeedPath()), else null.
+ */
+function commentFeedParts(string $path, Config $c): ?array
+{
+    return preg_match('#^(/.+?)/comments/(\d{1,9})(?:/(' . COMMENT_ID . '))?\.json$#D', $path, $m) && isFeedPath("$m[1].json", $c)
+        ? ["$m[1].json", (int) $m[2], ($m[3] ?? '') === '' ? null : $m[3]] : null;
 }
 
 /** An item's `_source.comments` (RFC-1), if it has a valid `count`. */
@@ -354,23 +369,24 @@ final class KeptFeed
         return $indexes ? [min($indexes), max($indexes)] : [null, null];
     }
 
-    /** The position of the item `id` in archive `n`; with `index`, only if it has that index. */
-    private function position(int $n, string $id, ?int $index = null): ?int
+    /** The position of the item `id` in archive `n`; with `index`, only if it has that index; without `id`, the item with `index`. */
+    private function position(int $n, ?string $id, ?int $index = null): ?int
     {
         foreach ($this->archive($n)?->items ?? [] as $p => $item)
-            if (itemId($item) === $id && ($index === null || itemIndex($item) === $index))
+            if (($id === null || itemId($item) === $id) && ($index === null || itemIndex($item) === $index))
                 return $p;
         return null;
     }
 
     /**
      * Finds an item: with its index as RFC-13 "Finding an item by index" describes, else in the
-     * feed file and the newest archive, and with `everywhere` in all archives.
+     * feed file and the newest archive, and with `everywhere` in all archives. Without `id`, the item
+     * with `index`.
      * @return ?array [archive number, position]
      */
-    public function find(string $id, ?int $index, bool $everywhere = false): ?array
+    public function find(?string $id, ?int $index, bool $everywhere = false): ?array
     {
-        if ($this->newest === null)
+        if ($this->newest === null || ($id === null && $index === null))
             return null;
         if ($index === null)
             foreach ($this->window as $item)
@@ -463,11 +479,12 @@ final class KeptFeed
             }
     }
 
-    /** An item by its id, in any archive: ['item', 'address'], or null. */
-    public function get(string $id): ?array
+    /** An item by its id or its index, in any archive: ['item', 'address'], or null. */
+    public function get(?string $id, ?int $index = null): ?array
     {
-        $at = $this->find($id, null, true);
-        return $at ? ['item' => $this->archives[$at[0]]->items[$at[1]], 'address' => $this->address($at[0], $id)] : null;
+        $at = $this->find($id, $index, true);
+        $item = $at ? $this->archives[$at[0]]->items[$at[1]] : null;
+        return $item ? ['item' => $item, 'address' => $this->address($at[0], itemId($item))] : null;
     }
 
     /**

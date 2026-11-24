@@ -100,7 +100,7 @@ describe('kept feeds', () => {
     expect((await (await call(statusUrl)).json() as any).status).toBe('pending')
     const inbox = await stored('/pups/private/inbox.json')
     const item = inbox.items.find((i: any) => i._inbox.target == `${ORIGIN}/feed/talk.json#p-1`)
-    expect(item._actions.actions.map((a: any) => a.template ?? a.type)).toEqual(['approve', 'dismiss', 'display'])
+    expect(item._actions.actions.map((a: any) => a.template ?? a.type)).toEqual(['display', 'approve', 'dismiss'])
     const approve = await call(inbox._actions.templates.approve.action.replace('{id}', item.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     const address = `${ORIGIN}/feed/talk/comments/0.json#${item.id}`
     expect([approve.status, (await approve.json() as any).actions[0].url]).toEqual([200, address])

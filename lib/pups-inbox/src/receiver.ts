@@ -29,7 +29,9 @@ export const PENDING_KEEP_MS = 30 * 24 * 3600_000
 /** A comment keeps its own date if it is at most this far from the time of submission (RFC-4). */
 const DATE_SLACK_MS = 30 * 60_000
 /** The policy defaults of RFC-4 "Policies". */
-const POLICY_DEFAULTS = { title: 'none', minLength: 2, maxLength: 2000, requireSocialSpec: false, allowEdit: false, allowDelete: false, commentLimit: 1000 }
+const POLICY_DEFAULTS = { title: 'none', minLength: 2, maxLength: 2000, requireSocialSpec: false, allowEdit: false, allowDelete: false, commentLimit: 1000, maxDepth: 5 }
+/** The deepest nesting of replies that the server publishes. */
+const MAX_DEPTH_LIMIT = 10
 type Policy = typeof POLICY_DEFAULTS
 const MAX_TITLE_CHARS = 300
 const URL_LIMIT = 2048
@@ -215,30 +217,38 @@ export async function commentStatusEndpoint(req: Request, id: string, r: Receive
 }
 
 /**
- * The post a comment answers, if it may be commented on here, with the feed's `republish`. Throws 400 otherwise (RFC-4:
- * the cheap checks are synchronous).
+ * What a comment answers, if it may be commented on here: a post, or a comment published in a comment feed of a kept
+ * feed (a reply). Returns the policy and `republish` of the post's feed. Throws 400 otherwise (RFC-4: the cheap checks
+ * are synchronous).
  */
-async function commentTarget(r: Receiver, target: string): Promise<{ feed: Feed; item: Post; policy: Policy; republish: string }> {
+async function commentTarget(r: Receiver, target: string): Promise<{ policy: Policy; republish: string }> {
   const [url, id] = splitRef(target)
-  if (id == undefined) throw new ReceiverError(400, 'invalid_request', 'Only comments on posts are accepted: target must be a feed URL + #id')
+  if (id == undefined) throw new ReceiverError(400, 'invalid_request', 'Only comments on posts and comments are accepted: target must be a feed URL + #id')
   if (r.feeds.ownerPath(url) == undefined) throw new ReceiverError(400, 'invalid_request', 'target is not a feed on this server')
-  if (r.commentFeeds?.isCommentFeed(url))
-    throw new ReceiverError(400, 'max-depth', 'Replies to comments are not accepted here yet, only comments on posts')
-  let found
-  try {
-    found = await findItem(r.feeds, target)
-  } catch (e) {
-    if (e instanceof FetchError) throw new ReceiverError(400, 'target-gone', `The target feed can't be read: ${e.message}`)
-    throw e
+  let s, exists, open, depth
+  if (r.commentFeeds?.isCommentFeed(url)) {
+    // A reply: the feed's rules apply, also to the post that the thread belongs to.
+    const reply = await r.commentFeeds.reply(target)
+    if (!reply) throw new ReceiverError(400, 'target-gone', "The comment isn't published (anymore)")
+    ;[s, exists, open, depth] = [reply.submissions, true, reply.open, reply.depth]
+  } else {
+    let found
+    try {
+      found = await findItem(r.feeds, target)
+    } catch (e) {
+      if (e instanceof FetchError) throw new ReceiverError(400, 'target-gone', `The target feed can't be read: ${e.message}`)
+      throw e
+    }
+    ;[s, exists, open, depth] = [await submissionsOf(r, found.feed), !!found.item, !!found.item?.allowComments, 1]
   }
-  const s = await submissionsOf(r, found.feed)
   if (s?.url !== commentUrl(r)) throw new ReceiverError(400, 'invalid_request', "This feed doesn't accept comments at this endpoint")
   const policy = s.policies && typeof s.policies == 'object' && s.policies.comments && typeof s.policies.comments == 'object' && !Array.isArray(s.policies.comments)
-    ? s.policies.comments : undefined
+    ? toPolicy(s.policies.comments) : undefined
   if (!policy) throw new ReceiverError(400, 'comments-disabled', 'This feed accepts no comments')
-  if (!found.item) throw new ReceiverError(400, 'target-gone', "The post doesn't exist")
-  if (!found.item.allowComments) throw new ReceiverError(400, 'comments-disabled', 'The post is closed for comments')
-  return { feed: found.feed, item: found.item, policy: toPolicy(policy), republish: typeof s.republish == 'string' ? s.republish : 'no' }
+  if (!exists) throw new ReceiverError(400, 'target-gone', "The post doesn't exist")
+  if (!open) throw new ReceiverError(400, 'comments-disabled', 'The post is closed for comments')
+  if (depth > policy.maxDepth) throw new ReceiverError(400, 'max-depth', `Replies are nested at most ${policy.maxDepth} levels deep here`)
+  return { policy, republish: typeof s.republish == 'string' ? s.republish : 'no' }
 }
 
 /**
@@ -263,6 +273,7 @@ function toPolicy(p: Record<string, unknown>): Policy {
   for (const [k, dflt] of Object.entries(POLICY_DEFAULTS) as [keyof Policy, unknown][])
     if (typeof p[k] == typeof dflt && (k != 'title' || ['required', 'allowed', 'none'].includes(p[k] as string)))
       (out as Record<string, unknown>)[k] = p[k]
+  out.maxDepth = Number.isInteger(out.maxDepth) ? Math.max(1, Math.min(MAX_DEPTH_LIMIT, out.maxDepth)) : POLICY_DEFAULTS.maxDepth
   return out
 }
 
@@ -468,9 +479,9 @@ async function processComment(r: Receiver, job: Job) {
   const date = post.date != undefined && Math.abs(Date.parse(post.date) - now) <= DATE_SLACK_MS ? post.date
     : new Date(Math.floor(now / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
   // Published after the owner approves it, in full or as an abstract, and only in a kept feed, which has comment feeds.
-  const approve = PUBLISHING.includes(target.republish) && !!await r.commentFeeds?.isKeptPost(job.target)
-  const item = inboxItem(r, id, 'submission', source, job.target, { ...post, date }, postHtml(post),
-    post.author ?? sourceHost, account == undefined ? undefined : `@${accountHost(account)}`, approve ? target.republish : undefined, !!published)
+  const approve = PUBLISHING.includes(target.republish) && !!await r.commentFeeds?.isPublishable(job.target)
+  const item = inboxItem(r, id, 'submission', source, job.target, { ...post, date }, postHtml(post), post.author ?? sourceHost,
+    account == undefined ? undefined : `@${accountHost(account)}`, approve ? target.republish : undefined, !!published, !!r.commentFeeds?.isCommentFeed(job.target))
   if (published && isSameComment(item, published.item)) {
     // Sent again without a change: nothing to approve.
     await removeInboxItem(r, id)

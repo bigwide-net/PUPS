@@ -9,22 +9,27 @@ import { type InboxItem, SOURCE_ABOUT } from './inbox'
  */
 
 /**
- * The comment feeds of the owner's kept feeds, by the URLs of the posts that comments answer. Methods that refuse throw
- * errors with an HTTP `status` and a `code`, e.g. pups-feeds' FeedError.
+ * The comment feeds of the owner's kept feeds, by the URLs of the posts and comments that comments answer. Methods that
+ * refuse throw errors with an HTTP `status` and a `code`, e.g. pups-feeds' FeedError.
  */
 export interface CommentFeeds {
-  /** Whether `target` is a post of a kept feed, whose comments can be published. */
-  isKeptPost(target: string): Promise<boolean>
+  /** Whether comments on `target` can be published: it is a post of a kept feed, or a comment published in one of its comment feeds. */
+  isPublishable(target: string): Promise<boolean>
   /** Whether a URL is in a comment feed: comments on it would be replies to comments. */
   isCommentFeed(url: string): boolean
-  /** The comment `id` as published on the post `target`, and its address. */
+  /**
+   * For a reply to the published comment `target`: its depth (2 for a reply to a comment on a post), the `_submissions`
+   * of the post's feed, and whether the post takes comments. Undefined if the comment isn't published.
+   */
+  reply(target: string): Promise<{ depth: number; submissions?: Record<string, any>; open: boolean } | undefined>
+  /** The comment `id` as published in answer to `target`, and its address. */
   published(target: string, id: string): Promise<{ item: Record<string, any>; address: string } | undefined>
   /**
-   * Publishes or replaces a comment on the post `target`, under the feed's lock; returns its address. `build` makes the
-   * comment for the feed's current `republish`; a feed that doesn't publish comments anymore is refused.
+   * Publishes or replaces a comment in answer to `target`, under the feed's lock; returns its address. `build` makes the
+   * comment for the feed's current `republish`; a feed that doesn't publish comments (this deep) anymore is refused.
    */
   publish(target: string, build: (republish: 'full' | 'summary') => Record<string, any>): Promise<string>
-  /** Removes a published comment from the post `target`. Returns whether it was there. */
+  /** Removes a published comment, with its replies, from those on `target`. Returns whether it was there. */
   unpublish(target: string, id: string): Promise<boolean>
 }
 

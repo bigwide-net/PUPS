@@ -2,7 +2,7 @@ import { alert, escapeHtml as h, page, status } from './html'
 import { visible } from './sanitize'
 
 /**
- * Pages of the built-in receiver (pups-inbox): the confirmation pages that the Dismiss and Approve links of an inbox
+ * Pages of the built-in receiver (pups-inbox): the confirmation pages that the Dismiss and Publish Comment links of an inbox
  * item open (RFC-8 fallback, RFC-9), and the inbox section of the apps page.
  */
 
@@ -18,13 +18,13 @@ export interface DismissItem {
   title?: string
   /** Plain text. */
   excerpt: string
-  /** What the button does: Dismiss (the default), or Approve and publish a comment. */
+  /** What the button does: Dismiss (the default), or Publish Comment. */
   action?: 'dismiss' | 'approve'
 }
 
-/** The page with the Dismiss or Approve button. Following the link alone does nothing. */
+/** The page with the Dismiss or Publish Comment button. Following the link alone does nothing. */
 export function dismissConfirmPage(site: string, i: DismissItem): Response {
-  const [verb, question] = i.action == 'approve' ? ['Approve', `Approve and publish this ${i.what}?`] : ['Dismiss', `Dismiss this ${i.what}?`]
+  const [verb, question] = i.action == 'approve' ? ['Publish Comment', `Publish this ${i.what}?`] : ['Dismiss', `Dismiss this ${i.what}?`]
   return page(question, `<h1>${h(question)}</h1>
 <p>${i.author ? `From <strong>${h(visible(i.author))}</strong>${i.account ? ` (${h(visible(i.account))})` : ''}, ` : ''}source <code>${h(visible(i.source))}</code></p>
 ${i.title ? `<p><strong>${h(visible(i.title))}</strong></p>` : ''}
@@ -38,9 +38,9 @@ ${i.title ? `<p><strong>${h(visible(i.title))}</strong></p>` : ''}
 
 export const dismissedPage = (site: string, message: string, title = 'Dismissed') => page(title, `<h1>${title}</h1>\n${status(message)}`, { site })
 
-/** After Approve: the comment is published at `url`. */
+/** After Publish Comment: the comment is published at `url`. */
 export const approvedPage = (site: string, url: string) =>
-  page('Approved', `<h1>Approved</h1>\n${status('The comment is published.')}\n<p><a href="${h(url)}">${h(visible(url))}</a></p>`, { site })
+  page('Comment published', `<h1>Comment published</h1>\n${status('The comment is published.')}\n<p><a href="${h(url)}">${h(visible(url))}</a></p>`, { site })
 
 /** What the receiver has put into the inbox. */
 export interface InboxSummary {

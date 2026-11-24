@@ -119,7 +119,7 @@ function newInbox(c: InboxContext): InboxFeed {
     _inbox: { about: INBOX_ABOUT, writer: INBOX_WRITER, categories: [...c.mentions ? ['mentions'] : [], ...c.comments ? ['moderation'] : []] },
     _actions: {
       about: ACTIONS_ABOUT, templates: {
-        approve: { type: 'button', label: 'Approve', style: 'major', action: `${c.base}/pups/inbox/action?do=approve&id={id}&key=${c.key}` },
+        approve: { type: 'button', label: 'Publish Comment', style: 'major', action: `${c.base}/pups/inbox/action?do=approve&id={id}&key=${c.key}` },
         dismiss: { type: 'button', label: 'Dismiss', action: `${c.base}/pups/inbox/action?id={id}&key=${c.key}` },
       },
     },
@@ -207,24 +207,26 @@ export async function checkRoomForSubmission(c: InboxContext, id: string, host: 
  * Where an item comes from, for its action area: "Mention from @bob.example.", with the account if one was verified,
  * else the host of the source. It links to the source.
  */
-const originText = (type: ItemType, source: string, account: string | undefined, edit = false) =>
-  `${{ submission: edit ? 'Edited comment' : 'Comment', reply: 'Reply', mention: 'Mention' }[type]} from ${account ?? urlHost(source)}.`
+const originText = (type: ItemType, source: string, account: string | undefined, edit = false, toComment = false) => {
+  const noun = toComment ? 'reply' : 'comment'
+  return `${{ submission: edit ? `Edited ${noun}` : toComment ? 'Reply' : 'Comment', reply: 'Reply', mention: 'Mention' }[type]} from ${account ?? urlHost(source)}.`
+}
 
 /**
  * An inbox item. `content` is the post's HTML for the inbox. The account is included only as attribution() verified it.
- * A comment that the owner can publish gets Approve as the first action, next to Dismiss, and `_pups.republish`:
+ * A comment that the owner can publish gets Publish Comment (template `approve`) after the link to its origin, next to Dismiss, and `_pups.republish`:
  * `publish`, the feed's `republish` (`full` or `summary`) that its author agreed to. `edit` says that an earlier version
  * is published already.
  */
 export function inboxItem(c: InboxContext, id: string, type: ItemType, source: string, target: string, post: Partial<Post>,
-  content: string, author: string | undefined, account: string | undefined, publish?: string, edit = false): InboxItem {
+  content: string, author: string | undefined, account: string | undefined, publish?: string, edit = false, toComment = false): InboxItem {
   const approve = publish != undefined
   const url = post.url
-  const text = originText(type, source, account, edit)
+  const text = originText(type, source, account, edit, toComment)
   const link = (action: 'dismiss' | 'approve', label: string) =>
     `<p class="without-extension-actions"><a href="${h(dismissPageUrl(c, id, action))}">${label}</a></p>`
   const from = `<p class="without-extension-actions"><a href="${h(source)}">${h(text)}</a></p>`
-  const fallback = approve ? link('approve', 'Approve') + link('dismiss', 'Dismiss') + from : from + link('dismiss', 'Dismiss')
+  const fallback = from + (approve ? link('approve', 'Publish Comment') : '') + link('dismiss', 'Dismiss')
   const origin = { type: 'display', text, url: source, group: 'origin' }
   const name = sanitizeText(author, 100)
   const title = sanitizeText(post.title, 200)
@@ -240,7 +242,7 @@ export function inboxItem(c: InboxContext, id: string, type: ItemType, source: s
     ...approve && { _pups: { republish: publish } },
     _actions: {
       about: ACTIONS_ABOUT,
-      actions: approve ? [{ template: 'approve', group: 'decide' }, { template: 'dismiss', group: 'decide' }, origin] : [origin, { template: 'dismiss', group: 'dismiss' }],
+      actions: approve ? [origin, { template: 'approve', group: 'decide' }, { template: 'dismiss', group: 'decide' }] : [origin, { template: 'dismiss', group: 'dismiss' }],
     },
   }
 }

@@ -158,7 +158,7 @@ function newInbox(Ctx $ctx): array
         '_inbox' => ['about' => INBOX_ABOUT, 'writer' => INBOX_WRITER,
             'categories' => array_keys(array_filter(['mentions' => $c->mentions, 'moderation' => $c->comments]))],
         '_actions' => ['about' => ACTIONS_ABOUT, 'templates' => [
-            'approve' => ['type' => 'button', 'label' => 'Approve', 'style' => 'major', 'action' => "$c->base/pups/inbox/action?do=approve&id={id}&key=" . inboxKey($ctx)],
+            'approve' => ['type' => 'button', 'label' => 'Publish Comment', 'style' => 'major', 'action' => "$c->base/pups/inbox/action?do=approve&id={id}&key=" . inboxKey($ctx)],
             'dismiss' => ['type' => 'button', 'label' => 'Dismiss', 'action' => "$c->base/pups/inbox/action?id={id}&key=" . inboxKey($ctx)],
         ]],
         'items' => [],
@@ -213,16 +213,17 @@ function dropOldestMention(array &$items): bool
  * Where an item comes from, for its action area: "Mention from @bob.example.", with the account if one
  * was verified, else the host of the source. It links to the source.
  */
-function originText(string $type, string $source, ?string $account, bool $edit = false): string
+function originText(string $type, string $source, ?string $account, bool $edit = false, bool $toComment = false): string
 {
-    $what = ['submission' => $edit ? 'Edited comment' : 'Comment', 'reply' => 'Reply'][$type] ?? 'Mention';
+    $noun = $toComment ? 'reply' : 'comment';
+    $what = ['submission' => $edit ? "Edited $noun" : ucfirst($noun), 'reply' => 'Reply'][$type] ?? 'Mention';
     return "$what from " . ($account ?? urlHost($source)) . '.';
 }
 
 /**
  * An inbox item. `post` is the parsed item (feeds.php); `content` its HTML for the inbox. The
  * account is included only as `attribution()` verified it. A comment that the owner can publish
- * gets Approve as the first action, next to Dismiss, and `_pups.republish`: `publish`, the
+ * gets Publish Comment (template `approve`) after the link to its origin, next to Dismiss, and `_pups.republish`: `publish`, the
  * feed's `republish` (`full` or `summary`) that its author agreed to. `edit` says that an
  * earlier version is published already.
  */
@@ -231,10 +232,10 @@ function inboxItem(Ctx $ctx, string $id, string $type, string $source, string $t
 {
     $approve = $publish !== null;
     $url = $post['url'] ?? null;
-    $origin = originText($type, $source, $account, $edit);
+    $origin = originText($type, $source, $account, $edit, $type === 'submission' && isCommentRef($ctx, $target));
     $link = fn(string $do, string $label) => '<p class="without-extension-actions"><a href="' . h(dismissPageUrl($ctx, $id, $do)) . "\">$label</a></p>";
     $from = '<p class="without-extension-actions"><a href="' . h($source) . '">' . h($origin) . '</a></p>';
-    $fallback = $approve ? $link('approve', 'Approve') . $link('dismiss', 'Dismiss') . $from : $from . $link('dismiss', 'Dismiss');
+    $fallback = $from . ($approve ? $link('approve', 'Publish Comment') : '') . $link('dismiss', 'Dismiss');
     $origin = ['type' => 'display', 'text' => $origin, 'url' => $source, 'group' => 'origin'];
     return array_filter([
         'id' => $id,
@@ -247,7 +248,7 @@ function inboxItem(Ctx $ctx, string $id, string $type, string $source, string $t
         '_inbox' => array_filter(['about' => INBOX_ABOUT, 'type' => $type, 'source' => $source, 'target' => $target, 'postDate' => $post['date'] ?? null]),
         '_pups' => $approve ? ['republish' => $publish] : null,
         '_actions' => ['about' => ACTIONS_ABOUT, 'actions' => $approve
-            ? [['template' => 'approve', 'group' => 'decide'], ['template' => 'dismiss', 'group' => 'decide'], $origin]
+            ? [$origin, ['template' => 'approve', 'group' => 'decide'], ['template' => 'dismiss', 'group' => 'decide']]
             : [$origin, ['template' => 'dismiss', 'group' => 'dismiss']]],
     ], fn($v) => $v !== null);
 }

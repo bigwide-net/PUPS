@@ -66,7 +66,7 @@ export function inboxActionEndpoint(req: Request, r: Receiver): Promise<Response
     try {
       if (q.get('do') == 'approve') {
         const url = await approveItem(r, id, 'action')
-        return jsonResponse({ message: 'Published', actions: [{ type: 'display', text: 'Approved and published.', url }] }, 200, { 'Cache-Control': 'no-store' })
+        return jsonResponse({ message: 'Published', actions: [{ type: 'display', text: 'Comment published.', url }] }, 200, { 'Cache-Control': 'no-store' })
       }
       // Idempotent: dismissing a dismissed item dismisses it.
       await dismissItem(r, id, 'action')
@@ -99,7 +99,7 @@ export async function dismissPage(req: Request, r: Receiver, site: string, actio
       try {
         return approvedPage(site, await approveItem(r, id, 'page'))
       } catch (e) {
-        if (e instanceof ReceiverError) return errorPage('Not approved', e.message, e.status)
+        if (e instanceof ReceiverError) return errorPage('Not published', e.message, e.status)
         throw e
       }
     }
@@ -110,7 +110,7 @@ export async function dismissPage(req: Request, r: Receiver, site: string, actio
     if (req.method != 'GET' && req.method != 'HEAD') return errorPage('Method not allowed', 'Use GET or POST.', 405)
     const item = await findInboxItem(r, id)
     if (!item) return dismissedPage(site, 'The item is not in your inbox anymore.', 'Not in your inbox')
-    if (action == 'approve' && !isApprovable(item)) return errorPage('Not approved', "This item can't be approved.", 409)
+    if (action == 'approve' && !isApprovable(item)) return errorPage('Not published', "This item can't be approved.", 409)
     const type = item._inbox?.type
     return dismissConfirmPage(site, {
       id, key: key!, action,

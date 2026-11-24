@@ -110,12 +110,37 @@ export function keptFileOwner(path: string, wellKnown: FeedPathEntry[]): string 
   return archiveOwner(path, wellKnown) ?? (m && isFeedPath(`${m[1]}.json`, wellKnown) ? `${m[1]}.json` : undefined)
 }
 
+/** The ids of comments that the server publishes, and that name the files of their replies. */
+export const COMMENT_ID = /^[A-Za-z0-9_-]{1,64}$/
+
 /**
- * The comment feed of a post: `<feed dir>/comments/<index>.json`, e.g. /feed/comments/47.json (RFC-7 "Comment
- * feeds"). Replies to a comment will go to `<feed dir>/comments/<index>/<comment id>.json`; the servers accept
- * comments on posts only so far.
+ * A comment feed (RFC-7 "Publishing comments"): with the post's `index` alone, that of the post,
+ * `<feed dir>/comments/<index>.json`, e.g. /feed/comments/47.json; with a comment's id, the replies to that comment, on
+ * any level, `<feed dir>/comments/<index>/<comment id>.json`.
  */
-export const commentFeedPath = (feedPath: string, index: number) => `${feedPath.slice(0, -5)}/comments/${index}.json`
+export function commentFeedPath(feedPath: string, index: number, commentId?: string): string {
+  if (commentId != undefined && !COMMENT_ID.test(commentId)) throw new Error(`Not a comment id: ${commentId}`)
+  return `${feedPath.slice(0, -5)}/comments/${index}${commentId == undefined ? '' : `/${commentId}`}.json`
+}
+
+/** The parts of a comment feed's path, if `path` is one of a feed file (see commentFeedPath()). */
+export function commentFeedParts(path: string, wellKnown: FeedPathEntry[]): { feedPath: string; index: number; commentId?: string } | undefined {
+  const m = /^(\/.+?)\/comments\/(\d{1,9})(?:\/([A-Za-z0-9_-]{1,64}))?\.json$/.exec(path)
+  return m && isFeedPath(`${m[1]}.json`, wellKnown) ? { feedPath: `${m[1]}.json`, index: Number(m[2]), ...m[3] && { commentId: m[3] } } : undefined
+}
+
+/** The comment feeds of the replies to the comments `ids` of a post, on all levels, as far as they exist. */
+export async function replyFeeds(host: FeedHost, feedPath: string, index: number, ids: string[], depth = 0): Promise<string[]> {
+  const out: string[] = []
+  if (depth > 10) return out
+  for (const id of ids.filter(id => COMMENT_ID.test(id))) {
+    const path = commentFeedPath(feedPath, index, id)
+    const doc = parseJsonFeed(await host.read(path))
+    if (!doc) continue
+    out.push(...await replyFeeds(host, feedPath, index, (doc.items as JsonObject[]).map(itemId).filter(i => i != undefined) as string[], depth + 1), path)
+  }
+  return out
+}
 
 export const archivePath = (feedPath: string, n: number) => `${feedPath.slice(0, -5)}/feed.${String(n).padStart(6, '0')}.json`
 
@@ -211,9 +236,9 @@ export interface PutResult {
 }
 
 export interface Committed {
-  /** The files to write, in this order: the changed archives, the oldest first, and the feed file last. */
+  /** The files to write, in this order: comment feeds, the changed archives, the oldest first, and the feed file last. */
   files: { path: string; text: string }[]
-  /** The files to delete afterwards: the comment feeds of deleted posts. */
+  /** The files to delete afterwards: empty comment feeds, and those of deleted posts and comments, with all replies. */
   deletes: string[]
   /** The feed file as written. */
   text: string
@@ -357,18 +382,19 @@ export class KeptFeed {
     return indexes.length ? [Math.min(...indexes), Math.max(...indexes)] : undefined
   }
 
-  /** The position of the item `id` in archive `n`; with `index`, only if it has that index. */
-  private async position(n: number, id: string, index?: number): Promise<number | undefined> {
-    const p = ((await this.archive(n))?.items as Item[] ?? []).findIndex(item => itemId(item) == id && (index == undefined || itemIndex(item) == index))
+  /** The position of the item `id` in archive `n`; with `index`, only if it has that index; without `id`, the item with `index`. */
+  private async position(n: number, id: string | undefined, index?: number): Promise<number | undefined> {
+    const p = ((await this.archive(n))?.items as Item[] ?? [])
+      .findIndex(item => (id == undefined || itemId(item) == id) && (index == undefined || itemIndex(item) == index))
     return p < 0 ? undefined : p
   }
 
   /**
    * Finds an item: with its index as RFC-13 "Finding an item by index" describes, else in the feed file and the newest
-   * archive, and with `everywhere` in all archives. Returns [archive number, position].
+   * archive, and with `everywhere` in all archives. Without `id`, the item with `index`. Returns [archive number, position].
    */
-  async find(id: string, index: number | undefined, everywhere = false): Promise<[number, number] | undefined> {
-    if (this.newest == undefined) return
+  async find(id: string | undefined, index: number | undefined, everywhere = false): Promise<[number, number] | undefined> {
+    if (this.newest == undefined || id == undefined && index == undefined) return
     if (index == undefined)
       for (const item of this.window)
         if (itemId(item) == id && (index = itemIndex(item)) != undefined) break
@@ -449,10 +475,11 @@ export class KeptFeed {
       }
   }
 
-  /** An item by its id, in any archive, and its address. */
-  async get(id: string): Promise<{ item: Item; address: string } | undefined> {
-    const at = await this.find(id, undefined, true)
-    return at && { item: this.archiveItems(at[0])[at[1]]!, address: this.address(at[0], id) }
+  /** An item by its id or its index, in any archive, and its address. */
+  async get(id: string | undefined, index?: number): Promise<{ item: Item; address: string } | undefined> {
+    const at = await this.find(id, index, true)
+    const item = at && this.archiveItems(at[0])[at[1]]!
+    return item && { item, address: this.address(at[0], itemId(item)!) }
   }
 
   /**
@@ -617,8 +644,13 @@ export class KeptFeed {
     const text = JSON.stringify(await this.feedFile(), null, 4)
     files.push({ path: this.path, text })
     this.changed.clear()
-    // A deleted post's comments go with it.
-    const deletes = this.dropped.map(index => commentFeedPath(this.path, index))
+    // A deleted post's comments go with it, and the replies to them.
+    const deletes: string[] = []
+    for (const index of this.dropped) {
+      const top = commentFeedPath(this.path, index)
+      const ids = (parseJsonFeed(await this.host.read(top))?.items as Item[] ?? []).map(itemId).filter(i => i != undefined) as string[]
+      deletes.push(...await replyFeeds(this.host, this.path, index, ids), top)
+    }
     this.dropped = []
     return { files, deletes, text }
   }
