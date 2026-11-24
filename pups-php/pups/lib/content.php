@@ -4,8 +4,7 @@ namespace Pups;
 
 /**
  * The text of incoming posts (RFC-11 mentions, RFC-4 comments): their visible text, the
- * handles in it, excerpts, and the small HTML subset that the inbox stores. Posts come from
- * strangers: nothing here keeps markup or URLs that aren't on the allowlist.
+ * handles in it, and excerpts. The HTML of comments is checked by commenthtml.php.
  */
 
 /** Elements that separate words: their start and end count as whitespace in the visible text. */
@@ -13,8 +12,6 @@ const BLOCK_TAGS = ['address', 'article', 'aside', 'blockquote', 'br', 'dd', 'di
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hr', 'li', 'main', 'nav', 'ol', 'p', 'pre', 'section', 'table', 'td', 'th', 'tr', 'ul'];
 /** Elements whose content is never shown. */
 const HIDDEN_TAGS = ['script', 'style', 'template', 'noscript', 'iframe', 'object', 'embed', 'svg', 'math', 'head', 'title', 'select', 'textarea', 'button'];
-/** What inbox items keep of a post's HTML; everything else is unwrapped or, for HIDDEN_TAGS, dropped. */
-const INBOX_TAGS = ['p', 'br', 'a', 'strong', 'b', 'em', 'i', 'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'del', 's'];
 
 /**
  * A handle (RFC-11 "Handles"): `@` and a host name of at least two labels, the last one
@@ -116,46 +113,4 @@ function textHtml(string $text): string
 {
     $paragraphs = array_filter(array_map('trim', preg_split('/\R{2,}/u', scrub($text))), fn($p) => $p !== '');
     return implode('', array_map(fn($p) => '<p>' . nl2br(h(preg_replace('/' . UNSAFE . '/u', '', $p)), false) . '</p>', $paragraphs));
-}
-
-/**
- * A post's HTML, reduced to INBOX_TAGS. Links keep only an http(s) `href`; every other
- * attribute is dropped. Readers sanitize it once more (RFC-2); this is a second line.
- */
-function inboxHtml(string $html): string
-{
-    $body = htmlBody($html);
-    if (!$body)
-        return '';
-    $walk = function (\DOMNode $n) use (&$walk): string {
-        $out = '';
-        foreach ($n->childNodes as $c) {
-            if ($c instanceof \DOMText)
-                $out .= h(preg_replace('/' . UNSAFE . '/u', '', $c->data));
-            elseif ($c instanceof \DOMElement) {
-                $tag = strtolower($c->tagName);
-                if (in_array($tag, HIDDEN_TAGS, true))
-                    continue;
-                if (!in_array($tag, INBOX_TAGS, true)) {
-                    $out .= $walk($c);
-                    continue;
-                }
-                if ($tag === 'br') {
-                    $out .= '<br>';
-                    continue;
-                }
-                $href = $tag === 'a' ? $c->getAttribute('href') : '';
-                $open = $tag === 'a' ? (preg_match('#^https?://#i', $href) && isCleanUrlString($href) ? '<a href="' . h($href) . '">' : '') : "<$tag>";
-                $out .= $open . $walk($c) . ($open === '' ? '' : "</$tag>");
-            }
-        }
-        return $out;
-    };
-    return $walk($body);
-}
-
-/** The HTML that an inbox item shows of a post: its own HTML, else its Markdown or text as paragraphs. */
-function postHtml(array $item): string
-{
-    return $item['html'] !== null ? inboxHtml($item['html']) : textHtml($item['markdown'] ?? $item['text'] ?? '');
 }

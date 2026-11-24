@@ -178,7 +178,7 @@ function newCommentFeed(Ctx $ctx, array $thread): \stdClass
 
 /**
  * The comment as republished (RFC-4 "What is republished"), from its inbox item: the title, the
- * content as the inbox keeps it, the author's name, link and verified account, its date, and
+ * content as the inbox keeps it (RFC-5 Comment HTML) and the Markdown it came from, the author's name, link and verified account, its date, and
  * `_source.inReplyTo`. Its id is the guid of the submission. With `republish: "summary"`
  * (`mode`, by default what the author agreed to), the content is an abstract: the plain text,
  * cut off after 150 characters, as `content_text`; `url` links to the full text.
@@ -190,6 +190,7 @@ function commentItem(array $inboxItem, ?string $mode = null): \stdClass
     $html = $cut === false ? $html : substr($html, 0, $cut);
     $summary = ($mode ?? $inboxItem['_pups']['republish'] ?? 'full') === 'summary';
     $account = $inboxItem['_source']['accounts']['socialspec'] ?? null;
+    $markdown = $summary ? null : $inboxItem['_source']['markdown'] ?? null;
     return json_decode(json_encode(array_filter([
         'id' => $inboxItem['id'],
         'url' => $inboxItem['url'] ?? null,
@@ -198,7 +199,8 @@ function commentItem(array $inboxItem, ?string $mode = null): \stdClass
         'content_text' => $summary ? sanitizeText(visibleText($html), SUMMARY_CHARS) ?? '' : null,
         'date_published' => $inboxItem['_inbox']['postDate'] ?? $inboxItem['date_published'],
         'authors' => $inboxItem['authors'] ?? null,
-        '_source' => ['about' => SOURCE_ABOUT, 'inReplyTo' => $inboxItem['_inbox']['target']] + ($account ? ['accounts' => ['socialspec' => $account]] : []),
+        '_source' => ['about' => SOURCE_ABOUT, 'inReplyTo' => $inboxItem['_inbox']['target']] + ($account ? ['accounts' => ['socialspec' => $account]] : [])
+            + ($markdown !== null ? ['markdown' => $markdown] : []),
     ], fn($v) => $v !== null), FEED_JSON), false);
 }
 

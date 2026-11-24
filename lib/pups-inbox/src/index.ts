@@ -1,4 +1,5 @@
 export * from './content'
+export * from './comment-html'
 export * from './feeds'
 export * from './inbox'
 export * from './receiver'

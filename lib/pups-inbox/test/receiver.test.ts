@@ -11,13 +11,13 @@ const SRC = 'http://source.scripting.com/'
 function ownerFeed(files: Map<string, string>, policy: Record<string, unknown> = {}, items: unknown[] = [], extra: Record<string, unknown> = {}) {
   items = items.length ? items : [{ id: 'p-12', title: 'Is RSS the better social network?', content_html: '<p>I think so.</p>' }]
   files.set('/feed.json', jsonFeed(items, {
-    ...extra, _submissions: { url: COMMENTS, republish: 'no', policies: { comments: { minLength: 2, maxLength: 200, title: 'none', ...policy } } },
+    ...extra, _submissions: { url: COMMENTS, republish: 'no', policies: { comments: { minLength: 2, maxLength: 200, title: 'none', allowStyle: true, ...policy } } },
   }))
 }
 
 const bobComment = (extra: Record<string, unknown> = {}) => ({
   id: 'c-17', authors: [{ name: 'Bob' }],
-  content_html: '<p>Agreed, <script>alert(1)</script>but <a href="javascript:x">discovery</a> is <b onclick="x">hard</b>.</p>',
+  content_html: '<P>Agreed, but discovery is <strong class="x" onclick="x">hard</strong>.</P>',
   _source: { accounts: { socialspec: '@bob.example' }, inReplyTo: `${ORIGIN}/feed.json#p-12` }, ...extra,
 })
 
@@ -200,7 +200,8 @@ describe('comments', () => {
     web.set('https://bob.example/comments.json', feedDoc([bobComment(), bobComment({ id: 'c-18', content_text: 'x', content_html: null }),
       bobComment({ id: 'c-19', _source: { inReplyTo: `${ORIGIN}/feed.json#p-12`, accounts: { socialspec: '@mallory.example' } } }),
       bobComment({ id: 'c-20', _source: { accounts: { socialspec: '@bob.example' }, inReplyTo: `${ORIGIN}/feed.json#other` } }),
-      bobComment({ id: 'c-21', title: 'A title' })]))
+      bobComment({ id: 'c-21', title: 'A title' }), bobComment({ id: 'c-22', content_html: '<p>Hi <script>alert(1)</script></p>' }),
+      bobComment({ id: 'c-23', content_html: '<p>See <a href="https://x.example/">this</a></p>' })]))
     const res = (await commentEndpoint(webmention(COMMENTS, 'https://bob.example/comments.json#c-17', `${ORIGIN}/feed.json#p-12`), r))!
     const body = await res.json()
     expect([res.status, body.status]).toEqual([201, 'waiting'])
@@ -209,24 +210,31 @@ describe('comments', () => {
     const status = async (url: string) => (await commentStatusEndpoint(new Request(url), url.split('/').pop()!, r))!.json()
     expect((await status(statusUrl)).status).toBe('waiting')
     const urls: Record<string, string> = {}
-    for (const id of ['c-18', 'c-19', 'c-20', 'c-21'])
-      urls[id] = (await commentEndpoint(webmention(COMMENTS, `https://bob.example/comments.json#${id}`, `${ORIGIN}/feed.json#p-12`), r))!.headers.get('location')!
-    await processQueue(r)
+    const submit = async (ids: string[]) => {
+      for (const id of ids)
+        urls[id] = (await commentEndpoint(webmention(COMMENTS, `https://bob.example/comments.json#${id}`, `${ORIGIN}/feed.json#p-12`), r))!.headers.get('location')!
+      await processQueue(r)
+    }
+    await submit(['c-18', 'c-19', 'c-20', 'c-21'])
+    await submit(['c-22', 'c-23'])
     const s = await status(statusUrl)
     expect([s.status, s.pubUrl]).toEqual(['success', undefined])
     const codes: Record<string, string> = {}
     for (const [id, url] of Object.entries(urls)) codes[id] = (await status(url)).code
-    expect(codes).toEqual({ 'c-18': 'too-short', 'c-19': 'socialspec-mismatch', 'c-20': 'in-reply-to-mismatch', 'c-21': 'title-not-allowed' })
+    expect(codes).toEqual({
+      'c-18': 'too-short', 'c-19': 'socialspec-mismatch', 'c-20': 'in-reply-to-mismatch', 'c-21': 'title-not-allowed', 'c-22': 'forbidden-element',
+      'c-23': 'forbidden-element',
+    })
     const items = inbox(files).items
     expect(items).toHaveLength(1)
     const item = items[0]
     expect([item._inbox.type, item._inbox.target, item.authors[0].name, item._source.accounts.socialspec])
       .toEqual(['submission', `${ORIGIN}/feed.json#p-12`, 'Bob', '@bob.example'])
-    expect(item.content_html).toContain('<p>Agreed, but discovery is <b>hard</b>.</p>')
+    expect(item.content_html).toContain('<p>Agreed, but discovery is <strong>hard</strong>.</p>')
     expect(item._actions.actions[0]).toEqual({
       type: 'display', text: 'Comment from @bob.example.', url: 'https://bob.example/comments.json#c-17', group: 'origin',
     })
-    expect(item.content_html).not.toMatch(/script|onclick/)
+    expect(item.content_html).not.toMatch(/class="x"|onclick/)
     expect(files.get('/feed.json')).not.toContain('Agreed')
 
     // Without allowEdit, the same source can't be sent again.

@@ -1,10 +1,12 @@
 import { isCleanUrlString, sanitizeText } from 'pups-ui'
-import { accountHost, handles, handleText, plainText, postHtml } from './content'
+import { commentContent } from './comment-html'
+import { accountHost, handles, handleText, visibleText } from './content'
 import { type Feed, FetchError, type FeedSource, findItem, loadFeed, type Post, readLimited, resolveUrl, sameRef, splitRef, urlHost } from './feeds'
 import { commentItem, type CommentFeeds, isSameComment, PUBLISHING, refusal } from './comments'
 import { moderateComment, moderationActive, moderationApproves, moderationSettings, type ModerationStore } from './moderation'
 import {
-  checkRoomForSubmission, excerptHtml, findInboxItem, ForeignInbox, type InboxContext, InboxFull, inboxItem, putInboxItem, removeInboxItem, withModerationNote,
+  checkRoomForSubmission, excerptHtml, findInboxItem, ForeignInbox, type InboxContext, InboxFull, inboxItem, putInboxItem, removeInboxItem, SOURCE_ABOUT,
+  withModerationNote,
 } from './inbox'
 
 /**
@@ -30,7 +32,12 @@ export const PENDING_KEEP_MS = 30 * 24 * 3600_000
 /** A comment keeps its own date if it is at most this far from the time of submission (RFC-4). */
 const DATE_SLACK_MS = 30 * 60_000
 /** The policy defaults of RFC-4 "Policies". */
-const POLICY_DEFAULTS = { title: 'none', minLength: 2, maxLength: 2000, requireSocialSpec: false, allowEdit: false, allowDelete: false, commentLimit: 1000, maxDepth: 5 }
+const POLICY_DEFAULTS = {
+  title: 'none', minLength: 2, maxLength: 2000, requireSocialSpec: false, allowEdit: false, allowDelete: false, commentLimit: 1000, maxDepth: 5,
+  // The features of RFC-5: a missing one is off.
+  allowStyle: false, allowLinks: false, allowCode: false, allowQuote: false, allowImages: false, allowTables: false, allowLists: false,
+  allowHeadlines: false, urlAutoLinking: false,
+}
 /** The deepest nesting of replies that the server publishes. */
 const MAX_DEPTH_LIMIT = 10
 type Policy = typeof POLICY_DEFAULTS
@@ -477,18 +484,18 @@ async function processComment(r: Receiver, job: Job) {
   if (policy.title == 'required' && title == undefined) return fail('title-required', 'The comment needs a title.')
   if (policy.title == 'none' && title != undefined) return fail('title-not-allowed', 'Comments here have no title.')
   if (title != undefined && [...title].length > MAX_TITLE_CHARS) return fail('title-too-long', `The title is longer than ${MAX_TITLE_CHARS} characters.`)
-  const length = [...plainText(post)].length
-  if (!length) return fail('empty-content', 'The comment is empty.')
-  if (length < policy.minLength) return fail('too-short', `The comment is shorter than ${policy.minLength} characters.`)
-  if (length > policy.maxLength) return fail('too-long', `The comment is longer than ${policy.maxLength} characters.`)
+  // The content as RFC-5 allows it with the policy's features, normalized; it is what the inbox shows and what is published.
+  const content = commentContent(post, policy)
+  if (!content.ok) return fail(content.code, content.text)
 
   const now = r.now()
   const date = post.date != undefined && Math.abs(Date.parse(post.date) - now) <= DATE_SLACK_MS ? post.date
     : new Date(Math.floor(now / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
   // Published after the owner approves it, in full or as an abstract, and only in a kept feed, which has comment feeds.
   const approve = PUBLISHING.includes(target.republish) && !!await r.commentFeeds?.isPublishable(job.target)
-  const item = inboxItem(r, id, 'submission', source, job.target, { ...post, date }, postHtml(post), post.author ?? sourceHost,
+  const item = inboxItem(r, id, 'submission', source, job.target, { ...post, date }, content.html, post.author ?? sourceHost,
     account == undefined ? undefined : `@${accountHost(account)}`, approve ? target.republish : undefined, !!published, !!r.commentFeeds?.isCommentFeed(job.target))
+  if (content.markdown != undefined) item._source = { about: SOURCE_ABOUT, ...item._source, markdown: content.markdown }
   if (published && isSameComment(item, published.item)) {
     // Sent again without a change: nothing to approve.
     await removeInboxItem(r, id)
@@ -522,8 +529,8 @@ async function processComment(r: Receiver, job: Job) {
   if (settings && moderationActive(settings)) {
     const parent = await r.commentFeeds?.post(job.target)
     const rating = await moderateComment(r.moderation!, settings, {
-      text: plainText(post), title, author: post.author, account: account == undefined ? undefined : `@${accountHost(account)}`, url: post.url,
-      links: [...new Set([...postHtml(post).matchAll(/href="([^"]+)"/g)].map(m => m[1]!.replace(/&amp;/g, '&')))],
+      text: visibleText(content.html), title, author: post.author, account: account == undefined ? undefined : `@${accountHost(account)}`, url: post.url,
+      links: [...new Set([...content.html.matchAll(/(?:href|src)="([^"]+)"/g)].map(m => m[1]!.replace(/&amp;/g, '&').replace(/&quot;/g, '"')))],
       postTitle: parent?.title, postUrl: parent?.url,
     }, r.now(), r.log)
     if (moderationApproves(settings, rating)) return publishNow('auto-approved', { safe: rating!.safe })

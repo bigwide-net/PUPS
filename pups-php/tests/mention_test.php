@@ -51,12 +51,12 @@ function ownerFeed(T $t, array $policy = [], array $items = [], array $extra = [
 {
     $items = $items ?: [['id' => 'p-12', 'title' => 'Is RSS the better social network?', 'content_html' => '<p>I think so.</p>']];
     $t->ctx->files->write('/feed.json', jsonFeedDoc($items, $extra + ['_submissions' => ['url' => COMMENTS, 'republish' => 'no',
-        'policies' => ['comments' => $policy + ['minLength' => 2, 'maxLength' => 200, 'title' => 'none']]]]));
+        'policies' => ['comments' => $policy + ['minLength' => 2, 'maxLength' => 200, 'title' => 'none', 'allowStyle' => true]]]]));
 }
 
 function bobComment(array $extra = []): array
 {
-    return $extra + ['id' => 'c-17', 'authors' => [['name' => 'Bob']], 'content_html' => '<p>Agreed, <script>alert(1)</script>but <a href="javascript:x">discovery</a> is <b onclick="x">hard</b>.</p>',
+    return $extra + ['id' => 'c-17', 'authors' => [['name' => 'Bob']], 'content_html' => '<P>Agreed, but discovery is <strong class="x" onclick="x">hard</strong>.</P>',
         '_source' => ['accounts' => ['socialspec' => '@bob.example'], 'inReplyTo' => ORIGIN . '/feed.json#p-12']];
 }
 
@@ -248,7 +248,8 @@ test('comments: on the owner\'s posts, checked against the feed\'s rules, into t
     serve($t, 'https://bob.example/comments.json', [bobComment(), bobComment(['id' => 'c-18', 'content_text' => 'x', 'content_html' => null]),
         bobComment(['id' => 'c-19', '_source' => ['inReplyTo' => ORIGIN . '/feed.json#p-12', 'accounts' => ['socialspec' => '@mallory.example']]]),
         bobComment(['id' => 'c-20', '_source' => ['accounts' => ['socialspec' => '@bob.example'], 'inReplyTo' => ORIGIN . '/feed.json#other']]),
-        bobComment(['id' => 'c-21', 'title' => 'A title'])]);
+        bobComment(['id' => 'c-21', 'title' => 'A title']), bobComment(['id' => 'c-22', 'content_html' => '<p>Hi <script>alert(1)</script></p>']),
+        bobComment(['id' => 'c-23', 'content_html' => '<p>See <a href="https://x.example/">this</a></p>'])]);
     $res = webmention($t, COMMENTS, 'https://bob.example/comments.json#c-17', ORIGIN . '/feed.json#p-12');
     eq([$res->status, $res->json()['status'], $res->header('access-control-expose-headers') !== null], [201, 'waiting', true]);
     $statusUrl = $res->header('location');
@@ -256,19 +257,23 @@ test('comments: on the owner\'s posts, checked against the feed\'s rules, into t
     $status = fn(string $url) => $t->get(substr($url, strlen(ORIGIN)))->json();
     eq($status($statusUrl)['status'], 'waiting');
     $urls = [];
-    foreach (['c-18', 'c-19', 'c-20', 'c-21'] as $id)
-        $urls[$id] = webmention($t, COMMENTS, "https://bob.example/comments.json#$id", ORIGIN . '/feed.json#p-12')->header('location');
-    processQueue($t->ctx);
+    // At most 5 webmentions from one site wait at a time.
+    foreach ([['c-18', 'c-19', 'c-20', 'c-21'], ['c-22', 'c-23']] as $ids) {
+        foreach ($ids as $id)
+            $urls[$id] = webmention($t, COMMENTS, "https://bob.example/comments.json#$id", ORIGIN . '/feed.json#p-12')->header('location');
+        processQueue($t->ctx);
+    }
     $s = $status($statusUrl);
     eq([$s['status'], isset($s['pubUrl'])], ['success', false], 'republish: no');
-    eq(array_map(fn($u) => $status($u)['code'], $urls), ['c-18' => 'too-short', 'c-19' => 'socialspec-mismatch', 'c-20' => 'in-reply-to-mismatch', 'c-21' => 'title-not-allowed']);
+    eq(array_map(fn($u) => $status($u)['code'], $urls), ['c-18' => 'too-short', 'c-19' => 'socialspec-mismatch', 'c-20' => 'in-reply-to-mismatch', 'c-21' => 'title-not-allowed',
+        'c-22' => 'forbidden-element', 'c-23' => 'forbidden-element'], 'RFC-5: no script, and no links without allowLinks');
     $items = inbox($t)['items'];
     eq(count($items), 1);
     $item = $items[0];
     eq([$item['_inbox']['type'], $item['_inbox']['target'], $item['authors'][0]['name'], $item['_source']['accounts']['socialspec']], ['submission', ORIGIN . '/feed.json#p-12', 'Bob', '@bob.example']);
-    contains($item['content_html'], '<p>Agreed, but discovery is <b>hard</b>.</p>', 'only the allowlist, only http(s) links');
+    contains($item['content_html'], '<p>Agreed, but discovery is <strong>hard</strong>.</p>', 'normalized: lower-case, without unknown attributes');
     eq($item['_actions']['actions'][0], ['type' => 'display', 'text' => 'Comment from @bob.example.', 'url' => 'https://bob.example/comments.json#c-17', 'group' => 'origin']);
-    notContains($item['content_html'], 'script');
+    notContains($item['content_html'], 'class="x"');
     notContains($item['content_html'], 'onclick');
     notContains(json_decode($t->ctx->files->read('/feed.json'), true)['items'][0]['content_html'], 'Agreed', 'nothing is published');
 

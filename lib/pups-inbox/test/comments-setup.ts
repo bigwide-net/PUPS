@@ -7,7 +7,7 @@ import { COMMENTS, feedDoc, inbox, ORIGIN, testReceiver, webmention } from './he
 export const WELL_KNOWN = [{ path: '/feed.json', rels: ['https://bigwide.net/ns/feed'] }, { path: '/feed/', rels: ['https://bigwide.net/ns/feed'] }]
 
 export const submissions = (policy: Record<string, unknown> = {}, republish = 'full') =>
-  ({ url: COMMENTS, republish, policies: { comments: { minLength: 2, maxLength: 200, ...policy } } })
+  ({ url: COMMENTS, republish, policies: { comments: { minLength: 2, maxLength: 200, allowStyle: true, allowLinks: true, ...policy } } })
 
 /** A receiver whose server keeps the main feed, which takes comments at the built-in endpoint; `app` writes it like an app. */
 export async function setupComments(policy: Record<string, unknown> = {}, republish = 'full') {
@@ -51,7 +51,7 @@ export async function setupComments(policy: Record<string, unknown> = {}, republ
   const post = (id = 'p-12') => stored('/feed.json').items.find((i: any) => i.id == id)
   const status = async (url: string) => (await commentStatusEndpoint(new Request(url), url.split('/').pop()!, r))!.json() as Promise<any>
   /** Bob's comment on the post `p`, submitted and processed. Returns the status URL. */
-  const comment = async (id = 'c-17', html = '<p>Agreed, but discovery is <b>hard</b>.</p>', p = 'p-12') => {
+  const comment = async (id = 'c-17', html = '<p>Agreed, but discovery is <strong>hard</strong>.</p>', p = 'p-12') => {
     t.web.set('https://bob.example/comments.json', feedDoc([{
       id, authors: [{ name: 'Bob' }], url: `https://bob.example/c/${id}`, content_html: html,
       _source: { accounts: { socialspec: '@bob.example' }, inReplyTo: `${ORIGIN}/feed.json#${p}` },

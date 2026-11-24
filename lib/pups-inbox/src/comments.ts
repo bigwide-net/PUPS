@@ -47,7 +47,7 @@ export const refusal = (e: unknown): { status: number; code: string; message: st
 
 /**
  * The comment as republished (RFC-4 "What is republished"), from its inbox item: the title, the content as the inbox
- * keeps it, the author's name, link and verified account, its date, and `_source.inReplyTo`. Its id is the guid of the
+ * keeps it (RFC-5 Comment HTML) and the Markdown it came from, the author's name, link and verified account, its date, and `_source.inReplyTo`. Its id is the guid of the
  * submission. With `republish: "summary"` (`mode`, by default what the author agreed to), the content is an abstract: the
  * plain text, cut off after 150 characters, as `content_text`; `url` links to the full text.
  */
@@ -57,6 +57,7 @@ export function commentItem(item: InboxItem, mode?: string): Record<string, any>
   const html = cut < 0 ? all : all.slice(0, cut)
   const summary = (mode ?? item._pups?.republish ?? 'full') == 'summary'
   const account = item._source?.accounts?.socialspec
+  const markdown = summary ? undefined : item._source?.markdown
   return JSON.parse(JSON.stringify({
     id: item.id,
     url: item.url,
@@ -65,7 +66,7 @@ export function commentItem(item: InboxItem, mode?: string): Record<string, any>
     content_text: summary ? sanitizeText(visibleText(html), SUMMARY_CHARS) ?? '' : undefined,
     date_published: item._inbox?.postDate ?? item.date_published,
     authors: item.authors,
-    _source: { about: SOURCE_ABOUT, inReplyTo: item._inbox?.target, ...account && { accounts: { socialspec: account } } },
+    _source: { about: SOURCE_ABOUT, inReplyTo: item._inbox?.target, ...account && { accounts: { socialspec: account } }, ...markdown != undefined && { markdown } },
   }))
 }
 

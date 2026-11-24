@@ -1,11 +1,10 @@
 import type { ChildNode, Element } from 'domhandler'
 import { parseDocument } from 'htmlparser2'
-import { escapeHtml as h, isCleanUrlString, stripUnsafe } from 'pups-ui'
+import { escapeHtml as h, stripUnsafe } from 'pups-ui'
 
 /**
- * The text of incoming posts (RFC-11 mentions, RFC-4 comments): their visible text, the handles in it, excerpts, and
- * the small HTML subset that the inbox stores. Posts come from strangers: nothing here keeps markup or URLs that
- * aren't on the allowlist.
+ * The text of incoming posts (RFC-11 mentions, RFC-4 comments): their visible text, the handles in it, and excerpts.
+ * The HTML of comments is checked by comment-html.ts.
  */
 
 /** Elements that separate words: their start and end count as whitespace in the visible text. */
@@ -14,8 +13,6 @@ const BLOCK_TAGS = new Set(['address', 'article', 'aside', 'blockquote', 'br', '
 /** Elements whose content is never shown. */
 export const HIDDEN_TAGS = new Set(['script', 'style', 'template', 'noscript', 'iframe', 'object', 'embed', 'svg', 'math', 'head', 'title',
   'select', 'textarea', 'button'])
-/** What inbox items keep of a post's HTML; everything else is unwrapped or, for HIDDEN_TAGS, dropped. */
-const INBOX_TAGS = new Set(['p', 'br', 'a', 'strong', 'b', 'em', 'i', 'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'del', 's'])
 
 /**
  * A handle (RFC-11 "Handles"): `@` and a host name of at least two labels, the last one starting with a letter.
@@ -103,25 +100,3 @@ export const plainText = (item: PostText) => item.markdown != undefined ? normal
 /** Plain text as HTML paragraphs. */
 export const textHtml = (text: string) => wellFormed(text).split(/(?:\r\n|\r|\n){2,}/).map(p => p.trim()).filter(Boolean)
   .map(p => `<p>${h(stripUnsafe(p)).replace(/(\r\n|\r|\n)/g, '<br>$1')}</p>`).join('')
-
-/**
- * A post's HTML, reduced to INBOX_TAGS. Links keep only an http(s) `href`; every other attribute is dropped.
- * Readers sanitize it once more (RFC-2); this is a second line.
- */
-export function inboxHtml(html: string): string {
-  const walk = (nodes: ChildNode[]): string => nodes.map(n => {
-    if (n.type == 'text') return h(stripUnsafe(n.data))
-    if (!isElement(n)) return ''
-    const tag = n.name.toLowerCase()
-    if (HIDDEN_TAGS.has(tag)) return ''
-    if (!INBOX_TAGS.has(tag)) return walk(n.children)
-    if (tag == 'br') return '<br>'
-    const href = n.attribs.href ?? ''
-    const open = tag != 'a' ? `<${tag}>` : /^https?:\/\//i.test(href) && isCleanUrlString(href) ? `<a href="${h(href)}">` : ''
-    return open + walk(n.children) + (open ? `</${tag}>` : '')
-  }).join('')
-  return html.trim() ? walk(parseHtml(html)) : ''
-}
-
-/** The HTML that an inbox item shows of a post: its own HTML, else its Markdown or text as paragraphs. */
-export const postHtml = (item: PostText) => item.html != undefined ? inboxHtml(item.html) : textHtml(item.markdown ?? item.text ?? '')

@@ -56,7 +56,7 @@ describe('comment feeds', () => {
     const feed = stored('/feed/comments/0.json')
     expect([feed.title, feed.feed_url, feed.home_page_url]).toEqual(['Comments on “Is RSS the better social network?”', `${ORIGIN}/feed/comments/0.json`, `${ORIGIN}/`])
     expect(feed.items).toEqual([{
-      id: item.id, url: 'https://bob.example/c/c-17', content_html: '<p>Agreed, but discovery is <b>hard</b>.</p>',
+      id: item.id, url: 'https://bob.example/c/c-17', content_html: '<p>Agreed, but discovery is <strong>hard</strong>.</p>',
       date_published: item._inbox.postDate, authors: [{ name: 'Bob' }],
       _source: { about: SOURCE_SPEC, inReplyTo: `${ORIGIN}/feed.json#p-12`, accounts: { socialspec: '@bob.example' }, comments: { count: 0, total: 0 } },
     }])
@@ -225,10 +225,10 @@ describe('comment feeds', () => {
   it('republish summary publishes an abstract, linked to the full text', async () => {
     const { files, app, stored, status, comment, action, web, r } = await setupComments({ maxLength: 1000 }, 'summary')
     await app.post({ id: 'p-12', content_text: 'A post' })
-    await comment('c-17', `<p>${'Feeds are <b>great</b>, '.repeat(12)}really.</p>`)
+    await comment('c-17', `<p>${'Feeds are <strong>great</strong>, '.repeat(12)}really.</p>`)
     const item = inbox(files).items[0]
     expect(item._pups).toEqual({ republish: 'summary' })
-    expect(item.content_html).toContain('<b>great</b>')
+    expect(item.content_html).toContain('<strong>great</strong>')
     await action(item.id, 'approve')
     const c = stored('/feed/comments/0.json').items[0]
     expect(c.content_html).toBeUndefined()

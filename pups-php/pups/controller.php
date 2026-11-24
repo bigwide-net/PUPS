@@ -6,7 +6,7 @@
 
 namespace Pups;
 
-foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments', 'moderation'] as $f)
+foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments', 'moderation', 'markdown', 'commenthtml'] as $f)
     require_once __DIR__ . "/lib/$f.php";
 foreach (['discovery', 'hostmeta', 'files', 'oauth', 'admin', 'setup', 'homepage', 'mentions', 'inbox'] as $f)
     require_once __DIR__ . "/handler/$f.php";

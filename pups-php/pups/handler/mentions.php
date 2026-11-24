@@ -28,7 +28,10 @@ const PENDING_KEEP_MS = 30 * 24 * 3600_000;
 const DATE_SLACK_MS = 30 * 60_000;
 /** The policy defaults of RFC-4 "Policies". */
 const POLICY_DEFAULTS = ['title' => 'none', 'minLength' => 2, 'maxLength' => 2000, 'requireSocialSpec' => false, 'allowEdit' => false, 'allowDelete' => false,
-    'commentLimit' => COMMENT_POLICY_LIMIT, 'maxDepth' => MAX_DEPTH_DEFAULT];
+    'commentLimit' => COMMENT_POLICY_LIMIT, 'maxDepth' => MAX_DEPTH_DEFAULT,
+    // The features of RFC-5: a missing one is off.
+    'allowStyle' => false, 'allowLinks' => false, 'allowCode' => false, 'allowQuote' => false, 'allowImages' => false, 'allowTables' => false,
+    'allowLists' => false, 'allowHeadlines' => false, 'urlAutoLinking' => false];
 const MAX_TITLE_CHARS = 300;
 
 function mentionUrl(Config $c): string
@@ -495,20 +498,19 @@ function processComment(Ctx $ctx, array $job)
         return $fail('title-not-allowed', 'Comments here have no title.');
     if ($title !== null && mb_strlen($title) > MAX_TITLE_CHARS)
         return $fail('title-too-long', 'The title is longer than ' . MAX_TITLE_CHARS . ' characters.');
-    $length = mb_strlen(plainText($post));
-    if (!$length)
-        return $fail('empty-content', 'The comment is empty.');
-    if ($length < $policy['minLength'])
-        return $fail('too-short', "The comment is shorter than {$policy['minLength']} characters.");
-    if ($length > $policy['maxLength'])
-        return $fail('too-long', "The comment is longer than {$policy['maxLength']} characters.");
+    // The content as RFC-5 allows it with the policy's features, normalized; it is what the inbox shows and what is published.
+    $content = commentContent($post, $policy);
+    if (isset($content['code']))
+        return $fail($content['code'], $content['text']);
 
     $now = $ctx->now();
     $date = $post['date'] !== null && abs(strtotime($post['date']) * 1000 - $now) <= DATE_SLACK_MS ? $post['date'] : gmdate('Y-m-d\TH:i:s\Z', intdiv($now, 1000));
     // Published after the owner approves it, in full or as an abstract, and only in a kept feed, which has comment feeds.
     $approve = in_array($target['republish'], PUBLISHING, true) && commentThread($ctx, $target['ref']) !== null;
-    $item = inboxItem($ctx, $id, 'submission', $source, $target['ref'], ['date' => $date] + $post, postHtml($post),
+    $item = inboxItem($ctx, $id, 'submission', $source, $target['ref'], ['date' => $date] + $post, $content['html'],
         $post['author'] ?? $sourceHost, $account === null ? null : '@' . accountHost($account), $approve ? $target['republish'] : null, (bool) $published);
+    if ($content['markdown'] !== null)
+        $item['_source'] = ['about' => SOURCE_ABOUT] + ($item['_source'] ?? []) + ['markdown' => $content['markdown']];
     if ($published && isSameComment($item, $published)) {
         // Sent again without a change: nothing to approve.
         removeInboxItem($ctx, $id);
@@ -537,10 +539,10 @@ function processComment(Ctx $ctx, array $job)
     if (isOwnerUrl($ctx, $source) && isOwnerUrl($ctx, $found['feed']['url']))
         return $publishNow('own');
     if ($approve && moderationActive($settings = moderationSettings($ctx))) {
-        preg_match_all('/href="([^"]+)"/', postHtml($post), $links);
+        preg_match_all('/(?:href|src)="([^"]+)"/', $content['html'], $links);
         $parent = commentThread($ctx, $target['ref'])['post'] ?? null;
         $rating = moderateComment($ctx, $settings, [
-            'text' => plainText($post), 'title' => $title, 'author' => $post['author'], 'account' => $account === null ? null : '@' . accountHost($account),
+            'text' => visibleText($content['html']), 'title' => $title, 'author' => $post['author'], 'account' => $account === null ? null : '@' . accountHost($account),
             'url' => $post['url'], 'links' => array_values(array_unique(array_map('html_entity_decode', $links[1]))),
             'postTitle' => is_string($parent->title ?? null) ? $parent->title : null, 'postUrl' => is_string($parent->url ?? null) ? $parent->url : null,
         ]);

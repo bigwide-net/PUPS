@@ -16,11 +16,11 @@ function commentSetup(array $policy = [], string $republish = 'full'): array
 
 function submissions(array $policy = [], string $republish = 'full'): array
 {
-    return ['url' => COMMENTS, 'republish' => $republish, 'policies' => ['comments' => $policy + ['minLength' => 2, 'maxLength' => 200]]];
+    return ['url' => COMMENTS, 'republish' => $republish, 'policies' => ['comments' => $policy + ['minLength' => 2, 'maxLength' => 200, 'allowStyle' => true, 'allowLinks' => true]]];
 }
 
 /** Bob's comment on the post `p` at https://bob.example/comments.json#<id>, submitted and processed. Returns the status URL path. */
-function comment(T $t, string $id = 'c-17', string $html = '<p>Agreed, but discovery is <b>hard</b>.</p>', string $p = 'p-12', array $more = []): string
+function comment(T $t, string $id = 'c-17', string $html = '<p>Agreed, but discovery is <strong>hard</strong>.</p>', string $p = 'p-12', array $more = []): string
 {
     $mine = ['id' => $id, 'authors' => [['name' => 'Bob']], 'url' => "https://bob.example/c/$id", 'content_html' => $html,
         '_source' => ['accounts' => ['socialspec' => '@bob.example'], 'inReplyTo' => ORIGIN . "/feed.json#$p"]];
@@ -102,7 +102,7 @@ test('comment feeds: Publish Comment publishes the comment, counts it, and tells
     eq($t->get($status)->json(), ['status' => 'success', 'pubDate' => $item['_inbox']['postDate'], 'pubUrl' => $address, 'guid' => $item['id']]);
     $feed = stored($t, '/feed/comments/0.json');
     eq([$feed['title'], $feed['feed_url'], $feed['home_page_url']], ['Comments on “Is RSS the better social network?”', ORIGIN . '/feed/comments/0.json', ORIGIN . '/']);
-    eq($feed['items'], [['id' => $item['id'], 'url' => 'https://bob.example/c/c-17', 'content_html' => '<p>Agreed, but discovery is <b>hard</b>.</p>',
+    eq($feed['items'], [['id' => $item['id'], 'url' => 'https://bob.example/c/c-17', 'content_html' => '<p>Agreed, but discovery is <strong>hard</strong>.</p>',
         'date_published' => $item['_inbox']['postDate'], 'authors' => [['name' => 'Bob']],
         '_source' => ['about' => 'https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md', 'inReplyTo' => ORIGIN . '/feed.json#p-12',
             'accounts' => ['socialspec' => '@bob.example'], 'comments' => ['count' => 0, 'total' => 0]]]], 'open for replies');
@@ -275,12 +275,12 @@ test('comment feeds: Dismiss rejects; the comment limit; feeds that only deliver
 test('comment feeds: republish summary publishes an abstract, linked to the full text', function () {
     [$t, $tok] = commentSetup(['maxLength' => 1000], 'summary');
     postTo($t, $tok, ['id' => 'p-12', 'content_text' => 'A post']);
-    $long = '<p>' . str_repeat('Feeds are <b>great</b>, ', 12) . 'really.</p>';
+    $long = '<p>' . str_repeat('Feeds are <strong>great</strong>, ', 12) . 'really.</p>';
     comment($t, 'c-17', $long);
     $item = inbox($t)['items'][0];
     eq([$item['_pups'], $t->get(substr(\Pups\commentUrl($t->ctx->config), strlen(ORIGIN)) . '/status/' . $item['id'])->json()['status']],
         [['republish' => 'summary'], 'pending']);
-    contains($item['content_html'], '<b>great</b>', 'the owner sees it all');
+    contains($item['content_html'], '<strong>great</strong>', 'the owner sees it all');
     inboxAction($t, $item['id'], 'approve');
     $c = stored($t, '/feed/comments/0.json')['items'][0];
     ok(!isset($c['content_html']), 'no HTML');
