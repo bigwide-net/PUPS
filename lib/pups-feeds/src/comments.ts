@@ -278,6 +278,12 @@ export function commentFeeds(o: CommentFeedOptions) {
       const t = await thread(target)
       return t && { depth: t.depth, submissions: isObject(t.feed.doc._submissions) ? t.feed.doc._submissions : undefined, open: allowsComments(t.post) }
     },
+    /** The title and URL of the post that `target`, a post or a comment in its thread, belongs to. */
+    async post(target: string) {
+      const t = await thread(target)
+      const str = (v: unknown) => typeof v == 'string' && v ? v : undefined
+      return t && { title: str(t.post.title), url: str(t.post.url) }
+    },
     /** The comment `id` as published in answer to `target`, and its address. */
     async published(target: string, id: string) {
       const t = await thread(target)

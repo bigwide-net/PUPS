@@ -128,6 +128,27 @@ export class PupsStore extends DurableObject<Env> {
     this.sql.exec('DELETE FROM comment_status WHERE expires_at < ?', now)
   }
 
+  // --- Auto-moderation (pups-inbox's moderation.ts) ----------------------------------
+
+  /** The settings as JSON, the API key among them. */
+  moderationSettings(): string | undefined {
+    return this.kvGet('moderation')
+  }
+
+  setModerationSettings(json: string) {
+    this.kvSet('moderation', json)
+  }
+
+  /** The tokens used on `day` (YYYY-MM-DD, UTC). */
+  moderationTokens(day: string): number {
+    const u = JSON.parse(this.kvGet('moderation_usage') ?? '{}')
+    return u.day == day && Number.isInteger(u.tokens) ? u.tokens : 0
+  }
+
+  addModerationTokens(day: string, n: number) {
+    this.kvSet('moderation_usage', JSON.stringify({ day, tokens: this.moderationTokens(day) + n }))
+  }
+
   // --- Server secret ---------------------------------------------------------------
 
   /** The HMAC key for signed form fields. Generated on first use. */

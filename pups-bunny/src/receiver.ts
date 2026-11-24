@@ -76,6 +76,13 @@ export async function receiver(s: Settings, env: Env): Promise<Receiver> {
       get: id => db.statusGet(id),
     },
     commentFeeds: serverCommentFeeds(s, env, url => ownerPath(url, s)),
+    moderation: {
+      load: async () => await db.moderationSettings() ?? undefined,
+      save: json => db.setModerationSettings(json),
+      tokens: day => db.moderationTokens(day),
+      addTokens: (day, n) => db.addModerationTokens(day, n),
+      fetch: (input, init) => fetch(input, init),
+    },
     log: (event, data) => console.log(event, JSON.stringify(data ?? {})),
   }
 }

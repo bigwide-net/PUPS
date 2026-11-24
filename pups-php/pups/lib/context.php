@@ -10,6 +10,8 @@ final class Ctx
     public ClientLoader $clients;
     /** @var callable(string): array GET for webmention sources and targets: ['status', 'headers', 'body'] */
     public $http;
+    /** @var callable(string, array, string): array POST to the auto-moderation model (moderation.php): url, headers, body → ['status', 'body'] */
+    public $llm;
     /** Set when a webmention was queued: run() works through the queue after the response. */
     public bool $workPending = false;
 
@@ -25,6 +27,7 @@ final class Ctx
         $this->files = new FileStore("$config->dataDir/files");
         $this->clients = new ClientLoader($config, $this->state, $fetch);
         $this->http = $http ?? httpFetch($config);
+        $this->llm = moderationHttp($config);
     }
 
     public function now(): int

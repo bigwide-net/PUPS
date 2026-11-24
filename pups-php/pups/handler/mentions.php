@@ -516,13 +516,13 @@ function processComment(Ctx $ctx, array $job)
         Log::event('comment.unchanged', ['source' => $source, 'target' => $target['ref']]);
         return;
     }
-    if (isOwnerUrl($ctx, $source) && isOwnerUrl($ctx, $found['feed']['url'])) {
-        // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
+    // Published without review: the owner's own comment, or one that auto-moderation finds acceptable.
+    $publishNow = function (string $why, array $extra = []) use ($ctx, $id, $item, $published, $date, $approve, $source, $target, $fail) {
         removeInboxItem($ctx, $id);
         $pubDate = $published->date_published ?? $date;
         if (!$approve) {
             writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $pubDate]);
-            Log::event('comment.own', ['source' => $source, 'target' => $target['ref'], 'published' => false]);
+            Log::event("comment.$why", ['source' => $source, 'target' => $target['ref'], 'published' => false] + $extra);
             return;
         }
         try {
@@ -531,8 +531,23 @@ function processComment(Ctx $ctx, array $job)
             return $fail($e->error === 'conflict' ? 'target-gone' : $e->error, $e->getMessage());
         }
         writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $pubDate, 'pubUrl' => $url]);
-        Log::event('comment.own', ['source' => $source, 'target' => $target['ref'], 'published' => true, 'url' => $url]);
-        return;
+        Log::event("comment.$why", ['source' => $source, 'target' => $target['ref'], 'published' => true, 'url' => $url] + $extra);
+    };
+    // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
+    if (isOwnerUrl($ctx, $source) && isOwnerUrl($ctx, $found['feed']['url']))
+        return $publishNow('own');
+    if ($approve && moderationActive($settings = moderationSettings($ctx))) {
+        preg_match_all('/href="([^"]+)"/', postHtml($post), $links);
+        $parent = commentThread($ctx, $target['ref'])['post'] ?? null;
+        $rating = moderateComment($ctx, $settings, [
+            'text' => plainText($post), 'title' => $title, 'author' => $post['author'], 'account' => $account === null ? null : '@' . accountHost($account),
+            'url' => $post['url'], 'links' => array_values(array_unique(array_map('html_entity_decode', $links[1]))),
+            'postTitle' => is_string($parent->title ?? null) ? $parent->title : null, 'postUrl' => is_string($parent->url ?? null) ? $parent->url : null,
+        ]);
+        if (moderationApproves($settings, $rating))
+            return $publishNow('auto-approved', ['safe' => $rating['safe']]);
+        if ($rating !== null)
+            $item = withModerationNote($item, $rating);
     }
     try {
         putInboxItem($ctx, $item);

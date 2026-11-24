@@ -1,5 +1,5 @@
 import * as ui from 'pups-ui'
-import { inboxSummary } from 'pups-inbox'
+import { inboxSummary, moderationView, saveModeration } from 'pups-inbox'
 import { errorPage, hasUnsafeChars, type HomepageKind, type HomepageState, isTheme, MIN_PASSWORD_LENGTH, ownerNav, setupCompletePage } from 'pups-ui'
 import {
   createSession, endSession, passkeyCreateOptions, passkeyGetOptions, session, verifyCredential, verifyPasskeyRegistration,
@@ -15,7 +15,7 @@ import { type Env, type Settings, store } from './settings'
 import type { Passkey } from './state'
 
 /**
- * Owner pages: first-run setup, login (auth subdomain mode only), the apps page and the
+ * Owner pages: first-run setup, login (auth subdomain mode only), the apps page, the comments page and the
  * password page.
  *
  * Same-domain mode has no sessions: viewing the apps page and every change carry a fresh
@@ -92,7 +92,7 @@ async function credentialForm(token: string, s: Settings, env: Env, error?: stri
 
 // --- Login (auth subdomain mode only) --------------------------------------------------------
 
-const RETURN_PATHS = ['/pups/apps', '/pups/homepage', '/pups/password']
+const RETURN_PATHS = ['/pups/apps', '/pups/homepage', '/pups/comment-settings', '/pups/password']
 const safeReturn = (r: unknown) =>
   typeof r == 'string' && r.length <= 2048 && (r.startsWith('/oauth/authorize?') || RETURN_PATHS.includes(r)) &&
     !r.includes('\\') && !/\s/.test(r) && !hasUnsafeChars(r) ? r : '/pups/apps'
@@ -201,6 +201,25 @@ async function appsPage(s: Settings, env: Env, o: { message?: string; error?: st
     hostMetaError: hostMeta.error, hostMetaStored: hostMeta.stored, usedBytes: used, maxBytes: s.maxStorageBytes,
     confirm, inbox, ...o,
   })
+}
+
+// --- Comments ----------------------------------------------------------------------------
+
+/** /pups/comment-settings, with comments on: the comments in the inbox, and auto-moderation. */
+export async function commentSettings(req: Request, s: Settings, env: Env): Promise<Response> {
+  const stop = await guard(req, s, env, '/pups/comment-settings')
+  if (stop) return stop
+  const r = await receiver(s, env)
+  const page = async (o: { message?: string; error?: string; form?: FormData } = {}) => ui.commentsPage(s, {
+    inbox: (await inboxSummary(r))!, moderation: await moderationView(r.moderation!, r.now(), o.form), confirm: await confirmOptions(s, env), ...o,
+  })
+  if (req.method == 'GET') return s.subdomainMode ? page() : ui.commentsUnlockPage(s, await confirmOptions(s, env))
+  const form = await readForm(req)
+  const err = await verifyCredential(form, s, env)
+  if (err) return s.subdomainMode ? page({ error: err }) : ui.commentsUnlockPage(s, await confirmOptions(s, env), err)
+  if (!form.has('save_moderation')) return page()
+  const saved = await saveModeration(r.moderation!, form, s.allowHttp)
+  return page('error' in saved ? { error: saved.error, form } : { message: saved.message })
 }
 
 // --- Password --------------------------------------------------------------------------

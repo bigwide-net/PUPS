@@ -114,4 +114,39 @@ describe('kept feeds', () => {
     expect((await post('/feed/talk.json', { id: 'p-1', _pups: { delete: true } })).status).toBe(200)
     expect((await call('/feed/talk/comments/0.json')).status).toBe(404)
   })
+
+  it('auto-moderation: the owner turns it on, and comments rated acceptable are published at once', async () => {
+    const COMMENTS = `${ORIGIN}/pups/comments`
+    const submissions = { url: COMMENTS, republish: 'full', policies: { comments: { minLength: 2 } } }
+    expect((await put('/feed/mod.json', token, feedBody({ _submissions: submissions }), { 'if-none-match': '*' })).status).toBe(201)
+    expect((await post('/feed/mod.json', { id: 'p-1', content_text: 'Moderate me' })).status).toBe(201)
+
+    const apps = (fields: Record<string, string>) => call('/pups/comment-settings', { method: 'POST', body: form({ password: PASSWORD, ...fields }) })
+    let html = await (await call('/pups/apps', { method: 'POST', body: form({ password: PASSWORD, show: '1' }) })).text()
+    expect([html.includes('<li><a href="/pups/comment-settings">Comments</a></li>'), html.includes('Auto-moderation')]).toEqual([true, false])
+    html = await (await apps({ show: '1' })).text()
+    expect(html).toContain('<li><a href="/pups/comment-settings" aria-current="page">Comments</a></li>')
+    expect(html).toContain('<h2 id="moderation-heading">Auto-moderation</h2>')
+    expect(html).toContain('Create a new key for this domain only, with a low spending limit')
+    expect(html).not.toContain('name="moderation_enabled" value="1" checked')
+    expect(await (await apps({ save_moderation: '1', moderation_enabled: '1' })).text()).toContain('Auto-moderation needs an API key.')
+    html = await (await apps({ save_moderation: '1', moderation_enabled: '1', moderation_key: 'sk-or-v1-secret1234', moderation_daily_tokens: '20' })).text()
+    expect(html).toContain('Auto-moderation is on: comments rated at least 90 % likely acceptable are published at once.')
+    expect([html.includes('secret1234'), html.includes('ending in …1234'), html.includes('name="moderation_daily_tokens" min="1" max="10000" step="1" value="20"')])
+      .toEqual([false, true, true])
+
+    web.set('https://openrouter.ai/api/v1/chat/completions', { body: JSON.stringify({
+      choices: [{ message: { content: '{"safe": 0.98, "reason": "Fine."}' } }], usage: { total_tokens: 700 } }) })
+    const src = 'https://bob.example/mod.json'
+    web.set(src, { body: JSON.stringify({ version: 'https://jsonfeed.org/version/1.1', title: 'Bob', items: [
+      { id: 'c-1', content_text: 'Well said.', authors: [{ name: 'Bob' }], _source: { inReplyTo: `${ORIGIN}/feed/mod.json#p-1` } }] }) })
+    const res = await call(COMMENTS, { method: 'POST', body: form({ source: `${src}#c-1`, target: `${ORIGIN}/feed/mod.json#p-1` }), headers: { origin: 'https://bob.example' } })
+    expect(res.status).toBe(201)
+    await settle()
+    const status = await (await call(res.headers.get('location')!)).json() as any
+    expect([status.status, status.pubUrl]).toEqual(['success', `${ORIGIN}/feed/mod/comments/0.json#${status.guid}`])
+    expect((await stored('/feed/mod/comments/0.json')).items[0].content_html).toBe('<p>Well said.</p>')
+    expect(await (await apps({ show: '1' })).text()).toContain('Used today (UTC): 700 tokens.')
+    await apps({ save_moderation: '1' })
+  })
 })

@@ -9,6 +9,7 @@
  *                      owner's passkey or password
  *   p[role=alert]      errors           p[role=status]   confirmations
  *   p[role=note]       warnings (new app, app on this computer, same-domain mode)
+ *   label > input, label > textarea   a field and its label; text fields are as wide as the page
  *   label > input[type=radio] + img   a choice with a picture (the themes of webpup in pups-php)
  *   fieldset > div     a group of permissions on the consent screen: a label with its
  *                      checkbox, then details (the paths, rels and properties)
@@ -57,8 +58,10 @@ summary { cursor: pointer; }
 details p, details ul { margin: .25rem 0; }
 details ul { padding-left: 1.1rem; }
 details code { word-break: normal; overflow-wrap: anywhere; }
-input[type=password] { display: block; width: 100%; margin-top: .25rem; padding: .6rem .75rem; border: 1px solid var(--line);
-  border-radius: 8px; background: var(--bg); color: var(--fg); font: inherit; }
+input[type=password], input[type=text], input[type=url], input[type=number], textarea { display: block; width: 100%; margin-top: .25rem;
+  padding: .6rem .75rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); font: inherit; }
+input[type=number] { width: 10rem; }
+textarea { resize: vertical; }
 button { font: inherit; padding: .5rem 1rem; border-radius: 8px; border: 1px solid var(--line); background: var(--card);
   color: var(--fg); cursor: pointer; margin: .15rem .25rem .15rem 0; }
 button[type=submit]:first-of-type, button[value=approve] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }

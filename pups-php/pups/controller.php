@@ -6,13 +6,13 @@
 
 namespace Pups;
 
-foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments'] as $f)
+foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments', 'moderation'] as $f)
     require_once __DIR__ . "/lib/$f.php";
 foreach (['discovery', 'hostmeta', 'files', 'oauth', 'admin', 'setup', 'homepage', 'mentions', 'inbox'] as $f)
     require_once __DIR__ . "/handler/$f.php";
 
 /** Paths (relative to the base) that are never CORS-enabled: the owner pages and their assets. */
-const OWNER_PAGES = ['/pups/', '/pups/homepage', '/oauth/authorize', '/pups/apps', '/pups/sign-in', '/pups/server', '/pups/setup', '/pups/inbox/dismiss', '/pups/inbox/approve', '/pups/assets/owner.css', '/pups/assets/owner.js'];
+const OWNER_PAGES = ['/pups/', '/pups/homepage', '/oauth/authorize', '/pups/apps', '/pups/comment-settings', '/pups/sign-in', '/pups/server', '/pups/setup', '/pups/inbox/dismiss', '/pups/inbox/approve', '/pups/assets/owner.css', '/pups/assets/owner.js'];
 
 /** Handles one request. Never throws. */
 function handle(Request $req, Ctx $ctx): Response
@@ -72,6 +72,8 @@ function dispatch(Request $req, string $abs, ?string $rel, Ctx $ctx): ?Response
             return setupEndpoint($req, $ctx);
         case '/pups/apps':
             return appsEndpoint($req, $ctx);
+        case '/pups/comment-settings':
+            return $c->comments ? commentsEndpoint($req, $ctx) : null;
         case '/pups/sign-in':
             return signInEndpoint($req, $ctx);
         case '/pups/server':

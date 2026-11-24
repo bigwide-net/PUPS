@@ -3,15 +3,16 @@
 namespace Pups;
 
 /**
- * The owner's management pages: apps (grants, host-meta.json), sign-in (passkeys and
- * password) and server (checks and log). Same-domain mode has no sessions: viewing a page
+ * The owner's management pages: apps (grants, host-meta.json), comments (the inbox and
+ * auto-moderation), sign-in (passkeys and password) and server (checks and log). Same-domain mode has no sessions: viewing a page
  * and every change carry a fresh passkey assertion or the password.
  */
 
 function nav(Config $c, string $current): string
 {
     $item = fn(string $p, string $label) => '<li><a href="' . h($c->path($p)) . '"' . ($p === $current ? ' aria-current="page"' : '') . ">$label</a></li>";
-    return "<nav aria-label=\"Owner pages\">\n<ul>\n" . $item('/pups/apps', 'Apps') . "\n" . $item('/pups/homepage', 'Homepage') . "\n" . $item('/pups/sign-in', 'Passkeys and password')
+    return "<nav aria-label=\"Owner pages\">\n<ul>\n" . $item('/pups/apps', 'Apps') . "\n" . $item('/pups/homepage', 'Homepage') . "\n"
+        . ($c->comments ? $item('/pups/comment-settings', 'Comments') . "\n" : '') . $item('/pups/sign-in', 'Passkeys and password')
         . "\n" . $item('/pups/server', 'Server') . "\n</ul>\n</nav>";
 }
 
@@ -181,35 +182,112 @@ function appsPage(Ctx $ctx, ?string $message = null, ?string $error = null): Res
 ' . $linksTable . '
 ' . $propsTable . '
 </section>
+' . inboxSection($ctx, $c->mentions, false) . '
 </form>
-' . inboxSection($ctx) . '
 <p>Storage used: ' . sprintf('%.1f', $used / 1048576) . ' MiB' . ($c->maxStorageBytes ? ' of ' . sprintf('%.0f', $c->maxStorageBytes / 1048576) . ' MiB' : '') . '.</p>',
         ['nav' => nav($c, '/pups/apps')]);
 }
 
-/** What the built-in receiver has put into the inbox, which the owner reads in their reader (RFC-12). */
-function inboxSection(Ctx $ctx): string
+/**
+ * What the built-in receiver has put into the inbox, which the owner reads in their reader (RFC-12): the mentions on the
+ * apps page, the comments on the comments page.
+ */
+function inboxSection(Ctx $ctx, bool $mentions, bool $comments): string
 {
     $c = $ctx->config;
-    if (!$c->mentions && !$c->comments)
+    if (!$mentions && !$comments)
         return '';
     try {
         $items = inboxItems($ctx);
         $count = fn(array $types) => count(array_filter($items, fn($i) => in_array($i['_inbox']['type'] ?? null, $types, true)));
         $state = '<p>' . implode(', ', array_filter([
-            $c->mentions ? $count(['mention', 'reply']) . ' mentions and replies' : null,
-            $c->comments ? $count(['submission']) . ' comments waiting for you' : null,
+            $mentions ? $count(['mention', 'reply']) . ' mentions and replies' : null,
+            $comments ? $count(['submission']) . ' comments waiting for you' : null,
         ])) . ' (at most ' . MAX_INBOX_ITEMS . ' items, ' . MAX_ITEMS_PER_HOST . ' per site).'
-            . (queueLength($ctx) ? ' ' . queueLength($ctx) . ' webmentions are still being checked.' : '') . '</p>';
+            . ($mentions && queueLength($ctx) ? ' ' . queueLength($ctx) . ' webmentions are still being checked.' : '') . '</p>';
     } catch (ForeignInbox $e) {
         $state = alert($e->getMessage());
     }
     return '<section aria-labelledby="inbox-heading">
 <h2 id="inbox-heading">Inbox</h2>
-<p>This server receives ' . implode(' and ', array_filter([$c->mentions ? 'mentions of <strong>@' . h(ownerHost($c)) . '</strong>' : null,
-        $c->comments ? 'comments on your feeds' : null])) . ' and puts them into your private inbox, <code>' . h(INBOX_PATH) . '</code>.
+<p>This server receives ' . implode(' and ', array_filter([$mentions ? 'mentions of <strong>@' . h(ownerHost($c)) . '</strong>' : null,
+        $comments ? 'comments on your feeds' : null])) . ' and puts them into your private inbox, <code>' . h(INBOX_PATH) . '</code>.
 Your feed reader shows it, if it supports inboxes and you allow it to read non-public content.</p>
 ' . $state . '
+</section>';
+}
+
+// --- Comments --------------------------------------------------------------------------------
+
+/** /pups/comment-settings, with comments on: the comments in the inbox, and auto-moderation. */
+function commentsEndpoint(Request $req, Ctx $ctx): Response
+{
+    $c = $ctx->config;
+    return htmlErrors($c, function () use ($req, $ctx, $c) {
+        $form = $req->isForm() ? $req->form() : [];
+        $save = isset($form['save_moderation']);
+        $g = guardOwner($req, $ctx, 'Comments', 'Confirm that you are the owner of <strong>' . h($c->host) . '</strong> to change how comments are handled.',
+            '/pups/comment-settings', $save ? 'change auto-moderation' : 'view comments page');
+        if ($g instanceof Response)
+            return $g;
+        if (!$save)
+            return commentsPage($ctx);
+        $error = saveModerationSettings($ctx, $form);
+        if ($error !== null)
+            return commentsPage($ctx, null, $error, $form);
+        $s = moderationSettings($ctx);
+        return commentsPage($ctx, moderationActive($s) ? "Auto-moderation is on: comments rated at least {$s['threshold']} % likely acceptable are published at once." : 'Auto-moderation is off.');
+    });
+}
+
+function commentsPage(Ctx $ctx, ?string $message = null, ?string $error = null, ?array $moderationForm = null): Response
+{
+    $c = $ctx->config;
+    return page($c, 'Comments', '<h1>Comments</h1>
+' . status($message) . '
+' . alert($error) . '
+<form method="post">
+' . inboxSection($ctx, false, true) . '
+' . moderationSection($ctx, $moderationForm) . '
+' . ownerConfirm($ctx, 'Confirm changes') . '
+<p><button type="submit" name="save_moderation" value="1">Save</button> <button type="submit" name="show" value="1">Reload</button></p>
+</form>', ['nav' => nav($c, '/pups/comment-settings'), 'status' => $error ? 400 : 200]);
+}
+
+/**
+ * The settings of auto-moderation (moderation.php), inside the form of the comments page. `form` is a submitted form
+ * that was refused, shown again (without the key).
+ */
+function moderationSection(Ctx $ctx, ?array $form = null): string
+{
+    if (!$ctx->config->comments)
+        return '';
+    $s = moderationSettings($ctx);
+    $v = fn(string $name, string|int $stored) => h($form === null ? (string) $stored : (field($form, $name, MODERATION_CRITERIA_CHARS * 4) ?? ''));
+    $enabled = $form === null ? $s['enabled'] : isset($form['moderation_enabled']);
+    $key = $s['apiKey'] === null ? 'e.g. sk-or-v1-…' : 'Stored, ending in …' . substr($s['apiKey'], -4) . '. Leave empty to keep it.';
+    return '<section aria-labelledby="moderation-heading">
+<h2 id="moderation-heading">Auto-moderation</h2>
+<p>Comments wait in your inbox until you publish them. With auto-moderation, a language model rates each comment first, and publishes those that are likely acceptable at once.
+You find all others in your inbox as before, with the rating. The model checks for spam, scams, illegal and adult content, abuse and personal data, and for your own criteria.
+The comments are sent to the API below, which usually charges for it. If it can\'t be reached, the comments go into your inbox.</p>
+<label><input type="checkbox" name="moderation_enabled" value="1"' . ($enabled ? ' checked' : '') . '> Moderate comments automatically</label>
+<label>API key
+<input type="password" name="moderation_key" autocomplete="off" spellcheck="false" placeholder="' . h($key) . '">
+<small>Create a new key for this domain only, with a low spending limit (on OpenRouter: a credit limit for the key). It is stored on this server; should it ever leak, it can\'t cost you much, and you can revoke it without affecting anything else.</small></label>
+' . ($s['apiKey'] === null ? '' : '<label><input type="checkbox" name="moderation_forget_key" value="1"> Forget the stored key</label>
+') . '<label>API endpoint, OpenAI-compatible
+<input type="url" name="moderation_endpoint" value="' . $v('moderation_endpoint', $s['endpoint']) . '"></label>
+<label>Model
+<input type="text" name="moderation_model" spellcheck="false" value="' . $v('moderation_model', $s['model']) . '"></label>
+<label>Publish at once if at least this likely acceptable, in percent
+<input type="number" name="moderation_threshold" min="' . MODERATION_MIN_THRESHOLD . '" max="100" step="1" value="' . $v('moderation_threshold', $s['threshold']) . '"></label>
+<label>At most this many thousand tokens per day
+<input type="number" name="moderation_daily_tokens" min="1" max="' . MODERATION_MAX_DAILY_TOKENS . '" step="1" value="' . $v('moderation_daily_tokens', $s['dailyTokens']) . '">
+<small>Used today (UTC): ' . number_format(moderationTokensToday($ctx)) . ' tokens. When they are used up, comments wait in your inbox until the next day.</small></label>
+<label>Your criteria (optional)
+<textarea name="moderation_criteria" rows="5" maxlength="' . MODERATION_CRITERIA_CHARS . '" placeholder="e.g. Only comments in English or German. No election campaigning. Links to shops are fine.">'
+        . $v('moderation_criteria', $s['criteria']) . '</textarea></label>
 </section>';
 }
 

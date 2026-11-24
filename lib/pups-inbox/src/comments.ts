@@ -22,6 +22,8 @@ export interface CommentFeeds {
    * of the post's feed, and whether the post takes comments. Undefined if the comment isn't published.
    */
   reply(target: string): Promise<{ depth: number; submissions?: Record<string, any>; open: boolean } | undefined>
+  /** The title and URL of the post that `target`, a post or a comment in its thread, belongs to. */
+  post(target: string): Promise<{ title?: string; url?: string } | undefined>
   /** The comment `id` as published in answer to `target`, and its address. */
   published(target: string, id: string): Promise<{ item: Record<string, any>; address: string } | undefined>
   /**

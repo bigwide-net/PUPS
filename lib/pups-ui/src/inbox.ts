@@ -3,7 +3,7 @@ import { visible } from './sanitize'
 
 /**
  * Pages of the built-in receiver (pups-inbox): the confirmation pages that the Dismiss and Publish Comment links of an inbox
- * item open (RFC-8 fallback, RFC-9), and the inbox section of the apps page.
+ * item open (RFC-8 fallback, RFC-9), the inbox section and auto-moderation (owner.ts puts them on its pages).
  */
 
 export const INBOX_PATH = '/pups/private/inbox.json'
@@ -57,12 +57,56 @@ export interface InboxSummary {
   error?: string
 }
 
-/** The inbox section of the apps page: the owner reads the inbox in their feed reader (RFC-12). */
+/** The settings of auto-moderation (pups-inbox's moderation.ts) on the comments page. */
+export interface ModerationView {
+  enabled: boolean
+  /** The last four characters of the stored API key, if there is one. */
+  keyEnding?: string
+  endpoint: string
+  model: string
+  /** Numbers, or what a refused form said. */
+  threshold: number | string
+  minThreshold: number
+  criteria: string
+  criteriaChars: number
+  dailyTokens: number | string
+  maxDailyTokens: number
+  /** Tokens used today (UTC). */
+  usedToday: number
+}
+
+/** The auto-moderation section, inside the form of the comments page. */
+export function moderationSection(o: ModerationView): string {
+  const key = o.keyEnding == undefined ? 'e.g. sk-or-v1-…' : `Stored, ending in …${o.keyEnding}. Leave empty to keep it.`
+  return `<section aria-labelledby="moderation-heading">
+<h2 id="moderation-heading">Auto-moderation</h2>
+<p>Comments wait in your inbox until you publish them. With auto-moderation, a language model rates each comment first, and publishes those that are likely acceptable at once.
+You find all others in your inbox as before, with the rating. The model checks for spam, scams, illegal and adult content, abuse and personal data, and for your own criteria.
+The comments are sent to the API below, which usually charges for it. If it can't be reached, the comments go into your inbox.</p>
+<label><input type="checkbox" name="moderation_enabled" value="1"${o.enabled ? ' checked' : ''}> Moderate comments automatically</label>
+<label>API key
+<input type="password" name="moderation_key" autocomplete="off" spellcheck="false" placeholder="${h(key)}">
+<small>Create a new key for this domain only, with a low spending limit (on OpenRouter: a credit limit for the key). It is stored on this server; should it ever leak, it can't cost you much, and you can revoke it without affecting anything else.</small></label>
+${o.keyEnding == undefined ? '' : '<label><input type="checkbox" name="moderation_forget_key" value="1"> Forget the stored key</label>\n'}<label>API endpoint, OpenAI-compatible
+<input type="url" name="moderation_endpoint" value="${h(o.endpoint)}"></label>
+<label>Model
+<input type="text" name="moderation_model" spellcheck="false" value="${h(o.model)}"></label>
+<label>Publish at once if at least this likely acceptable, in percent
+<input type="number" name="moderation_threshold" min="${o.minThreshold}" max="100" step="1" value="${h(String(o.threshold))}"></label>
+<label>At most this many thousand tokens per day
+<input type="number" name="moderation_daily_tokens" min="1" max="${o.maxDailyTokens}" step="1" value="${h(String(o.dailyTokens))}">
+<small>Used today (UTC): ${o.usedToday.toLocaleString('en-US')} tokens. When they are used up, comments wait in your inbox until the next day.</small></label>
+<label>Your criteria (optional)
+<textarea name="moderation_criteria" rows="5" maxlength="${o.criteriaChars}" placeholder="e.g. Only comments in English or German. No election campaigning. Links to shops are fine.">${h(o.criteria)}</textarea></label>
+</section>`
+}
+
+/** The inbox section of the apps and comments pages: the owner reads the inbox in their feed reader (RFC-12). */
 export function inboxSection(o: InboxSummary): string {
   const counts = [o.mentionsOn ? `${o.mentions} mentions and replies` : '', o.commentsOn ? `${o.comments} comments waiting for you` : '']
     .filter(Boolean).join(', ')
   const state = o.error ? alert(o.error)
-    : `<p>${counts} (at most ${o.maxItems} items, ${o.maxPerHost} per site).${o.queued ? ` ${o.queued} webmentions are still being checked.` : ''}</p>`
+    : `<p>${counts} (at most ${o.maxItems} items, ${o.maxPerHost} per site).${o.mentionsOn && o.queued ? ` ${o.queued} webmentions are still being checked.` : ''}</p>`
   const what = [o.mentionsOn ? `mentions of <strong>@${h(o.ownerHost)}</strong>` : '', o.commentsOn ? 'comments on your feeds' : ''].filter(Boolean).join(' and ')
   return `<section aria-labelledby="inbox-heading">
 <h2 id="inbox-heading">Inbox</h2>

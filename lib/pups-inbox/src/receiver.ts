@@ -2,8 +2,9 @@ import { isCleanUrlString, sanitizeText } from 'pups-ui'
 import { accountHost, handles, handleText, plainText, postHtml } from './content'
 import { type Feed, FetchError, type FeedSource, findItem, loadFeed, type Post, readLimited, resolveUrl, sameRef, splitRef, urlHost } from './feeds'
 import { commentItem, type CommentFeeds, isSameComment, PUBLISHING, refusal } from './comments'
+import { moderateComment, moderationActive, moderationApproves, moderationSettings, type ModerationStore } from './moderation'
 import {
-  checkRoomForSubmission, excerptHtml, findInboxItem, ForeignInbox, type InboxContext, InboxFull, inboxItem, putInboxItem, removeInboxItem,
+  checkRoomForSubmission, excerptHtml, findInboxItem, ForeignInbox, type InboxContext, InboxFull, inboxItem, putInboxItem, removeInboxItem, withModerationNote,
 } from './inbox'
 
 /**
@@ -78,6 +79,8 @@ export interface Receiver extends InboxContext {
   statuses: StatusStore
   /** The comment feeds of the owner's kept feeds, if the server keeps feeds: approved comments are published there. */
   commentFeeds?: CommentFeeds
+  /** Auto-moderation of comments (moderation.ts): its settings and token counts, if the server offers it. */
+  moderation?: ModerationStore
   log(event: string, data?: Record<string, unknown>): void
 }
 
@@ -493,13 +496,13 @@ async function processComment(r: Receiver, job: Job) {
     r.log('comment.unchanged', { source, target: job.target })
     return
   }
-  if (isOwnerUrl(r, source) && isOwnerUrl(r, found!.feed.url)) {
-    // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
+  // Published without review: the owner's own comment, or one that auto-moderation finds acceptable.
+  const publishNow = async (why: string, extra: Record<string, unknown> = {}) => {
     await removeInboxItem(r, id)
     const pubDate = published?.item.date_published ?? date
     if (!approve) {
       await writeStatus(r, id, { status: 'success', pubDate })
-      r.log('comment.own', { source, target: job.target, published: false })
+      r.log(`comment.${why}`, { source, target: job.target, published: false, ...extra })
       return
     }
     let pubUrl
@@ -511,8 +514,20 @@ async function processComment(r: Receiver, job: Job) {
       return fail(x.code == 'conflict' ? 'target-gone' : x.code, x.message)
     }
     await writeStatus(r, id, { status: 'success', pubDate, pubUrl })
-    r.log('comment.own', { source, target: job.target, published: true, url: pubUrl })
-    return
+    r.log(`comment.${why}`, { source, target: job.target, published: true, url: pubUrl, ...extra })
+  }
+  // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
+  if (isOwnerUrl(r, source) && isOwnerUrl(r, found!.feed.url)) return publishNow('own')
+  const settings = approve && r.moderation ? moderationSettings(await r.moderation.load()) : undefined
+  if (settings && moderationActive(settings)) {
+    const parent = await r.commentFeeds?.post(job.target)
+    const rating = await moderateComment(r.moderation!, settings, {
+      text: plainText(post), title, author: post.author, account: account == undefined ? undefined : `@${accountHost(account)}`, url: post.url,
+      links: [...new Set([...postHtml(post).matchAll(/href="([^"]+)"/g)].map(m => m[1]!.replace(/&amp;/g, '&')))],
+      postTitle: parent?.title, postUrl: parent?.url,
+    }, r.now(), r.log)
+    if (moderationApproves(settings, rating)) return publishNow('auto-approved', { safe: rating!.safe })
+    if (rating) withModerationNote(item, rating)
   }
   try {
     await putInboxItem(r, item)

@@ -253,6 +253,16 @@ function inboxItem(Ctx $ctx, string $id, string $type, string $source, string $t
     ], fn($v) => $v !== null);
 }
 
+/** An inbox item with the rating of auto-moderation (moderation.php), shown next to the link to its origin. */
+function withModerationNote(array $item, array $rating): array
+{
+    $note = moderationNote($rating);
+    $item['_pups']['moderation'] = $rating;
+    array_splice($item['_actions']['actions'], 1, 0, [['type' => 'display', 'text' => $note, 'group' => 'origin']]);
+    $item['content_html'] .= '<p class="without-extension-actions"><small>' . h($note) . '</small></p>';
+    return $item;
+}
+
 /** A short excerpt of a post for a mention: its plain text, at most 500 characters. */
 function excerptHtml(array $post): string
 {

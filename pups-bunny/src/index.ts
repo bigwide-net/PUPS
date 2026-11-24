@@ -5,7 +5,7 @@ import { filesEndpoint, postEndpoint, serve } from './files'
 import { ensureMentionLink, hostMetaEndpoint, serveHostMeta } from './hostmeta'
 import { cors, HttpError, htmlErrors, json, methodNotAllowed } from './http'
 import { authorize, configDocument, oauthMetadata, revoke, token } from './oauth'
-import { apps, homepage, homepageState, login, logout, password, setup, start } from './owner'
+import { apps, commentSettings, homepage, homepageState, login, logout, password, setup, start } from './owner'
 import { receiver, work } from './receiver'
 import { covers, isPrivate, parsePath } from './paths'
 import { CONFIG_PATH, type Env, type Settings, settings, STORAGE_PREFIX } from './settings'
@@ -61,6 +61,7 @@ function authRoutes(req: Request, path: string, s: Settings, env: Env): Promise<
     case '/pups/login': return htmlErrors(() => login(req, s, env))
     case '/pups/logout': return htmlErrors(() => logout(req, s, env))
     case '/pups/apps': return htmlErrors(() => apps(req, s, env))
+    case '/pups/comment-settings': return s.comments ? htmlErrors(() => commentSettings(req, s, env)) : undefined
     case '/pups/password': return htmlErrors(() => password(req, s, env))
   }
   const a = asset(req, path)

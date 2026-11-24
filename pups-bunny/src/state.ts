@@ -148,6 +148,31 @@ export class Store {
   private grantKey = (id: string) => this.key('grants', id)
   private usageKey = (id: string) => this.key('usage', id)
 
+  // --- Auto-moderation (pups-inbox's moderation.ts) ----------------------------------
+
+  private moderationKey = `${STATE_PREFIX}moderation.json`
+  private moderationUsageKey = `${STATE_PREFIX}moderation-usage.json`
+
+  /** The settings as JSON, the API key among them. */
+  async moderationSettings(): Promise<string | undefined> {
+    const s = await this.files.getJson<unknown>(this.moderationKey)
+    return s == null ? undefined : JSON.stringify(s)
+  }
+
+  async setModerationSettings(json: string): Promise<void> {
+    await this.files.putJson(this.moderationKey, JSON.parse(json))
+  }
+
+  /** The tokens used on `day` (YYYY-MM-DD, UTC). */
+  async moderationTokens(day: string): Promise<number> {
+    const u = await this.files.getJson<{ day?: string; tokens?: number }>(this.moderationUsageKey)
+    return u?.day == day && Number.isInteger(u.tokens) ? u.tokens! : 0
+  }
+
+  async addModerationTokens(day: string, n: number): Promise<void> {
+    await this.files.putJson(this.moderationUsageKey, { day, tokens: await this.moderationTokens(day) + n })
+  }
+
   // --- Server secret ---------------------------------------------------------------
 
   /** The HMAC key for signed form fields. Generated on first use. */

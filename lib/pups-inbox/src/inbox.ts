@@ -1,6 +1,7 @@
 import { escapeHtml as h, isCleanUrlString, sanitizeText, visible } from 'pups-ui'
 import { plainText, textHtml } from './content'
 import { type Post, urlHost } from './feeds'
+import { type ModerationRating, moderationNote } from './moderation'
 
 /**
  * The owner's inbox (RFC-12): a private JSON Feed at /pups/private/inbox.json with the mentions (RFC-11) and the
@@ -245,6 +246,14 @@ export function inboxItem(c: InboxContext, id: string, type: ItemType, source: s
       actions: approve ? [origin, { template: 'approve', group: 'decide' }, { template: 'dismiss', group: 'decide' }] : [origin, { template: 'dismiss', group: 'dismiss' }],
     },
   }
+}
+
+/** Adds the rating of auto-moderation (moderation.ts) to an inbox item, shown next to the link to its origin. */
+export function withModerationNote(item: InboxItem, rating: ModerationRating) {
+  const note = moderationNote(rating)
+  item._pups = { ...item._pups, moderation: rating }
+  item._actions.actions.splice(1, 0, { type: 'display', text: note, group: 'origin' })
+  item.content_html += `<p class="without-extension-actions"><small>${h(note)}</small></p>`
 }
 
 /** A short excerpt of a post for a mention: its plain text, at most 500 characters. */

@@ -1,12 +1,12 @@
 import { alert, confirmFields, type ConfirmOptions, escapeHtml as h, jsonScript, page, status, time } from './html'
 import { type HomepageKind, homepageSummary } from './homepage'
-import { inboxSection, type InboxSummary } from './inbox'
+import { inboxSection, type InboxSummary, moderationSection, type ModerationView } from './inbox'
 import { sanitizeText, visible } from './sanitize'
 import { t } from './texts'
 
 /**
- * Owner pages: first-run setup, login (auth subdomain mode only), the apps page and the
- * password page. The servers handle the requests and pass in what the pages show.
+ * Owner pages: first-run setup, login (auth subdomain mode only), the apps page, the comments
+ * page and the password page. The servers handle the requests and pass in what the pages show.
  */
 
 export const MIN_PASSWORD_LENGTH = 12
@@ -18,9 +18,11 @@ export interface OwnerSite {
   ownerOrigin: string
   /** Auth subdomain mode: the owner pages have sessions (RFC-6 "Deployment modes"). */
   subdomainMode: boolean
+  /** The built-in receiver takes comments: the owner pages have a comments page. */
+  comments?: boolean
 }
 
-export type OwnerPath = '/pups/apps' | '/pups/homepage' | '/pups/password' | ''
+export type OwnerPath = '/pups/apps' | '/pups/homepage' | '/pups/comment-settings' | '/pups/password' | ''
 
 export function ownerNav(site: OwnerSite, current: OwnerPath) {
   const item = (href: string, label: string) =>
@@ -29,6 +31,7 @@ export function ownerNav(site: OwnerSite, current: OwnerPath) {
 <ul>
 ${item('/pups/apps', 'Apps')}
 ${item('/pups/homepage', 'Homepage')}
+${site.comments ? item('/pups/comment-settings', 'Comments') : ''}
 ${item('/pups/password', 'Password')}
 ${site.subdomainMode ? '<li><form method="post" action="/pups/logout"><button type="submit">Log out</button></form></li>' : ''}
 </ul>
@@ -163,7 +166,7 @@ export interface AppsPage {
   /** The storage quota; 0 or missing for none. */
   maxBytes?: number
   confirm: ConfirmOptions
-  /** What the built-in receiver has put into the inbox, if it is on. */
+  /** What the built-in receiver has put into the inbox, if it is on; the apps page shows the mentions. */
   inbox?: InboxSummary
   message?: string
   error?: string
@@ -235,15 +238,46 @@ ${o.hostMetaStored ? '' : '<p>The file has not been stored yet; a default that p
 ${linksTable}
 ${propsTable}
 </section>
+${o.inbox?.mentionsOn ? inboxSection({ ...o.inbox, commentsOn: false }) : ''}
 ${site.subdomainMode ? `<section aria-labelledby="sessions-heading">
 <h2 id="sessions-heading">Sessions</h2>
 <p><button type="submit" name="signout_all" value="1">Log out everywhere</button></p>
 </section>` : ''}
 </form>
-${o.inbox ? inboxSection(o.inbox) : ''}
 ${o.usedBytes == undefined ? '' : `<p>Storage used: ${(o.usedBytes / 1048576).toFixed(1)} MiB${o.maxBytes ? ` of ${(o.maxBytes / 1048576).toFixed(0)} MiB` : ''}.</p>`}`,
   { site: site.ownerHost, nav: ownerNav(site, '/pups/apps') })
 }
+
+// --- Comments --------------------------------------------------------------------------
+
+export interface CommentsPage {
+  /** What the receiver has put into the inbox; the page shows the comments. */
+  inbox: InboxSummary
+  moderation: ModerationView
+  confirm: ConfirmOptions
+  message?: string
+  error?: string
+}
+
+/** /pups/comment-settings before the owner confirmed (same-domain mode). */
+export const commentsUnlockPage = (site: OwnerSite, confirm: ConfirmOptions, error?: string) => page('Comments', `<h1>Comments</h1>
+<p>Confirm that you are the owner of <strong>${h(site.ownerHost)}</strong> to change how comments are handled.</p>
+${alert(error)}
+<form method="post">
+${confirmFields(confirm)}
+<p><button type="submit" name="show" value="1">Continue</button></p>
+</form>`, { site: site.ownerHost, nav: ownerNav(site, '/pups/comment-settings'), status: error ? 401 : 200 })
+
+/** /pups/comment-settings, with comments on: the comments in the inbox, and auto-moderation. */
+export const commentsPage = (site: OwnerSite, o: CommentsPage) => page('Comments', `<h1>Comments</h1>
+${status(o.message)}
+${alert(o.error)}
+<form method="post">
+${inboxSection({ ...o.inbox, mentionsOn: false })}
+${moderationSection(o.moderation)}
+${confirmFields({ legend: 'Confirm changes', ...o.confirm })}
+<p><button type="submit" name="save_moderation" value="1">Save</button> <button type="submit" name="show" value="1">Reload</button></p>
+</form>`, { site: site.ownerHost, nav: ownerNav(site, '/pups/comment-settings'), status: o.error ? 400 : 200 })
 
 // --- Password --------------------------------------------------------------------------
 

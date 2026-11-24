@@ -1,90 +1,17 @@
-import { commentFeeds, type FeedHost, FeedError, isFeedPath, keptFileOwner, postItem, putKeptFeed, readItem } from 'pups-feeds'
+import { isFeedPath, keptFileOwner } from 'pups-feeds'
 import { describe, expect, it } from 'vitest'
 import { commentEndpoint, commentStatusEndpoint, dismissPage, inboxActionEndpoint, processQueue } from '../src'
-import { COMMENTS, feedDoc, inbox, ORIGIN, testReceiver, webmention } from './helpers'
+import { COMMENTS, feedDoc, inbox, ORIGIN, webmention } from './helpers'
+import { setupComments, submissions, WELL_KNOWN } from './comments-setup'
 
 // The PHP tests of comment feeds (pups-php/tests/comment_feed_test.php): the receiver with the kept feeds of pups-feeds.
 const SOURCE_SPEC = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md'
-const WELL_KNOWN = [{ path: '/feed.json', rels: ['https://bigwide.net/ns/feed'] }, { path: '/feed/', rels: ['https://bigwide.net/ns/feed'] }]
-
-const submissions = (policy: Record<string, unknown> = {}, republish = 'full') =>
-  ({ url: COMMENTS, republish, policies: { comments: { minLength: 2, maxLength: 200, ...policy } } })
-
-/** A receiver whose server keeps the main feed, which takes comments at the built-in endpoint; `app` writes it like an app. */
-async function setup(policy: Record<string, unknown> = {}, republish = 'full') {
-  const t = await testReceiver()
-  const { r, files } = t
-  const host: FeedHost = {
-    me: `${ORIGIN}/`, publicUrl: path => ORIGIN + path, pathFromPublicUrl: url => url.startsWith(ORIGIN + '/') ? url.slice(ORIGIN.length) : undefined,
-    read: async path => files.get(path), postUrlTemplate: async () => undefined, now: () => t.t.now, commentEndpoint: COMMENTS,
-  }
-  r.commentFeeds = commentFeeds({
-    host, wellKnown: WELL_KNOWN, ownerPath: url => r.feeds.ownerPath(url), withLock: (_, fn) => fn(),
-    write: async c => {
-      for (const f of c.files) files.set(f.path, f.text)
-      for (const p of c.deletes) files.delete(p)
-    },
-  })
-  const answer = async (fn: () => Promise<{ status: number; body?: any }>) => {
-    try {
-      return await fn()
-    } catch (e) {
-      if (e instanceof FeedError) return { status: e.status, body: { error: e.code } }
-      throw e
-    }
-  }
-  const app = {
-    put: (doc: Record<string, unknown>) => answer(async () => {
-      const c = await putKeptFeed(host, '/feed.json', JSON.stringify(doc), files.get('/feed.json'))
-      c.files.forEach(f => files.set(f.path, f.text))
-      c.deletes.forEach(p => files.delete(p))
-      return { status: 200 }
-    }),
-    post: (item: unknown) => answer(async () => {
-      const res = await postItem(host, '/feed.json', readItem('application/json', JSON.stringify(item)), files.get('/feed.json'))
-      res.committed?.files.forEach(f => files.set(f.path, f.text))
-      res.committed?.deletes.forEach(p => files.delete(p))
-      return res
-    }),
-  }
-  await app.put({ version: 'https://jsonfeed.org/version/1.1', title: 'Notes', items: [], _pups: { pupsControlled: true }, _submissions: submissions(policy, republish) })
-  const stored = (path: string) => JSON.parse(files.get(path)!)
-  const post = (id = 'p-12') => stored('/feed.json').items.find((i: any) => i.id == id)
-  const status = async (url: string) => (await commentStatusEndpoint(new Request(url), url.split('/').pop()!, r))!.json() as Promise<any>
-  /** Bob's comment on the post `p`, submitted and processed. Returns the status URL. */
-  const comment = async (id = 'c-17', html = '<p>Agreed, but discovery is <b>hard</b>.</p>', p = 'p-12') => {
-    t.web.set('https://bob.example/comments.json', feedDoc([{
-      id, authors: [{ name: 'Bob' }], url: `https://bob.example/c/${id}`, content_html: html,
-      _source: { accounts: { socialspec: '@bob.example' }, inReplyTo: `${ORIGIN}/feed.json#${p}` },
-    }]))
-    const res = (await commentEndpoint(webmention(COMMENTS, `https://bob.example/comments.json#${id}`, `${ORIGIN}/feed.json#${p}`), r))!
-    expect(res.status, await res.clone().text()).toBe(201)
-    await processQueue(r)
-    return res.headers.get('location')!
-  }
-  /** A reply by `host` to `target`, submitted and processed. Returns the status URL. */
-  const replyTo = async (host: string, target: string, id = 'r-1', html = '<p>Indeed, it is.</p>') => {
-    const name = host.split('.')[0]!
-    t.web.set(`https://${host}/comments.json`, feedDoc([{
-      id, authors: [{ name: name[0]!.toUpperCase() + name.slice(1) }], url: `https://${host}/c/${id}`, content_html: html,
-      _source: { accounts: { socialspec: `@${host}` }, inReplyTo: target },
-    }]))
-    const res = (await commentEndpoint(webmention(COMMENTS, `https://${host}/comments.json#${id}`, target), r))!
-    expect(res.status, await res.clone().text()).toBe(201)
-    await processQueue(r)
-    return res.headers.get('location')!
-  }
-  const action = (id: string, what: 'approve' | 'dismiss') => inboxActionEndpoint(new Request(
-    inbox(files)._actions.templates[what].action.replace('{id}', encodeURIComponent(id)), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }), r)
-  return { ...t, host, app, stored, post, status, comment, replyTo, action }
-}
-
 const ids = (doc: any) => doc.items.map((i: any) => i.id)
 const ownFeed = (items: unknown[]) => ({ version: 'https://jsonfeed.org/version/1.1', title: 'Mine', items })
 
 describe('comment feeds', () => {
   it('posts carry _source.comments while the feed takes comments here', async () => {
-    const { app, post, stored } = await setup()
+    const { app, post, stored } = await setupComments()
     await app.post({ id: 'p-12', content_text: 'Open', _source: { comments: { count: 99, feedUrl: 'https://x.example/' } } })
     await app.post({ id: 'p-13', content_text: 'Closed', _commenting: { allowComments: false } })
     expect(post()._source).toEqual({ about: SOURCE_SPEC, comments: { count: 0, total: 0 } })
@@ -110,7 +37,7 @@ describe('comment feeds', () => {
   })
 
   it('Publish Comment publishes the comment, counts it, and tells its author', async () => {
-    const { r, files, t, web, app, stored, post, status, comment, action } = await setup({ allowEdit: true, allowDelete: true })
+    const { r, files, t, web, app, stored, post, status, comment, action } = await setupComments({ allowEdit: true, allowDelete: true })
     await app.post({ id: 'p-12', title: 'Is RSS the better social network?', content_text: 'I think so.' })
     let statusUrl = await comment()
     expect((await status(statusUrl)).status).toBe('pending')
@@ -181,7 +108,7 @@ describe('comment feeds', () => {
   })
 
   it('replies to comments, as deep as the policy allows, counted up to the post', async () => {
-    const { r, files, web, app, stored, post, status, comment, replyTo, action } = await setup({ allowDelete: true, maxDepth: 3, commentLimit: 3 })
+    const { r, files, web, app, stored, post, status, comment, replyTo, action } = await setupComments({ allowDelete: true, maxDepth: 3, commentLimit: 3 })
     await app.post({ id: 'p-12', title: 'Is RSS the better social network?', content_text: 'I think so.' })
     await comment()
     const bob = inbox(files).items[0].id
@@ -238,7 +165,7 @@ describe('comment feeds', () => {
   })
 
   it("the owner's own comments are published at once, never in the inbox", async () => {
-    const { r, files, app, stored, post, status, comment, action } = await setup({ allowEdit: true })
+    const { r, files, app, stored, post, status, comment, action } = await setupComments({ allowEdit: true })
     await app.post({ id: 'p-12', content_text: 'A post' })
     await comment()
     const bob = inbox(files).items[0].id
@@ -262,7 +189,7 @@ describe('comment feeds', () => {
     expect([inbox(files).items, stored(`/feed/comments/0/${bob}.json`).items[0].content_html]).toEqual([[], '<p>Thanks a lot, Bob!</p>'])
 
     // A feed that only delivers comments: nothing to publish, and nothing for the inbox.
-    const u = await setup({}, 'no')
+    const u = await setupComments({}, 'no')
     await u.app.post({ id: 'p-12', content_text: 'A post' })
     u.files.set('/feed/mine.json', JSON.stringify(ownFeed([{ id: 'a-1', content_html: '<p>My own words.</p>', _source: { inReplyTo: `${ORIGIN}/feed.json#p-12` } }])))
     const res = (await commentEndpoint(webmention(COMMENTS, `${ORIGIN}/feed/mine.json#a-1`, `${ORIGIN}/feed.json#p-12`), u.r))!
@@ -271,7 +198,7 @@ describe('comment feeds', () => {
   })
 
   it('Dismiss rejects; the comment limit; feeds that only deliver comments', async () => {
-    const { files, app, status, comment, action } = await setup({ commentLimit: 1 })
+    const { files, app, status, comment, action } = await setupComments({ commentLimit: 1 })
     await app.post({ id: 'p-12', content_text: 'A post' })
     const statusUrl = await comment()
     await action(inbox(files).items[0].id, 'dismiss')
@@ -287,7 +214,7 @@ describe('comment feeds', () => {
     expect(inbox(files).items.map((i: any) => i.id)).toEqual([b.id])
 
     // republish: no: the owner only reads the comments.
-    const u = await setup({}, 'no')
+    const u = await setupComments({}, 'no')
     await u.app.post({ id: 'p-12', content_text: 'A post' })
     const s = await u.comment()
     expect(inbox(u.files).items[0]._actions.actions.map((x: any) => x.template).filter(Boolean)).toEqual(['dismiss'])
@@ -296,7 +223,7 @@ describe('comment feeds', () => {
   })
 
   it('republish summary publishes an abstract, linked to the full text', async () => {
-    const { files, app, stored, status, comment, action, web, r } = await setup({ maxLength: 1000 }, 'summary')
+    const { files, app, stored, status, comment, action, web, r } = await setupComments({ maxLength: 1000 }, 'summary')
     await app.post({ id: 'p-12', content_text: 'A post' })
     await comment('c-17', `<p>${'Feeds are <b>great</b>, '.repeat(12)}really.</p>`)
     const item = inbox(files).items[0]
@@ -315,7 +242,7 @@ describe('comment feeds', () => {
     expect((await status(res.headers.get('location')!)).code).toBe('link-missing')
 
     // Submitted for full republishing, approved after the feed changed to summary: an abstract.
-    const u = await setup()
+    const u = await setupComments()
     await u.app.post({ id: 'p-12', content_text: 'A post' })
     await u.comment()
     await u.app.put({ ...u.stored('/feed.json'), _submissions: submissions({}, 'summary') })
