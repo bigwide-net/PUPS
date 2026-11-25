@@ -4,7 +4,7 @@ import { Files } from './storage'
 /** Environment variables and secrets of the Edge Script (see README). */
 export const ENV_KEYS = [
   'OWNER_HOST', 'AUTH_HOST', 'PUBLIC_BASE', 'MAX_UPLOAD_BYTES', 'MAX_STORAGE_BYTES', 'WRITES_PER_MINUTE', 'WELL_KNOWN_PATHS',
-  'POST_FALLBACK', 'ORIGIN_URL', 'DEV_ALLOW_HTTP', 'BOOTSTRAP_SECRET', 'STORAGE_ZONE', 'STORAGE_HOST', 'STORAGE_ACCESS_KEY', 'DOH_URL',
+  'POST_FALLBACK', 'ORIGIN_URL', 'DEV_ALLOW_HTTP', 'BOOTSTRAP_SECRET', 'RECOVERY_SECRET', 'STORAGE_ZONE', 'STORAGE_HOST', 'STORAGE_ACCESS_KEY', 'DOH_URL',
   'MENTIONS', 'COMMENTS', 'WEBPUP_OWNER_LINK',
 ] as const
 
@@ -30,6 +30,8 @@ export interface Env {
   ORIGIN_URL?: string
   DEV_ALLOW_HTTP?: string
   BOOTSTRAP_SECRET?: string
+  /** Set only to recover a lost login (/pups/recover); each value works once. */
+  RECOVERY_SECRET?: string
   MENTIONS?: string
   COMMENTS?: string
   WEBPUP_OWNER_LINK?: string

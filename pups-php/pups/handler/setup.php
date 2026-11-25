@@ -108,7 +108,8 @@ function credentialForm(Ctx $ctx, string $token, ?string $error = null): Respons
 {
     $c = $ctx->config;
     return page($c, 'Set up', '<h1>Choose how you sign in</h1>
-<p>Passkeys are preferred: an abused passkey prompt works once, a stolen password until you change it. A password is a fallback.</p>
+<p>Passkeys are preferred: an abused passkey prompt works once, a stolen password until you change it.
+While you have a passkey, only the passkey works. A password is kept for the day you lose your passkeys and they are removed.</p>
 ' . alert($error) . '
 <form method="post">
 <input type="hidden" name="setup" value="' . h($token) . '">
@@ -116,7 +117,7 @@ function credentialForm(Ctx $ctx, string $token, ?string $error = null): Respons
 <fieldset>
 <legend>Passkey</legend>
 <p><button type="button" data-passkey-create>Register a passkey and finish</button></p>
-<p>A password entered below is saved as a fallback.</p>
+<p>A password entered below is kept, for the day you lose your passkey.</p>
 </fieldset>
 ' . newPasswordFields('Password', false) . '
 <p><button type="submit">Finish with the password only</button></p>
@@ -288,9 +289,9 @@ function serverEndpoint(Request $req, Ctx $ctx): Response
 <h2>Log</h2>
 <p>The last 300 entries of <code>' . h(Log::file($c->dataDir)) . '</code>, newest last. Passwords and tokens are never logged; tokens appear as the first 8 characters of their hash.</p>
 <pre>' . h(implode("\n", Log::tail(300))) . '</pre>
-<form method="post">
+<form method="post" data-session>
 ' . ownerConfirm($ctx) . '
-<p><button type="submit" name="show" value="1">Reload</button></p>
+<p><button type="submit" name="show" value="1" data-view>Reload</button></p>
 </form>', ['nav' => nav($c, '/pups/server')]);
     });
 }

@@ -52,8 +52,15 @@ const newPasswordFields = (legend: string, required: boolean) => `<fieldset>
 
 // --- Setup -----------------------------------------------------------------------------
 
-/** Step 1 of the setup: the bootstrap secret. */
-export const secretForm = (site: OwnerSite, error?: string) => page('Set up', `<h1>Set up your Personal Upload Server</h1>
+/** Step 1 of the setup: the bootstrap secret; with `recover`, of the recovery: the recovery secret. */
+export const secretForm = (site: OwnerSite, error?: string, recover = false) => recover ? page('Recover', `<h1>Recover your login</h1>
+<p>Enter the recovery secret you set as <code>RECOVERY_SECRET</code>. The passkey or password you choose next replaces all your passkeys and your password.</p>
+${alert(error)}
+<form method="post">
+<input type="hidden" name="step" value="secret">
+<label>Recovery secret <input type="password" name="secret" autocomplete="off" required></label>
+<p><button type="submit">Continue</button></p>
+</form>`, { site: site.ownerHost, status: error ? 400 : 200 }) : page('Set up', `<h1>Set up your Personal Upload Server</h1>
 <p>Enter the bootstrap secret you chose when you deployed this server. It works only once.</p>
 ${alert(error)}
 <form method="post">
@@ -74,7 +81,7 @@ export const notSetUpPage = (site: OwnerSite) => page(t('title.notSetUp'), `<h1>
 export const credentialForm = (site: OwnerSite, token: string, passkeyCreateOptions: object, error?: string) =>
   page('Set up', `<h1>Choose how you log in</h1>
 <p>Passkeys are preferred: an abused passkey prompt works once, a stolen password until you change it.
-A password is a fallback.</p>
+While you have a passkey, only the passkey works. A password is kept for the day you lose your passkeys and they are removed.</p>
 ${alert(error)}
 <form method="post">
 <input type="hidden" name="setup" value="${h(token)}">
@@ -82,7 +89,7 @@ ${alert(error)}
 <fieldset>
 <legend>Passkey</legend>
 <p><button type="button" data-passkey-create>Register a passkey and finish</button></p>
-<p>A password entered below is saved as a fallback.</p>
+<p>A password entered below is kept, for the day you lose your passkey.</p>
 </fieldset>
 ${newPasswordFields('Password', false)}
 <p><button type="submit">Finish with the password only</button></p>
@@ -111,6 +118,12 @@ ${sameDomainWarning(site)}
 ${o.homepage ? `<h2>Your homepage</h2>\n${homepageSummary(site, o.homepage)}` : ''}
 <p><a href="${h(o.issuer)}/pups/apps">Manage your apps</a></p>`, { site: site.ownerHost })
 
+/** After the recovery (/pups/recover): the new passkey or password replaced the old ones. */
+export const recoveredPage = (site: OwnerSite, issuer: string) => page('Recovered', `<h1>Recovered</h1>
+${status('Your new passkey or password replaced the old ones, and every session ended.')}
+<p role="note">Remove the secret <code>RECOVERY_SECRET</code> now. It doesn't work a second time, and nobody should keep a secret that isn't needed.</p>
+<p><a href="${h(issuer)}/pups/apps">Manage your apps</a></p>`, { site: site.ownerHost })
+
 // --- Login -----------------------------------------------------------------------------
 
 /** The login page (auth subdomain mode only). `returnTo` must already be checked. */
@@ -119,17 +132,17 @@ export const loginPage = (site: OwnerSite, returnTo: string, confirm: ConfirmOpt
 ${alert(error)}
 <form method="post" action="/pups/login">
 <input type="hidden" name="return_to" value="${h(returnTo)}">
-${confirmFields({ legend: 'Your passkey or password', ...confirm })}
+${confirmFields({ ...confirm, inline: true })}
 <p><button type="submit">Log in</button></p>
 </form>`, { site: site.ownerHost, status: error ? 401 : 200 })
 
 // --- Apps ------------------------------------------------------------------------------
 
-/** Same-domain mode: the apps page needs a fresh confirmation before it shows anything. */
+/** Same-domain mode without a page session: the apps page needs a fresh confirmation before it shows anything. */
 export const unlockPage = (site: OwnerSite, confirm: ConfirmOptions, error?: string) => page('Your apps', `<h1>Your apps</h1>
 <p>Confirm that you are the owner of <strong>${h(site.ownerHost)}</strong> to see the apps that can write to it.</p>
 ${alert(error)}
-<form method="post">
+<form method="post" data-session>
 ${confirmFields(confirm)}
 <p><button type="submit" name="show" value="1">Show my apps</button></p>
 </form>`, { site: site.ownerHost, nav: ownerNav(site, '/pups/apps'), status: error ? 401 : 200 })
@@ -222,9 +235,9 @@ ${o.properties.map(([k, v]) => `<tr>
 ${status(o.message)}
 ${alert(o.error)}
 ${sameDomainWarning(site)}
-<form method="post">
+<form method="post" data-session>
 ${confirmFields({ legend: 'Confirm changes', ...o.confirm })}
-<p><button type="submit" name="show" value="1">Reload</button></p>
+<p><button type="submit" name="show" value="1" data-view>Reload</button></p>
 <section aria-labelledby="apps-heading">
 <h2 id="apps-heading">Apps</h2>
 <p>Removing an app ends its access at once. The files it stored stay published, unless you delete them too.</p>
@@ -259,11 +272,11 @@ export interface CommentsPage {
   error?: string
 }
 
-/** /pups/comment-settings before the owner confirmed (same-domain mode). */
+/** /pups/comment-settings before the owner confirmed (same-domain mode without a page session). */
 export const commentsUnlockPage = (site: OwnerSite, confirm: ConfirmOptions, error?: string) => page('Comments', `<h1>Comments</h1>
 <p>Confirm that you are the owner of <strong>${h(site.ownerHost)}</strong> to change how comments are handled.</p>
 ${alert(error)}
-<form method="post">
+<form method="post" data-session>
 ${confirmFields(confirm)}
 <p><button type="submit" name="show" value="1">Continue</button></p>
 </form>`, { site: site.ownerHost, nav: ownerNav(site, '/pups/comment-settings'), status: error ? 401 : 200 })
@@ -272,17 +285,18 @@ ${confirmFields(confirm)}
 export const commentsPage = (site: OwnerSite, o: CommentsPage) => page('Comments', `<h1>Comments</h1>
 ${status(o.message)}
 ${alert(o.error)}
-<form method="post">
+<form method="post" data-session>
 ${inboxSection({ ...o.inbox, mentionsOn: false })}
 ${moderationSection(o.moderation)}
 ${confirmFields({ legend: 'Confirm changes', ...o.confirm })}
-<p><button type="submit" name="save_moderation" value="1">Save</button> <button type="submit" name="show" value="1">Reload</button></p>
+<p><button type="submit" name="save_moderation" value="1">Save</button> <button type="submit" name="show" value="1" data-view>Reload</button></p>
 </form>`, { site: site.ownerHost, nav: ownerNav(site, '/pups/comment-settings'), status: o.error ? 400 : 200 })
 
 // --- Password --------------------------------------------------------------------------
 
 export interface PasswordPage {
   hasPassword: boolean
+  /** Passkey request options, if the owner has a passkey: then the password is only kept for the day it is lost. */
   passkeyOptions?: object
   message?: string
   error?: string
@@ -291,10 +305,11 @@ export interface PasswordPage {
 export function passwordPage(site: OwnerSite, o: PasswordPage): Response {
   const title = o.hasPassword ? 'Change your password' : 'Set a password'
   return page(title, `<h1>${title}</h1>
-${o.hasPassword ? '' : '<p>You log in with a passkey. A password is a fallback for devices without it.</p>'}
+${o.passkeyOptions ? `<p>You have a passkey: you confirm with it, and the password is not accepted. The password is kept for the day you lose your passkeys.
+After they were removed, with the recovery secret (see the README), you log in with it.</p>` : ''}
 ${status(o.message)}
 ${alert(o.error)}
-<form method="post">
+<form method="post" data-session>
 ${newPasswordFields('New password', true)}
 ${confirmFields({
     passkeyOptions: o.passkeyOptions, hasPassword: o.hasPassword,

@@ -223,14 +223,24 @@ export async function publishComment(host: FeedHost, t: Thread, build: (republis
 
 /**
  * Removes a published comment, with all replies to it (RFC-4 "Edits and deletes"), from the comment feed of what it
- * answers, and updates the counts up to the post. Undefined if it wasn't there.
+ * answers, and updates the counts up to the post. Returns what to write, and what was removed, each with its address:
+ * the comment first, and every reply after what it answers. Undefined if it wasn't there.
  */
-export async function unpublishComment(host: FeedHost, t: Thread, id: string): Promise<Committed | undefined> {
-  const doc = last(t.levels).doc
-  const items = doc?.items as JsonObject[] | undefined
-  if (!items?.some(i => itemId(i) == id)) return
-  doc!.items = items.filter(i => itemId(i) != id)
-  return writeThread(host, t, await replyFeeds(host, t.path, t.index, [id]))
+export async function unpublishComment(host: FeedHost, t: Thread, id: string)
+  : Promise<{ committed: Committed; removed: { item: JsonObject; address: string }[] } | undefined> {
+  const level = last(t.levels)
+  const items = level.doc?.items as JsonObject[] | undefined
+  const comment = items?.find(i => itemId(i) == id)
+  if (!comment) return
+  const removed = [{ item: comment, address: withId(host.publicUrl(level.path), id) }]
+  for (let i = 0; i < removed.length && i < 10_000; i++) {
+    const rid = itemId(removed[i]!.item)
+    const path = rid != undefined && COMMENT_ID.test(rid) ? commentFeedPath(t.path, t.index, rid) : undefined
+    for (const reply of path == undefined ? [] : parseJsonFeed(await host.read(path))?.items as JsonObject[] ?? [])
+      if (isObject(reply) && itemId(reply) != undefined) removed.push({ item: reply, address: withId(host.publicUrl(path!), itemId(reply)!) })
+  }
+  level.doc!.items = items!.filter(i => i != comment)
+  return { committed: await writeThread(host, t, await replyFeeds(host, t.path, t.index, [id])), removed }
 }
 
 /** What the comment feeds need from the server. */
@@ -297,11 +307,13 @@ export function commentFeeds(o: CommentFeedOptions) {
       await o.write(r.committed)
       return r.address
     }),
-    /** Removes a published comment, with its replies, from those on `target`. Returns whether it was there. */
+    /** The item that `target` names: a post of a kept feed, or a published comment. */
+    item: async (target: string) => (await thread(target))?.parent,
+    /** Removes a published comment, with its replies, from those on `target`. Returns what was removed, the comment first. */
     unpublish: (target: string, id: string) => locked(target, async t => {
-      const c = t && await unpublishComment(o.host, t, id)
-      if (c) await o.write(c)
-      return !!c
+      const r = t && await unpublishComment(o.host, t, id)
+      if (r) await o.write(r.committed)
+      return r?.removed ?? []
     }),
   }
 }

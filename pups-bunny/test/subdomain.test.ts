@@ -116,6 +116,13 @@ describe('auth subdomain mode', () => {
 
   it('shows the apps page with a session and logs out', async () => {
     expect(await (await call(`${AUTH}/pups/apps`, { headers: { cookie } })).text()).toContain('sub-app.example')
+    // Reload needs no confirmation; changes do. The cookie is the session: no page session.
+    const reload = await call(`${AUTH}/pups/apps`, { method: 'POST', headers: { cookie, 'pups-session': 'new' }, body: form({ show: '1' }) })
+    const html = await reload.text()
+    expect([html.includes('sub-app.example'), html.includes('role="alert"'), reload.headers.get('pups-session')]).toEqual([true, false, null])
+    const grant = /name="revoke" value="([^"]+)"/.exec(html)![1]
+    expect(await (await call(`${AUTH}/pups/apps`, { method: 'POST', headers: { cookie }, body: form({ revoke: grant }) })).text())
+      .toContain('Please confirm with your passkey or password.')
     const r = await call(`${AUTH}/pups/logout`, { method: 'POST', headers: { cookie }, redirect: 'manual' })
     expect(r.headers.get('set-cookie')).toContain('Max-Age=0')
     expect((await call(`${AUTH}/pups/apps`, { headers: { cookie }, redirect: 'manual' })).status).toBe(303)

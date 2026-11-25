@@ -3,8 +3,11 @@ import { t } from './texts'
 
 /**
  * HTML of the owner pages. Plain semantic markup without classes or inline styles; the look
- * comes from /pups/assets/owner.css, the passkey ceremonies from /pups/assets/owner.js
- * (both in public/). See the comment in owner.css for the structure.
+ * comes from /pups/assets/owner.css, the passkey ceremonies and the page session from
+ * /pups/assets/owner.js (both in public/). See the comment in owner.css for the structure.
+ *
+ * Forms with `data-session` (the management pages) are sent by owner.js with the page session, and their answer replaces
+ * the page; submit buttons with `data-view` only show the page again, which needs no confirmation with a session.
  */
 
 export const escapeHtml = (s: string) =>
@@ -14,7 +17,7 @@ const h = escapeHtml
 export interface PageOptions {
   /** The owner's domain, shown in the header. */
   site?: string
-  /** Navigation of the management pages. */
+  /** Navigation of the management pages. Pages with it are also sent with `Cross-Origin-Opener-Policy: same-origin`. */
   nav?: string
   /** Extra form-action sources (the consent page redirects to the app after the POST). */
   formAction?: string[]
@@ -52,8 +55,10 @@ ${body}
       'x-frame-options': 'DENY',
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'no-referrer',
-      'content-security-policy': `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; ` +
+      'content-security-policy': `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; ` +
         `form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`,
+      // The management pages may hold a page session (owner.js): no page that opened them keeps a handle on them.
+      ...opts.nav && { 'cross-origin-opener-policy': 'same-origin' },
     },
   })
 }
@@ -72,24 +77,36 @@ export interface ConfirmOptions {
   /** Passkey request options (for navigator.credentials.get), if the owner has a passkey. */
   passkeyOptions?: object
   hasPassword: boolean
+  /** The title of the password dialog and fieldset. */
   legend?: string
   /** Label of the password field. */
   passwordLabel?: string
+  /** The password field is part of the page, also with JavaScript (the login page). */
+  inline?: boolean
 }
 
 /**
- * The fieldset in which the owner confirms an action with a passkey or the password. With
- * a passkey, owner.js asks for it when the form is submitted with an empty password field.
+ * How the owner confirms a form (`[data-confirm]`). With a passkey, the page shows nothing: owner.js asks for the
+ * passkey when the form is submitted, and the server doesn't accept the password (RFC-6 "Owner authentication").
+ * Without one, owner.js asks for the password in a dialog; the page has a password field only without JavaScript
+ * (`noscript`), or with `inline`.
  */
 export function confirmFields(o: ConfirmOptions): string {
-  const hint = t(o.passkeyOptions && o.hasPassword ? 'confirm.passkeyOrPassword' : o.passkeyOptions ? 'confirm.passkey' : 'confirm.password')
-  return `<fieldset data-confirm>
-<legend>${o.legend ? h(o.legend) : t('confirm.legend')}</legend>
-<p>${hint}</p>
+  if (o.passkeyOptions) return `<div data-confirm hidden>
 <input type="hidden" name="passkey" value="">
-${o.hasPassword ? `<label>${o.passwordLabel ? h(o.passwordLabel) : t('confirm.passwordLabel')} <input type="password" name="password" autocomplete="current-password"></label>` : ''}
-${o.passkeyOptions ? jsonScript('passkey-get-options', o.passkeyOptions) : ''}
+${jsonScript('passkey-get-options', o.passkeyOptions)}
+</div>
+<noscript><p>${t('confirm.passkeyNeedsScript')}</p></noscript>`
+  if (!o.hasPassword) return ''
+  const legend = o.legend ? h(o.legend) : t('confirm.legend')
+  const label = o.passwordLabel ? h(o.passwordLabel) : t('confirm.passwordLabel')
+  const field = `<fieldset>
+<legend>${legend}</legend>
+<label>${label} <input type="password" name="password" autocomplete="current-password"${o.inline ? ' required' : ''}></label>
 </fieldset>`
+  return `<div data-confirm data-legend="${legend}" data-label="${label}">
+${o.inline ? field : `<noscript>${field}</noscript>`}
+</div>`
 }
 
 /** A timestamp for tables. */

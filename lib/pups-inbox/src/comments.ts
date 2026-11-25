@@ -31,10 +31,17 @@ export interface CommentFeeds {
    * comment for the feed's current `republish`; a feed that doesn't publish comments (this deep) anymore is refused.
    */
   publish(target: string, build: (republish: 'full' | 'summary') => Record<string, any>): Promise<string>
-  /** Removes a published comment, with its replies, from those on `target`. Returns whether it was there. */
-  unpublish(target: string, id: string): Promise<boolean>
+  /** The item that `target` names: a post of a kept feed, or a published comment. */
+  item(target: string): Promise<Record<string, any> | undefined>
+  /**
+   * Removes a published comment, with its replies, from those on `target`. Returns what was removed, the comment first and
+   * every reply after what it answers, each with its address; nothing if it wasn't there.
+   */
+  unpublish(target: string, id: string): Promise<{ item: Record<string, any>; address: string }[]>
 }
 
+/** RFC-4, whose `_commenting` carries `notifyReplies`. */
+export const COMMENTING_ABOUT = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-4-Feed-Submissions.md'
 /** The values of RFC-4 `republish` under which approved comments are published. */
 export const PUBLISHING = ['full', 'summary']
 /** An abstract (`republish: "summary"`) has at most this many characters. */
@@ -47,7 +54,8 @@ export const refusal = (e: unknown): { status: number; code: string; message: st
 
 /**
  * The comment as republished (RFC-4 "What is republished"), from its inbox item: the title, the content as the inbox
- * keeps it (RFC-5 Comment HTML) and the Markdown it came from, the author's name, link and verified account, its date, and `_source.inReplyTo`. Its id is the guid of the
+ * keeps it (RFC-5 Comment HTML) and the Markdown it came from, the author's name, link and verified account, its date, `_source.inReplyTo`,
+ * and `_commenting.notifyReplies` if its author opted out of reply mentions. Its id is the guid of the
  * submission. With `republish: "summary"` (`mode`, by default what the author agreed to), the content is an abstract: the
  * plain text, cut off after 150 characters, as `content_text`; `url` links to the full text.
  */
@@ -67,6 +75,7 @@ export function commentItem(item: InboxItem, mode?: string): Record<string, any>
     date_published: item._inbox?.postDate ?? item.date_published,
     authors: item.authors,
     _source: { about: SOURCE_ABOUT, inReplyTo: item._inbox?.target, ...account && { accounts: { socialspec: account } }, ...markdown != undefined && { markdown } },
+    ...item._commenting?.notifyReplies === false && { _commenting: { about: COMMENTING_ABOUT, notifyReplies: false } },
   }))
 }
 
@@ -77,10 +86,14 @@ const canonical = (v: unknown): string => {
   return JSON.stringify(sort(v))
 }
 
-/** Whether a comment as it would be republished from `item` is the published one, apart from its dates and replies. */
-export function isSameComment(item: InboxItem, published: Record<string, any>): boolean {
+/**
+ * Whether a comment as it would be republished from `item` is the published one, apart from its dates and replies, and
+ * with `exceptNotify` also apart from `notifyReplies`.
+ */
+export function isSameComment(item: InboxItem, published: Record<string, any>, exceptNotify = false): boolean {
   const strip = (c: Record<string, any>) => {
-    const { date_published: _p, date_modified: _m, ...rest } = JSON.parse(JSON.stringify(c))
+    const { date_published: _p, date_modified: _m, _commenting, ...rest } = JSON.parse(JSON.stringify(c))
+    if (!exceptNotify && _commenting != undefined) rest._commenting = _commenting
     if (rest._source) {
       delete rest._source.comments
       if (Object.keys(rest._source).every(k => k == 'about')) delete rest._source

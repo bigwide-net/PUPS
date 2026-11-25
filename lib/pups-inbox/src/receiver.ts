@@ -2,12 +2,13 @@ import { isCleanUrlString, sanitizeText } from 'pups-ui'
 import { commentContent } from './comment-html'
 import { accountHost, handles, handleText, visibleText } from './content'
 import { type Feed, FetchError, type FeedSource, findItem, loadFeed, type Post, readLimited, resolveUrl, sameRef, splitRef, urlHost } from './feeds'
-import { commentItem, type CommentFeeds, isSameComment, PUBLISHING, refusal } from './comments'
+import { COMMENTING_ABOUT, commentItem, type CommentFeeds, isSameComment, PUBLISHING, refusal } from './comments'
 import { moderateComment, moderationActive, moderationApproves, moderationSettings, type ModerationStore } from './moderation'
 import {
   checkRoomForSubmission, excerptHtml, findInboxItem, ForeignInbox, type InboxContext, InboxFull, inboxItem, putInboxItem, removeInboxItem, SOURCE_ABOUT,
   withModerationNote,
 } from './inbox'
+import { processSend, queueMentions, RETRY_MS, SEND_PREFIX } from './sender'
 
 /**
  * The built-in receiver: mentions of the owner (RFC-11) at /pups/mention, linked from host-meta.json, and comments on
@@ -17,7 +18,8 @@ import {
  * `republish: "no"` (or a value this server doesn't know), the owner only reads them.
  *
  * The endpoints do the cheap checks and queue the rest. The queue is worked through after the response has been
- * sent (processQueue(), with the platform's waitUntil), because every check fetches documents from other servers.
+ * sent (processQueue(), with the platform's waitUntil), because every check fetches documents from other servers. The
+ * same queue holds the mentions that the server sends for the comments it publishes (sender.ts).
  */
 
 export const MENTION_REL = 'https://bigwide.net/ns/mention'
@@ -46,11 +48,15 @@ const URL_LIMIT = 2048
 const BODY_LIMIT = 16 * 1024
 
 export interface Job {
-  kind: 'mention' | 'comment'
+  kind: 'mention' | 'comment' | 'send'
   source: string
   target: string
   /** Comments: the id of the submission. */
   id?: string
+  /** Sending: the host to notify, the deliveries tried so far, and when to try the next one. */
+  host?: string
+  tries?: number
+  due?: number
   receivedAt: number
   attempts: number
 }
@@ -203,7 +209,8 @@ export async function commentEndpoint(req: Request, r: Receiver): Promise<Respon
     })
     if (existing && !sameRef(existing._inbox?.target, target))
       throw new ReceiverError(400, 'in-reply-to-mismatch', 'This source was submitted to another post')
-    if ((existing || await r.commentFeeds?.published(target, id)) && !post.policy.allowEdit && !post.policy.allowDelete)
+    // A published comment may always be sent again, to change notifyReplies (RFC-4 "Edits and deletes"); processComment() decides.
+    if (existing && !post.policy.allowEdit && !post.policy.allowDelete && !await r.commentFeeds?.published(target, id))
       throw new ReceiverError(400, 'edit-not-allowed', 'This comment was submitted already, and the feed allows neither edits nor deletes')
     try {
       // The owner's own comments don't go into the inbox.
@@ -305,7 +312,7 @@ async function enqueue(r: Receiver, job: Omit<Job, 'receivedAt' | 'attempts'>) {
   const key = `${hostKey}-${await refId(job.kind, job.source, job.target)}`
   if (!await r.queue.get(key)) {
     const retry = { 'Retry-After': '60' }
-    if (await r.queue.count() >= MAX_QUEUE)
+    if (await r.queue.count() - await r.queue.count(SEND_PREFIX) >= MAX_QUEUE)
       throw new ReceiverError(429, 'too_many_requests', 'Too many webmentions are waiting. Try again later.', retry)
     if (await r.queue.count(`${hostKey}-`) >= MAX_QUEUE_PER_HOST)
       throw new ReceiverError(429, 'too_many_requests', 'Too many webmentions from this host are waiting. Try again later.', retry)
@@ -316,18 +323,26 @@ async function enqueue(r: Receiver, job: Omit<Job, 'receivedAt' | 'attempts'>) {
 
 /**
  * Works through the queue, oldest first, within a time budget and a number of jobs (every job fetches documents,
- * and platforms limit the subrequests of a request). Returns the number of jobs done.
+ * and platforms limit the subrequests of a request). A mention to send again later is queued as received when it is
+ * due, which puts it behind the jobs that are; where the order is that of writing, a job that isn't due yet is written
+ * again, and the round ends when it comes up a second time. Returns the number of jobs done.
  */
 export async function processQueue(r: Receiver, { maxJobs = 20, budgetMs = 20_000 } = {}): Promise<number> {
   const start = Date.now()
+  const later = new Set<string>()
   let done = 0
   while (done < maxJobs && Date.now() - start < budgetMs) {
     const next = await r.queue.oldest()
-    if (!next) break
+    if (!next || later.has(next.key)) break
     const { key } = next
+    if (next.job.due != undefined && next.job.due > r.now()) {
+      later.add(key)
+      await r.queue.put(key, next.job)
+      continue
+    }
     const job = { ...next.job, attempts: next.job.attempts + 1 }
     if (job.attempts > MAX_ATTEMPTS) {
-      r.log('mention.dropped', { job })
+      r.log(job.kind == 'send' ? 'send.dropped' : 'mention.dropped', { job })
       if (job.kind == 'comment' && job.id)
         await writeStatus(r, job.id, { status: 'failure', code: 'moderation-unavailable', text: 'The comment could not be processed.' })
       await r.queue.delete(key)
@@ -335,6 +350,16 @@ export async function processQueue(r: Receiver, { maxJobs = 20, budgetMs = 20_00
     }
     // Counted before the work, so that a job that crashes the worker is dropped eventually.
     await r.queue.put(key, job)
+    if (job.kind == 'send') {
+      const tries = (job.tries ?? 0) + 1
+      if (await processSend(r, job) && tries <= RETRY_MS.length) {
+        const due = r.now() + RETRY_MS[tries - 1]!
+        later.add(key)
+        await r.queue.put(key, { ...job, attempts: 0, tries, due, receivedAt: due })
+      } else if ((await r.queue.get(key))?.receivedAt == job.receivedAt) await r.queue.delete(key)
+      done++
+      continue
+    }
     try {
       await (job.kind == 'comment' ? processComment(r, job) : processMention(r, job))
     } catch (e) {
@@ -458,7 +483,12 @@ async function processComment(r: Receiver, job: Job) {
   if (gone) {
     if ((existing || published) && policy.allowDelete) {
       await removeInboxItem(r, id)
-      await r.commentFeeds?.unpublish(job.target, id)
+      const answered = published && await r.commentFeeds!.item(job.target)
+      const removed = await r.commentFeeds?.unpublish(job.target, id) ?? []
+      // The mentions of the comment and of every reply removed with it are sent again, so that receivers drop them.
+      await queueMentions(r, removed.map(({ item, address }, i) => ({
+        address, before: item, answered: i ? removed.find(p => sameRef(p.address, item._source?.inReplyTo))?.item : answered || undefined,
+      })))
       await writeStatus(r, id, { status: 'deleted' })
       r.log('comment.deleted', { source })
       return
@@ -468,7 +498,9 @@ async function processComment(r: Receiver, job: Job) {
   const post = found!.item
   if (!post) return fail(found!.feed.page ? 'invalid-feed' : 'ambiguous-source', 'The comment could not be found in the author feed.')
   if (found!.feed.page) return fail('invalid-feed', 'The author feed must be an RSS 2.0 or JSON Feed.')
-  if ((existing || published) && !policy.allowEdit) return fail('edit-not-allowed', "This comment was submitted already, and the feed doesn't allow edits.")
+  const editNotAllowed = () => fail('edit-not-allowed', "This comment was submitted already, and the feed doesn't allow edits.")
+  // An edit of a published comment that changes only notifyReplies is allowed anyway, so that is decided below.
+  if (existing && !published && !policy.allowEdit) return editNotAllowed()
   if (post.inReplyTo == undefined) return fail('in-reply-to-missing', 'The comment has no inReplyTo.')
   if (!sameRef(post.inReplyTo, job.target)) return fail('in-reply-to-mismatch', "The comment's inReplyTo is not the post it was submitted to.")
   if (target.republish == 'summary' && !(typeof post.url == 'string' && /^https?:\/\//i.test(post.url) && isCleanUrlString(post.url)))
@@ -496,6 +528,7 @@ async function processComment(r: Receiver, job: Job) {
   const item = inboxItem(r, id, 'submission', source, job.target, { ...post, date }, content.html, post.author ?? sourceHost,
     account == undefined ? undefined : `@${accountHost(account)}`, approve ? target.republish : undefined, !!published, !!r.commentFeeds?.isCommentFeed(job.target))
   if (content.markdown != undefined) item._source = { about: SOURCE_ABOUT, ...item._source, markdown: content.markdown }
+  if (post.notifyReplies === false) item._commenting = { about: COMMENTING_ABOUT, notifyReplies: false }
   if (published && isSameComment(item, published.item)) {
     // Sent again without a change: nothing to approve.
     await removeInboxItem(r, id)
@@ -503,7 +536,7 @@ async function processComment(r: Receiver, job: Job) {
     r.log('comment.unchanged', { source, target: job.target })
     return
   }
-  // Published without review: the owner's own comment, or one that auto-moderation finds acceptable.
+  // Published without review: the owner's own comment, one that auto-moderation finds acceptable, or a change of notifyReplies.
   const publishNow = async (why: string, extra: Record<string, unknown> = {}) => {
     await removeInboxItem(r, id)
     const pubDate = published?.item.date_published ?? date
@@ -512,17 +545,21 @@ async function processComment(r: Receiver, job: Job) {
       r.log(`comment.${why}`, { source, target: job.target, published: false, ...extra })
       return
     }
-    let pubUrl
+    let pubUrl, after
     try {
-      pubUrl = await r.commentFeeds!.publish(job.target, now => commentItem(item, now == 'summary' ? 'summary' : undefined))
+      pubUrl = await r.commentFeeds!.publish(job.target, now => after = commentItem(item, now == 'summary' ? 'summary' : undefined))
     } catch (e) {
       const x = refusal(e)
       if (!x) throw e
       return fail(x.code == 'conflict' ? 'target-gone' : x.code, x.message)
     }
+    if (why != 'notify-replies') await queueMentions(r, [{ address: pubUrl, before: published?.item, after, answered: await r.commentFeeds!.item(job.target) }])
     await writeStatus(r, id, { status: 'success', pubDate, pubUrl })
     r.log(`comment.${why}`, { source, target: job.target, published: true, url: pubUrl, ...extra })
   }
+  // A change of notifyReplies alone needs neither approval nor allowEdit (RFC-4 "Edits and deletes"), and changes no mentions.
+  if (published && isSameComment(item, published.item, true)) return publishNow('notify-replies')
+  if (published && !policy.allowEdit) return editNotAllowed()
   // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
   if (isOwnerUrl(r, source) && isOwnerUrl(r, found!.feed.url)) return publishNow('own')
   const settings = approve && r.moderation ? moderationSettings(await r.moderation.load()) : undefined

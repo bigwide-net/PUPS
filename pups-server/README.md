@@ -217,7 +217,7 @@ If the owner's website already serves `/feed.json` or `/feed/` (WordPress, for e
 
 The server implements the protocol as an app sees it. As a test server, it simplifies the owner side:
 
-- **Same-domain mode only, password only.** There are no passkeys, no auth subdomain and no sessions. The server never sets a cookie. Every owner action (approving an app, viewing the apps page, removing an app, a link or a property) needs the password in the same request, which also covers step-up confirmation. Failed attempts are rate-limited: after 5 in 15 minutes, one per minute.
+- **Same-domain mode only, password only.** There are no passkeys, no auth subdomain and no sessions, not even the page session RFC-6 allows (owner.js asks for one, and gets none). The server never sets a cookie. Every owner action (approving an app, viewing the apps page, removing an app, a link or a property) needs the password in the same request, which also covers step-up confirmation. Failed attempts are rate-limited: after 5 in 15 minutes, one per minute.
 - **No setup page.** The password comes from `PUPS_PASSWORD` instead of a first-run setup with a bootstrap secret.
 - **No storage quota and no write rate limit.** The server doesn't record which grant wrote which file. Revocation can delete an app's whole `/appdata/<app>/` folder instead.
 - **No consent shortcut.** The consent screen is always shown, even if an existing grant already covers the request.

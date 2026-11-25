@@ -12,8 +12,12 @@ final class Ctx
     public $http;
     /** @var callable(string, array, string): array POST to the auto-moderation model (moderation.php): url, headers, body → ['status', 'body'] */
     public $llm;
+    /** @var callable(string, array, string): array POST of the mentions the server sends (sender.php): url, headers, body → ['status', 'body'] */
+    public $send;
     /** Set when a webmention was queued: run() works through the queue after the response. */
     public bool $workPending = false;
+    /** The start of the page session of the current request (guardOwner), which handle() renews in the response. */
+    public ?int $pageSession = null;
 
     /**
      * @param ?callable $fetch replaces the HTTPS fetch of client metadata documents (tests)
@@ -28,6 +32,7 @@ final class Ctx
         $this->clients = new ClientLoader($config, $this->state, $fetch);
         $this->http = $http ?? httpFetch($config);
         $this->llm = moderationHttp($config);
+        $this->send = mentionHttp($config);
     }
 
     public function now(): int

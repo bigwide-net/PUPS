@@ -26,7 +26,8 @@ function dismissItem(Ctx $ctx, string $id, string $via): bool
 
 /**
  * Publishes a comment from the inbox in its post's comment feed (comments.php), removes it from the
- * inbox, and tells its author on the status page. Returns the comment's address. Throws 404 if the
+ * inbox, tells its author on the status page, and queues the mentions to those it answers or names
+ * (sender.php). Returns the comment's address. Throws 404 if the
  * item isn't in the inbox, 409 if it can't be approved.
  */
 function approveItem(Ctx $ctx, string $id, string $via): string
@@ -34,7 +35,10 @@ function approveItem(Ctx $ctx, string $id, string $via): string
     $item = findInboxItem($ctx, $id) ?? throw new HttpError(404, 'not_found', 'The comment is not in your inbox anymore.');
     if (!isApprovable($item))
         throw new HttpError(409, 'conflict', 'This item can\'t be approved.');
-    $url = publishComment($ctx, $item);
+    $target = $item['_inbox']['target'];
+    $before = publishedComment($ctx, $target, $id);
+    $url = publishComment($ctx, $item, $after);
+    queueMentions($ctx, [['address' => $url, 'before' => $before, 'after' => $after, 'answered' => commentThread($ctx, $target)['parent'] ?? null]]);
     removeInboxItem($ctx, $id);
     writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $item['_inbox']['postDate'] ?? $item['date_published'], 'pubUrl' => $url]);
     Log::event('inbox.approved', ['id' => $id, 'url' => $url, 'via' => $via]);

@@ -1,4 +1,4 @@
-import { commentEndpoint, commentStatusEndpoint, dismissPage, inboxActionEndpoint, mentionEndpoint } from 'pups-inbox'
+import { commentEndpoint, commentStatusEndpoint, dismissPage, inboxActionEndpoint, mentionEndpoint, type Receiver } from 'pups-inbox'
 import { errorPage, themeThumbnail, webpupResponse } from 'pups-ui'
 import { ownerCss, ownerJs } from 'pups-ui/assets'
 import { filesEndpoint, postEndpoint, serve } from './files'
@@ -58,6 +58,7 @@ function authRoutes(req: Request, path: string, s: Settings, env: Env): Promise<
     case '/oauth/token': return cors(req, () => token(req, s, env))
     case '/oauth/revoke': return cors(req, () => revoke(req, s, env))
     case '/pups/setup': return htmlErrors(() => setup(req, s, env))
+    case '/pups/recover': return htmlErrors(() => setup(req, s, env, true))
     case '/pups/login': return htmlErrors(() => login(req, s, env))
     case '/pups/logout': return htmlErrors(() => logout(req, s, env))
     case '/pups/apps': return htmlErrors(() => apps(req, s, env))
@@ -89,9 +90,17 @@ function receiverRoutes(req: Request, path: string, s: Settings, env: Env): Prom
   if (path == '/pups/mention' && s.mentions) return queued(mentionEndpoint)
   if (path == '/pups/comments' && s.comments) return queued(commentEndpoint)
   if (status) return cors(req, async () => await commentStatusEndpoint(req, status[1], await receiver(s, env)) ?? notFound())
-  if (path == '/pups/inbox/action') return cors(req, async () => inboxActionEndpoint(req, await receiver(s, env)))
+  // Publishing a comment queues the mentions it sends.
+  const approving = async (r: Receiver, res: Response) => {
+    if (req.method == 'POST') env.waitUntil?.(work(r))
+    return res
+  }
+  if (path == '/pups/inbox/action') return cors(req, async () => {
+    const r = await receiver(s, env)
+    return approving(r, await inboxActionEndpoint(req, r))
+  })
   if (path == '/pups/inbox/dismiss') return receiver(s, env).then(r => dismissPage(req, r, s.ownerHost))
-  if (path == '/pups/inbox/approve') return receiver(s, env).then(r => dismissPage(req, r, s.ownerHost, 'approve'))
+  if (path == '/pups/inbox/approve') return receiver(s, env).then(async r => approving(r, await dismissPage(req, r, s.ownerHost, 'approve')))
 }
 
 /** The homepage: webpup while it is installed, else / forwards to the owner pages. An existing website behind this server keeps /. */

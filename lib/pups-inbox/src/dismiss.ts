@@ -4,6 +4,7 @@ import { visibleText } from './content'
 import { readLimited } from './feeds'
 import { findInboxItem, ForeignInbox, inboxItems, isApprovable, isInboxKey, MAX_INBOX_ITEMS, MAX_ITEMS_PER_HOST, removeInboxItem } from './inbox'
 import { answer, formFields, jsonResponse, type Receiver, ReceiverError, writeStatus } from './receiver'
+import { queueMentions } from './sender'
 
 /**
  * Dismissing and approving inbox items: the RFC-9 actions that readers send (POST /pups/inbox/action, with
@@ -26,23 +27,26 @@ export async function dismissItem(r: Receiver, id: string, via: string): Promise
 }
 
 /**
- * Publishes a comment from the inbox in its post's comment feed, removes it from the inbox, and tells its author on the
- * status page. Returns the comment's address. Throws ReceiverError 404 if the item isn't in the inbox, 409 if it can't
+ * Publishes a comment from the inbox in its post's comment feed, removes it from the inbox, tells its author on the
+ * status page, and queues the mentions to those it answers or names (sender.ts). Returns the comment's address. Throws ReceiverError 404 if the item isn't in the inbox, 409 if it can't
  * be approved.
  */
 export async function approveItem(r: Receiver, id: string, via: string): Promise<string> {
   const item = await findInboxItem(r, id)
   if (!item) throw new ReceiverError(404, 'not_found', 'The comment is not in your inbox anymore.')
   if (!isApprovable(item) || !r.commentFeeds) throw new ReceiverError(409, 'conflict', "This item can't be approved.")
-  let url
+  const target = item._inbox.target
+  const before = (await r.commentFeeds.published(target, id))?.item
+  let url, after
   try {
     // As its author agreed: in full, or as an abstract if either the submission or the feed now says summary.
-    url = await r.commentFeeds.publish(item._inbox.target, now => commentItem(item, now == 'summary' ? 'summary' : undefined))
+    url = await r.commentFeeds.publish(target, now => after = commentItem(item, now == 'summary' ? 'summary' : undefined))
   } catch (e) {
     const x = refusal(e)
     if (!x) throw e
     throw new ReceiverError(x.status, x.code, x.message)
   }
+  await queueMentions(r, [{ address: url, before, after, answered: await r.commentFeeds.item(target) }])
   await removeInboxItem(r, id)
   await writeStatus(r, id, { status: 'success', pubDate: item._inbox.postDate ?? item.date_published, pubUrl: url })
   r.log('inbox.approved', { id, url, via })

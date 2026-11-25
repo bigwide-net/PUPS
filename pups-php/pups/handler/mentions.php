@@ -12,7 +12,8 @@ namespace Pups;
  *
  * The endpoints do the cheap checks and queue the rest in data/mentions/queue/. The queue
  * is worked through after the response has been sent (see processQueue()), because every
- * check fetches documents from other servers.
+ * check fetches documents from other servers. The same queue holds the mentions that the server
+ * sends for the comments it publishes (sender.php).
  */
 
 const MENTION_REL = 'https://bigwide.net/ns/mention';
@@ -119,8 +120,8 @@ function commentEndpoint(Request $req, Ctx $ctx): ?Response
     $existing = findInboxItem($ctx, $id);
     if ($existing && !sameRef($existing['_inbox']['target'] ?? null, $target))
         throw new HttpError(400, 'in-reply-to-mismatch', 'This source was submitted to another post');
-    $existing ??= isPublished($ctx, $target, $id);
-    if ($existing && !$post['policy']['allowEdit'] && !$post['policy']['allowDelete'])
+    // A published comment may always be sent again, to change notifyReplies (RFC-4 "Edits and deletes"); processComment() decides.
+    if ($existing && !$post['policy']['allowEdit'] && !$post['policy']['allowDelete'] && !isPublished($ctx, $target, $id))
         throw new HttpError(400, 'edit-not-allowed', 'This comment was submitted already, and the feed allows neither edits nor deletes');
     try {
         // The owner's own comments don't go into the inbox.
@@ -221,10 +222,11 @@ function statusFile(Ctx $ctx, string $id): string
     return mentionsDir($ctx->config) . "/status/$id.json";
 }
 
-function writeStatus(Ctx $ctx, string $id, array $status): void
+/** Writes a status page, kept for `keep` milliseconds; by default as long as RFC-4 asks, and longer while it is pending. */
+function writeStatus(Ctx $ctx, string $id, array $status, ?int $keep = null): void
 {
     @mkdir(dirname(statusFile($ctx, $id)), 0755, true);
-    $keep = $status['status'] === 'pending' ? PENDING_KEEP_MS : STATUS_KEEP_MS;
+    $keep ??= $status['status'] === 'pending' ? PENDING_KEEP_MS : STATUS_KEEP_MS;
     writeAtomic(statusFile($ctx, $id), json_encode($status + ['guid' => $id, 'expiresAt' => $ctx->now() + $keep], JSON_FLAGS), 0644);
 }
 
@@ -252,7 +254,7 @@ function enqueue(Ctx $ctx, array $job): void
     $file = "$dir/$hostKey-" . refId($job['kind'], $job['source'], $job['target']) . '.json';
     if (!is_file($file)) {
         $retry = ['Retry-After' => '60'];
-        if (count(glob("$dir/*.json") ?: []) >= MAX_QUEUE)
+        if (count(glob("$dir/*.json") ?: []) - count(glob("$dir/" . SEND_PREFIX . '*.json') ?: []) >= MAX_QUEUE)
             throw new HttpError(429, 'too_many_requests', 'Too many webmentions are waiting. Try again later.', $retry);
         if (count(glob("$dir/$hostKey-*.json") ?: []) >= MAX_QUEUE_PER_HOST)
             throw new HttpError(429, 'too_many_requests', 'Too many webmentions from this host are waiting. Try again later.', $retry);
@@ -268,8 +270,9 @@ function queueLength(Ctx $ctx): int
 }
 
 /**
- * Works through the queue, oldest first, within a time budget. Only one worker runs at a
- * time; a request that finds it busy leaves the jobs to it. Returns the number of jobs done.
+ * Works through the queue, oldest first, within a time budget; mentions to send again later wait
+ * until they are due. Only one worker runs at a time; a request that finds it busy leaves the jobs
+ * to it. Returns the number of jobs done.
  */
 function processQueue(Ctx $ctx, float $budget = 20.0, int $maxJobs = 20): int
 {
@@ -287,13 +290,19 @@ function processQueue(Ctx $ctx, float $budget = 20.0, int $maxJobs = 20): int
                 @unlink($f);
         while ($done < $maxJobs && microtime(true) - $start < $budget) {
             $files = glob("$dir/queue/*.json") ?: [];
-            if (!$files)
-                break;
             usort($files, fn($a, $b) => (@filemtime($a) <=> @filemtime($b)) ?: strcmp($a, $b));
-            $file = $files[0];
-            $job = json_decode(@file_get_contents($file) ?: 'null', true);
+            [$file, $job] = [null, null];
+            foreach ($files as $f) {
+                $job = json_decode(@file_get_contents($f) ?: 'null', true);
+                if (!is_array($job) || ($job['due'] ?? 0) <= $ctx->now()) {
+                    $file = $f;
+                    break;
+                }
+            }
+            if ($file === null)
+                break;
             if (!is_array($job) || ++$job['attempts'] > MAX_ATTEMPTS) {
-                Log::event('mention.dropped', ['job' => is_array($job) ? $job : null]);
+                Log::event(($job['kind'] ?? null) === 'send' ? 'send.dropped' : 'mention.dropped', ['job' => is_array($job) ? $job : null]);
                 if (is_array($job) && $job['kind'] === 'comment')
                     writeStatus($ctx, $job['id'], ['status' => 'failure', 'code' => 'moderation-unavailable', 'text' => 'The comment could not be processed.']);
                 @unlink($file);
@@ -301,6 +310,15 @@ function processQueue(Ctx $ctx, float $budget = 20.0, int $maxJobs = 20): int
             }
             // Counted before the work, so that a job that crashes the worker is dropped eventually.
             writeAtomic($file, json_encode($job, JSON_FLAGS), 0644);
+            if ($job['kind'] === 'send') {
+                $tries = ($job['tries'] ?? 0) + 1;
+                if (processSend($ctx, $job) && $tries <= count(RETRY_MS))
+                    writeAtomic($file, json_encode(['attempts' => 0, 'tries' => $tries, 'due' => $ctx->now() + RETRY_MS[$tries - 1]] + $job, JSON_FLAGS), 0644);
+                elseif ((json_decode(@file_get_contents($file) ?: 'null', true)['receivedAt'] ?? null) === $job['receivedAt'])
+                    @unlink($file);
+                $done++;
+                continue;
+            }
             try {
                 $job['kind'] === 'comment' ? processComment($ctx, $job) : processMention($ctx, $job);
             } catch (ForeignInbox $e) {
@@ -462,7 +480,18 @@ function processComment(Ctx $ctx, array $job)
     if ($gone) {
         if (($existing || $published) && $policy['allowDelete']) {
             removeInboxItem($ctx, $id);
-            unpublishComment($ctx, $target['ref'], $id);
+            $answered = $published ? commentThread($ctx, $target['ref'])['parent'] ?? null : null;
+            $removed = unpublishComment($ctx, $target['ref'], $id);
+            // The mentions of the comment and of every reply removed with it are sent again, so that receivers drop them.
+            $changes = [];
+            foreach ($removed as $i => ['item' => $item, 'address' => $address]) {
+                $parent = $i ? null : $answered;
+                foreach ($i ? $removed : [] as $p)
+                    if (sameRef($p['address'], is_string($item->_source->inReplyTo ?? null) ? $item->_source->inReplyTo : null))
+                        $parent = $p['item'];
+                $changes[] = ['address' => $address, 'before' => $item, 'answered' => $parent];
+            }
+            queueMentions($ctx, $changes);
             writeStatus($ctx, $id, ['status' => 'deleted']);
             Log::event('comment.deleted', ['source' => $source]);
             return;
@@ -474,8 +503,10 @@ function processComment(Ctx $ctx, array $job)
         return $fail($found['feed']['page'] ? 'invalid-feed' : 'ambiguous-source', 'The comment could not be found in the author feed.');
     if ($found['feed']['page'])
         return $fail('invalid-feed', 'The author feed must be an RSS 2.0 or JSON Feed.');
-    if (($existing || $published) && !$policy['allowEdit'])
-        return $fail('edit-not-allowed', 'This comment was submitted already, and the feed doesn\'t allow edits.');
+    $editNotAllowed = fn() => $fail('edit-not-allowed', 'This comment was submitted already, and the feed doesn\'t allow edits.');
+    // An edit of a published comment that changes only notifyReplies is allowed anyway, so that is decided below.
+    if ($existing && !$published && !$policy['allowEdit'])
+        return $editNotAllowed();
     if ($post['inReplyTo'] === null)
         return $fail('in-reply-to-missing', 'The comment has no inReplyTo.');
     if ($target['republish'] === 'summary' && !(is_string($post['url'] ?? null) && preg_match('#^https?://#i', $post['url']) && isCleanUrlString($post['url'])))
@@ -511,6 +542,8 @@ function processComment(Ctx $ctx, array $job)
         $post['author'] ?? $sourceHost, $account === null ? null : '@' . accountHost($account), $approve ? $target['republish'] : null, (bool) $published);
     if ($content['markdown'] !== null)
         $item['_source'] = ['about' => SOURCE_ABOUT] + ($item['_source'] ?? []) + ['markdown' => $content['markdown']];
+    if (!$post['notifyReplies'])
+        $item['_commenting'] = ['about' => COMMENTING_ABOUT, 'notifyReplies' => false];
     if ($published && isSameComment($item, $published)) {
         // Sent again without a change: nothing to approve.
         removeInboxItem($ctx, $id);
@@ -518,7 +551,7 @@ function processComment(Ctx $ctx, array $job)
         Log::event('comment.unchanged', ['source' => $source, 'target' => $target['ref']]);
         return;
     }
-    // Published without review: the owner's own comment, or one that auto-moderation finds acceptable.
+    // Published without review: the owner's own comment, one that auto-moderation finds acceptable, or a change of notifyReplies.
     $publishNow = function (string $why, array $extra = []) use ($ctx, $id, $item, $published, $date, $approve, $source, $target, $fail) {
         removeInboxItem($ctx, $id);
         $pubDate = $published->date_published ?? $date;
@@ -528,13 +561,20 @@ function processComment(Ctx $ctx, array $job)
             return;
         }
         try {
-            $url = publishComment($ctx, $item);
+            $url = publishComment($ctx, $item, $after);
         } catch (HttpError $e) {
             return $fail($e->error === 'conflict' ? 'target-gone' : $e->error, $e->getMessage());
         }
+        if ($why !== 'notify-replies')
+            queueMentions($ctx, [['address' => $url, 'before' => $published, 'after' => $after, 'answered' => commentThread($ctx, $target['ref'])['parent'] ?? null]]);
         writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $pubDate, 'pubUrl' => $url]);
         Log::event("comment.$why", ['source' => $source, 'target' => $target['ref'], 'published' => true, 'url' => $url] + $extra);
     };
+    // A change of notifyReplies alone needs neither approval nor allowEdit (RFC-4 "Edits and deletes"), and changes no mentions.
+    if ($published && isSameComment($item, $published, true))
+        return $publishNow('notify-replies');
+    if ($published && !$policy['allowEdit'])
+        return $editNotAllowed();
     // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
     if (isOwnerUrl($ctx, $source) && isOwnerUrl($ctx, $found['feed']['url']))
         return $publishNow('own');

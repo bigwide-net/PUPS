@@ -19,6 +19,8 @@ const MAX_DEPTH_DEFAULT = 5;
 const MAX_DEPTH_LIMIT = 10;
 /** The values of RFC-4 `republish` under which approved comments are published. */
 const PUBLISHING = ['full', 'summary'];
+/** RFC-4, whose `_commenting` carries `notifyReplies`. */
+const COMMENTING_ABOUT = 'https://github.com/bigwide-net/RFCs/blob/main/RFC-4-Feed-Submissions.md';
 /** An abstract (`republish: "summary"`) has at most this many characters. */
 const SUMMARY_CHARS = 150;
 
@@ -128,12 +130,17 @@ function isPublished(Ctx $ctx, string $target, string $id): bool
     return publishedComment($ctx, $target, $id) !== null;
 }
 
-/** Whether a comment as it would be republished from `inboxItem` is the published one, apart from its dates and replies. */
-function isSameComment(array $inboxItem, \stdClass $published): bool
+/**
+ * Whether a comment as it would be republished from `inboxItem` is the published one, apart from
+ * its dates and replies, and with `exceptNotify` also apart from `notifyReplies`.
+ */
+function isSameComment(array $inboxItem, \stdClass $published, bool $exceptNotify = false): bool
 {
-    $strip = function (\stdClass $c) {
+    $strip = function (\stdClass $c) use ($exceptNotify) {
         $c = deepCopy($c);
         unset($c->date_published, $c->date_modified);
+        if ($exceptNotify)
+            unset($c->_commenting);
         setComments($c, null);
         return canonical($c);
     };
@@ -178,8 +185,8 @@ function newCommentFeed(Ctx $ctx, array $thread): \stdClass
 
 /**
  * The comment as republished (RFC-4 "What is republished"), from its inbox item: the title, the
- * content as the inbox keeps it (RFC-5 Comment HTML) and the Markdown it came from, the author's name, link and verified account, its date, and
- * `_source.inReplyTo`. Its id is the guid of the submission. With `republish: "summary"`
+ * content as the inbox keeps it (RFC-5 Comment HTML) and the Markdown it came from, the author's name, link and verified account, its date,
+ * `_source.inReplyTo`, and `_commenting.notifyReplies` if its author opted out of reply mentions. Its id is the guid of the submission. With `republish: "summary"`
  * (`mode`, by default what the author agreed to), the content is an abstract: the plain text,
  * cut off after 150 characters, as `content_text`; `url` links to the full text.
  */
@@ -201,6 +208,7 @@ function commentItem(array $inboxItem, ?string $mode = null): \stdClass
         'authors' => $inboxItem['authors'] ?? null,
         '_source' => ['about' => SOURCE_ABOUT, 'inReplyTo' => $inboxItem['_inbox']['target']] + ($account ? ['accounts' => ['socialspec' => $account]] : [])
             + ($markdown !== null ? ['markdown' => $markdown] : []),
+        '_commenting' => ($inboxItem['_commenting']['notifyReplies'] ?? null) === false ? ['about' => COMMENTING_ABOUT, 'notifyReplies' => false] : null,
     ], fn($v) => $v !== null), FEED_JSON), false);
 }
 
@@ -255,11 +263,11 @@ function writeThread(Ctx $ctx, array $thread): void
  * agreed: in full, or as an abstract if either the submission or the feed now says `summary`. Returns
  * the comment's address: the comment feed's URL + `#id`. Throws 409 if the post or the comment it
  * answers is gone, its feed isn't kept by this server or doesn't publish comments anymore, or the post
- * has as many comments, on all levels, as its policy allows.
+ * has as many comments, on all levels, as its policy allows. `built` is set to the comment as published.
  */
-function publishComment(Ctx $ctx, array $inboxItem): string
+function publishComment(Ctx $ctx, array $inboxItem, ?\stdClass &$built = null): string
 {
-    return $ctx->files->locked(function () use ($ctx, $inboxItem) {
+    return $ctx->files->locked(function () use ($ctx, $inboxItem, &$built) {
         $thread = commentThread($ctx, $inboxItem['_inbox']['target'] ?? '')
             ?? throw new HttpError(409, 'conflict', 'What the comment answers doesn\'t exist anymore, or its feed isn\'t kept by this server.');
         $now = $thread['feed']->doc->_submissions->republish ?? null;
@@ -270,7 +278,7 @@ function publishComment(Ctx $ctx, array $inboxItem): string
             throw new HttpError(409, 'max-depth', 'The feed doesn\'t take replies this deep anymore.');
         $level = count($thread['levels']) - 1;
         $doc = $thread['levels'][$level]['doc'] ??= newCommentFeed($ctx, $thread);
-        $comment = commentItem($inboxItem, $now === 'summary' ? 'summary' : null);
+        $comment = $built = commentItem($inboxItem, $now === 'summary' ? 'summary' : null);
         $open = $thread['depth'] < maxDepthOf($policy?->maxDepth ?? null) ? (object) ['count' => 0, 'total' => 0] : null;
         $at = null;
         foreach ($doc->items as $p => $item)
@@ -301,23 +309,34 @@ function publishComment(Ctx $ctx, array $inboxItem): string
 
 /**
  * Removes a published comment, with all replies to it (RFC-4 "Edits and deletes"), from the comment
- * feed of what it answers, `target`, and updates the counts up to the post. Returns whether it was there.
+ * feed of what it answers, `target`, and updates the counts up to the post. Returns what was removed,
+ * each ['item', 'address']: the comment first, and every reply after what it answers; [] if it wasn't there.
  */
-function unpublishComment(Ctx $ctx, string $target, string $id): bool
+function unpublishComment(Ctx $ctx, string $target, string $id): array
 {
     return $ctx->files->locked(function () use ($ctx, $target, $id) {
         $thread = commentThread($ctx, $target);
         $level = $thread ? count($thread['levels']) - 1 : 0;
         $doc = $thread['levels'][$level]['doc'] ?? null;
-        if (!$doc)
-            return false;
-        $before = count($doc->items);
+        $removed = [];
+        foreach ($doc->items ?? [] as $item)
+            if ($item instanceof \stdClass && itemId($item) === $id)
+                $removed[] = ['item' => $item, 'address' => publicUrl($thread['levels'][$level]['path'], $ctx->config) . '#' . rawurlencode($id)];
+        if (!$removed)
+            return [];
+        for ($i = 0; $i < count($removed) && $i < 10_000; $i++) {
+            $rid = itemId($removed[$i]['item']);
+            if (!is_string($rid) || !preg_match('/^' . COMMENT_ID . '$/D', $rid))
+                continue;
+            $path = commentFeedPath($thread['path'], $thread['index'], $rid);
+            foreach (parseJsonFeed($ctx->files->read($path))?->items ?? [] as $reply)
+                if ($reply instanceof \stdClass && is_string(itemId($reply)))
+                    $removed[] = ['item' => $reply, 'address' => publicUrl($path, $ctx->config) . '#' . rawurlencode(itemId($reply))];
+        }
         $doc->items = array_values(array_filter($doc->items, fn($i) => itemId($i) !== $id));
-        if (count($doc->items) === $before)
-            return false;
         dropReplies($ctx, $thread['path'], $thread['index'], $id);
         writeThread($ctx, $thread);
-        return true;
+        return $removed;
     });
 }
 

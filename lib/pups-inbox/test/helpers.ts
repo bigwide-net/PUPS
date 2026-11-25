@@ -15,6 +15,8 @@ export async function testReceiver(o: Partial<Pick<Receiver, 'mentions' | 'comme
   const files = new Map<string, string>()
   const web = new Map<string, WebDoc>()
   const fetched: string[] = []
+  /** The POST requests, such as mentions sent: URL and body. */
+  const posted: { url: string; body: string }[] = []
   const jobs = new Map<string, Job>()
   const statuses = new Map<string, { status: Status; expiresAt: number }>()
   const t = { now: Date.parse('2026-11-20T10:00:00Z') }
@@ -36,9 +38,10 @@ export async function testReceiver(o: Partial<Pick<Receiver, 'mentions' | 'comme
         return decodeURIComponent(u.pathname)
       },
       readOwnerFile: async path => files.get(path),
-      fetch: async input => {
+      fetch: async (input, init) => {
         const url = String(input)
         fetched.push(url)
+        if (init?.method == 'POST') posted.push({ url, body: String(init.body) })
         const d = web.get(url)
         if (!d) return new Response('not found', { status: 404 })
         return new Response(d.status == 301 || d.status == 302 ? null : d.body, { status: d.status, headers: d.headers })
@@ -47,7 +50,11 @@ export async function testReceiver(o: Partial<Pick<Receiver, 'mentions' | 'comme
     },
     queue: {
       get: async key => jobs.get(key),
-      put: async (key, job) => void jobs.set(key, job),
+      // A job with a new receivedAt goes to the back, as on the platforms.
+      put: async (key, job) => {
+        if (jobs.get(key)?.receivedAt != job.receivedAt) jobs.delete(key)
+        jobs.set(key, job)
+      },
       delete: async key => void jobs.delete(key),
       count: async prefix => [...jobs.keys()].filter(k => !prefix || k.startsWith(prefix)).length,
       oldest: async () => {
@@ -64,7 +71,7 @@ export async function testReceiver(o: Partial<Pick<Receiver, 'mentions' | 'comme
     },
     log: () => {},
   }
-  return { r, files, web, fetched, jobs, t }
+  return { r, files, web, fetched, posted, jobs, t }
 }
 
 export const jsonFeed = (items: unknown[], extra: Record<string, unknown> = {}) =>

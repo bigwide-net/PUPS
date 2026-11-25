@@ -4,8 +4,9 @@ namespace Pups;
 
 /**
  * The owner's management pages: apps (grants, host-meta.json), comments (the inbox and
- * auto-moderation), sign-in (passkeys and password) and server (checks and log). Same-domain mode has no sessions: viewing a page
- * and every change carry a fresh passkey assertion or the password.
+ * auto-moderation), sign-in (passkeys and password) and server (checks and log). Same-domain mode has no cookie session:
+ * viewing a page needs the page session of owner.js or a fresh passkey assertion or the password, and every change a fresh
+ * confirmation (RFC-6 "Deployment modes").
  */
 
 function nav(Config $c, string $current): string
@@ -29,28 +30,41 @@ function unlockPage(Ctx $ctx, string $title, string $intro, string $current, ?st
     return page($ctx->config, $title, '<h1>' . h($title) . '</h1>
 <p>' . $intro . '</p>
 ' . alert($error) . '
-<form method="post">
+<form method="post" data-session>
 ' . ownerConfirm($ctx) . '
 <p><button type="submit" name="show" value="1">Continue</button></p>
 </form>', ['nav' => nav($ctx->config, $current), 'status' => $error ? 401 : 200]);
 }
 
 /**
- * Common start of the management pages. Returns [form] after a successful confirmation, or a
- * response: the unlock page (GET or failed confirmation) or the redirect to setup.
+ * Common start of the management pages. Returns [form] when the page may be shown, or the
+ * change made: with a page session for viewing (an `action` starting with "view"), after a
+ * fresh confirmation for anything else. Otherwise a response: the unlock page (GET or failed
+ * confirmation without a session), `failed` (a failed confirmation with one) or the redirect
+ * to setup.
+ *
+ * @param ?callable(string): Response $failed the page with an error
  */
-function guardOwner(Request $req, Ctx $ctx, string $title, string $intro, string $current, string $action): array|Response
+function guardOwner(Request $req, Ctx $ctx, string $title, string $intro, string $current, string $action, ?callable $failed = null): array|Response
 {
     if (!$ctx->state->owner())
         return seeOther($ctx->config->path('/pups/setup'));
+    $ctx->pageSession = pageSession($req, $ctx);
+    $view = str_starts_with($action, 'view ');
     if ($req->method === 'GET' || $req->method === 'HEAD')
-        return unlockPage($ctx, $title, $intro, $current);
+        return $ctx->pageSession !== null ? [[]] : unlockPage($ctx, $title, $intro, $current);
     if ($req->method !== 'POST')
         return errorPage($ctx->config, 'Method not allowed', 'Use GET or POST.', 405);
     $form = $req->form();
+    if ($view && $ctx->pageSession !== null)
+        return [$form];
     $err = verifyCredential($form, $ctx, $action);
-    // A failed confirmation shows nothing but the unlock page again.
-    return $err ? unlockPage($ctx, $title, $intro, $current, $err) : [$form];
+    if (!$err) {
+        $ctx->pageSession = $ctx->now();
+        return [$form];
+    }
+    // Without a session, a failed confirmation shows nothing but the unlock page again.
+    return $ctx->pageSession !== null && $failed ? $failed($err) : unlockPage($ctx, $title, $intro, $current, $err);
 }
 
 // --- Apps ------------------------------------------------------------------------------------
@@ -62,7 +76,8 @@ function appsEndpoint(Request $req, Ctx $ctx): Response
         $form = $req->isForm() ? $req->form() : [];
         $revoke = field($form, 'revoke') ?? field($form, 'revoke_delete');
         $action = $revoke !== null ? 'remove app' : (isset($form['remove_link']) ? 'remove link' : (isset($form['remove_property']) ? 'remove property' : 'view apps page'));
-        $g = guardOwner($req, $ctx, 'Your apps', 'Confirm that you are the owner of <strong>' . h($c->host) . '</strong> to see the apps that can write to it.', '/pups/apps', $action);
+        $g = guardOwner($req, $ctx, 'Your apps', 'Confirm that you are the owner of <strong>' . h($c->host) . '</strong> to see the apps that can write to it.', '/pups/apps', $action,
+            fn($err) => appsPage($ctx, null, $err));
         if ($g instanceof Response)
             return $g;
         $message = null;
@@ -166,9 +181,9 @@ function appsPage(Ctx $ctx, ?string $message = null, ?string $error = null): Res
 ' . status($message) . '
 ' . alert($error) . '
 ' . sameDomainWarning($c) . '
-<form method="post">
+<form method="post" data-session>
 ' . ownerConfirm($ctx, 'Confirm changes') . '
-<p><button type="submit" name="show" value="1">Reload</button></p>
+<p><button type="submit" name="show" value="1" data-view>Reload</button></p>
 <section aria-labelledby="apps-heading">
 <h2 id="apps-heading">Apps</h2>
 <p>Removing an app ends its access at once. The files it stored stay published, unless you delete them too.</p>
@@ -227,7 +242,7 @@ function commentsEndpoint(Request $req, Ctx $ctx): Response
         $form = $req->isForm() ? $req->form() : [];
         $save = isset($form['save_moderation']);
         $g = guardOwner($req, $ctx, 'Comments', 'Confirm that you are the owner of <strong>' . h($c->host) . '</strong> to change how comments are handled.',
-            '/pups/comment-settings', $save ? 'change auto-moderation' : 'view comments page');
+            '/pups/comment-settings', $save ? 'change auto-moderation' : 'view comments page', fn($err) => commentsPage($ctx, null, $err, $form));
         if ($g instanceof Response)
             return $g;
         if (!$save)
@@ -246,11 +261,11 @@ function commentsPage(Ctx $ctx, ?string $message = null, ?string $error = null, 
     return page($c, 'Comments', '<h1>Comments</h1>
 ' . status($message) . '
 ' . alert($error) . '
-<form method="post">
+<form method="post" data-session>
 ' . inboxSection($ctx, false, true) . '
 ' . moderationSection($ctx, $moderationForm) . '
 ' . ownerConfirm($ctx, 'Confirm changes') . '
-<p><button type="submit" name="save_moderation" value="1">Save</button> <button type="submit" name="show" value="1">Reload</button></p>
+<p><button type="submit" name="save_moderation" value="1">Save</button> <button type="submit" name="show" value="1" data-view>Reload</button></p>
 </form>', ['nav' => nav($c, '/pups/comment-settings'), 'status' => $error ? 400 : 200]);
 }
 
@@ -317,7 +332,8 @@ function signInEndpoint(Request $req, Ctx $ctx): Response
         // Checked before the confirmation, so a typo doesn't count as a failed login.
         if ($action === 'change password' && ($invalid = checkNewPassword(field($form, 'new_password', Limits::PASSWORD), field($form, 'new_password2', Limits::PASSWORD))))
             return signInPage($ctx, null, $invalid);
-        $g = guardOwner($req, $ctx, 'Passkeys and password', 'Confirm that you are the owner of <strong>' . h($c->host) . '</strong> to change how you sign in.', '/pups/sign-in', $action);
+        $g = guardOwner($req, $ctx, 'Passkeys and password', 'Confirm that you are the owner of <strong>' . h($c->host) . '</strong> to change how you sign in.', '/pups/sign-in', $action,
+            fn($err) => signInPage($ctx, null, $err));
         if ($g instanceof Response)
             return $g;
         $owner = $ctx->state->owner();
@@ -365,7 +381,7 @@ function signInPage(Ctx $ctx, ?string $message = null, ?string $error = null): R
 ' . status($message) . '
 ' . alert($error) . '
 <p>Passkeys are preferred: an abused passkey prompt works once, a stolen password until you change it.</p>
-<form method="post">
+<form method="post" data-session>
 <section aria-labelledby="passkeys-heading">
 <h2 id="passkeys-heading">Passkeys</h2>
 ' . ($rows ? '<table>
@@ -380,10 +396,11 @@ function signInPage(Ctx $ctx, ?string $message = null, ?string $error = null): R
 </section>
 ' . $confirm(true) . '
 </form>
-<form method="post">
+<form method="post" data-session>
 <section aria-labelledby="password-heading">
 <h2 id="password-heading">' . ($hasPassword ? 'Change your password' : 'Set a password') . '</h2>
-' . ($hasPassword ? '' : '<p>You sign in with a passkey. A password is a fallback for devices without it.</p>') . '
+' . ($owner['passkeys'] ? '<p>You have a passkey: you confirm with it, and the password is not accepted. The password is kept for the day you lose your passkeys.
+After they were removed from the data file (see the README), you sign in with it.</p>' : '') . '
 ' . newPasswordFields('New password', true) . '
 ' . $confirm(false) . '
 <p><button type="submit">' . ($hasPassword ? 'Change password' : 'Set password') . '</button></p>

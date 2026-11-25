@@ -2,9 +2,10 @@ import * as ui from 'pups-ui'
 import { inboxSummary, moderationView, saveModeration } from 'pups-inbox'
 import { errorPage, hasUnsafeChars, type HomepageKind, type HomepageState, isTheme, MIN_PASSWORD_LENGTH, ownerNav, setupCompletePage } from 'pups-ui'
 import {
-  createSession, endSession, passkeyCreateOptions, passkeyGetOptions, session, verifyCredential, verifyPasskeyRegistration,
+  createSession, endSession, pageSession, passkeyCreateOptions, passkeyGetOptions, session, verifyCredential, verifyPasskeyRegistration,
+  withPageSession,
 } from './auth'
-import { hashPassword, randomToken, sign, timingSafeEqual, verify } from './crypto'
+import { hashPassword, hashToken, randomToken, sign, timingSafeEqual, verify } from './crypto'
 import { modifyHostMeta, onGrantRevoked, readHostMeta, setPostUrlTemplate } from './hostmeta'
 import { readForm } from './http'
 import { permissionList } from './oauth'
@@ -17,9 +18,9 @@ import type { Passkey } from './store'
  * Owner pages: first-run setup, login (auth subdomain mode only), the apps page, the comments page and the
  * password page.
  *
- * Same-domain mode has no sessions: viewing the apps page and every change carry a fresh
- * passkey assertion or the password. Auth subdomain mode has a session for viewing; every
- * change still needs a fresh confirmation.
+ * A session is enough for viewing a page: the cookie in auth subdomain mode, the page session of owner.js in same-domain
+ * mode (RFC-6 "Deployment modes"). Without one, in same-domain mode, viewing needs a fresh passkey assertion or the
+ * password. Every change needs a fresh confirmation in both modes.
  */
 
 const notFound = () => errorPage('Not found', 'This page does not exist.', 404)
@@ -35,35 +36,51 @@ async function confirmOptions(s: Settings, env: Env) {
 // --- Setup -----------------------------------------------------------------------------
 
 interface SetupToken {
-  t: 'setup'
+  t: 'setup' | 'recover'
   nonce: string
   exp: number
 }
 
-export async function setup(req: Request, s: Settings, env: Env): Promise<Response> {
+/**
+ * /pups/setup, before the owner exists, with BOOTSTRAP_SECRET. With `recover`, /pups/recover, while the secret
+ * RECOVERY_SECRET is set: the passkey or password chosen there replaces all the owner's passkeys and their password, for
+ * an owner who lost their passkey (RFC-6 "Owner authentication"). Only who controls the server's secrets can set it, and
+ * each value works once.
+ */
+export async function setup(req: Request, s: Settings, env: Env, recover = false): Promise<Response> {
   const db = store(env)
-  // After setup the page is unreachable.
-  if (await db.ownerExists()) return notFound()
-  if (!env.BOOTSTRAP_SECRET || env.BOOTSTRAP_SECRET.length < 16)
-    return errorPage('Setup not possible', 'Set the BOOTSTRAP_SECRET secret (at least 16 characters) first, e.g. with `wrangler secret put BOOTSTRAP_SECRET`.', 503)
-  if (req.method == 'GET') return ui.secretForm(s)
+  const secret = recover ? env.RECOVERY_SECRET : env.BOOTSTRAP_SECRET
+  if (recover) {
+    if (!secret || secret.length < 16) return notFound()
+    if (!await db.ownerExists()) return seeOther('/pups/setup')
+  } else {
+    // After setup the page is unreachable.
+    if (await db.ownerExists()) return notFound()
+    if (!secret || secret.length < 16)
+      return errorPage('Setup not possible', 'Set the BOOTSTRAP_SECRET secret (at least 16 characters) first, e.g. with `wrangler secret put BOOTSTRAP_SECRET`.', 503)
+  }
+  const secretForm = (error?: string) => ui.secretForm(s, error, recover)
+  if (req.method == 'GET') return secretForm()
   if (req.method != 'POST') return errorPage('Method not allowed', 'Use GET or POST.', 405)
 
   const form = await readForm(req)
   if (form.get('step') == 'secret') {
     const delay = await db.loginDelay()
-    if (delay) return ui.secretForm(s, `Too many failed attempts. Try again in ${Math.ceil(delay / 60_000)} minute(s).`)
-    if (!timingSafeEqual(String(form.get('secret') ?? ''), env.BOOTSTRAP_SECRET)) {
+    if (delay) return secretForm(`Too many failed attempts. Try again in ${Math.ceil(delay / 60_000)} minute(s).`)
+    if (!timingSafeEqual(String(form.get('secret') ?? ''), secret)) {
       await db.loginFailed()
-      return ui.secretForm(s, 'Wrong bootstrap secret.')
+      return secretForm(recover ? 'Wrong recovery secret.' : 'Wrong bootstrap secret.')
     }
+    if (recover && await db.setting('recoveredWith') == await hashToken(secret))
+      return secretForm('This recovery secret was used already. Set a new one to recover again.')
     await db.loginSucceeded()
-    return credentialForm(await sign({ t: 'setup', nonce: randomToken(16), exp: Date.now() + 30 * 60_000 }, await db.secret()), s, env)
+    return credentialForm(await sign({ t: recover ? 'recover' : 'setup', nonce: randomToken(16), exp: Date.now() + 30 * 60_000 }, await db.secret()), s, env)
   }
 
   const token = form.get('setup') as string | null
   const st = await verify<SetupToken>(token, await db.secret())
-  if (!st || st.t != 'setup') return ui.secretForm(s, 'The setup session has expired. Enter the bootstrap secret again.')
+  if (!st || st.t != (recover ? 'recover' : 'setup'))
+    return secretForm(`The ${recover ? 'recovery' : 'setup'} session has expired. Enter the ${recover ? 'recovery' : 'bootstrap'} secret again.`)
   const registration = form.get('passkey_registration')
   const password = String(form.get('new_password') ?? '')
   let passkey: Passkey | null = null
@@ -75,8 +92,14 @@ export async function setup(req: Request, s: Settings, env: Env): Promise<Respon
   const pwError = password && checkNewPassword(password, form.get('new_password2'))
   if (pwError) return credentialForm(token!, s, env, pwError)
   if (!passkey && !password) return credentialForm(token!, s, env, 'Register a passkey or choose a password.')
-  if (!await db.useNonce(st.nonce, 30 * 60_000) || !await db.createOwner(password ? await hashPassword(password) : null, passkey))
-    return notFound()
+  if (!await db.useNonce(st.nonce, 30 * 60_000)) return notFound()
+  if (recover) {
+    await db.replaceCredentials(password ? await hashPassword(password) : null, passkey)
+    await db.deleteAllSessions()
+    await db.setSetting('recoveredWith', await hashToken(secret))
+    return ui.recoveredPage(s, s.issuer)
+  }
+  if (!await db.createOwner(password ? await hashPassword(password) : null, passkey)) return notFound()
   return setupCompletePage(s, { configUrl: s.configUrl, issuer: s.issuer, hasPasskey: !!passkey, homepage: await homepageKind(s, env) })
 }
 
@@ -122,16 +145,38 @@ async function guard(req: Request, s: Settings, env: Env, path: string): Promise
   if (req.method != 'GET' && req.method != 'POST') return errorPage('Method not allowed', 'Use GET or POST.', 405)
 }
 
+/**
+ * The owner's session on a management page (guard checks the cookie in subdomain mode). `confirm` checks a fresh
+ * confirmation, which also starts a new page session; `reply` adds the renewed page session to the answer.
+ */
+async function ownerSession(req: Request, s: Settings, env: Env) {
+  let start = await pageSession(req, s, env)
+  return {
+    active: s.subdomainMode || start != null,
+    async confirm(form: FormData) {
+      const err = await verifyCredential(form, s, env)
+      if (!err) start = Date.now()
+      return err
+    },
+    reply: async (res: Response | Promise<Response>) => withPageSession(req, await res, s, env, start),
+  }
+}
+
+/** Whether a form makes a change, or only shows the page again. */
+const changes = (form: FormData, fields: string[]) => fields.some(f => form.has(f))
+
 // --- Apps ------------------------------------------------------------------------------
 
 export async function apps(req: Request, s: Settings, env: Env): Promise<Response> {
   const stop = await guard(req, s, env, '/pups/apps')
   if (stop) return stop
-  if (req.method == 'GET') return s.subdomainMode ? appsPage(s, env) : unlockPage(s, env)
+  const session = await ownerSession(req, s, env)
+  if (req.method == 'GET') return session.reply(session.active ? appsPage(s, env) : unlockPage(s, env))
 
   const form = await readForm(req)
-  const err = await verifyCredential(form, s, env)
-  if (err) return s.subdomainMode ? appsPage(s, env, { error: err }) : unlockPage(s, env, err)
+  if (session.active && !changes(form, ['revoke', 'revoke_delete', 'remove_link', 'remove_property', 'signout_all'])) return session.reply(appsPage(s, env))
+  const err = await session.confirm(form)
+  if (err) return session.reply(session.active ? appsPage(s, env, { error: err }) : unlockPage(s, env, err))
 
   const db = store(env)
   const revoke = form.get('revoke') ?? form.get('revoke_delete')
@@ -151,7 +196,7 @@ export async function apps(req: Request, s: Settings, env: Env): Promise<Respons
       link = JSON.parse(String(form.get('remove_link')))
     } catch {}
     if (!Array.isArray(link) || link.length != 2 || link.some(x => typeof x != 'string'))
-      return appsPage(s, env, { error: 'Invalid link.' })
+      return session.reply(appsPage(s, env, { error: 'Invalid link.' }))
     const [rel, href] = link as [string, string]
     await modifyHostMeta(s, env, doc => {
       const before = doc.links?.length ?? 0
@@ -171,7 +216,7 @@ export async function apps(req: Request, s: Settings, env: Env): Promise<Respons
     await db.deleteAllSessions()
     return seeOther('/pups/login', { 'set-cookie': await endSession(req, env) })
   }
-  return appsPage(s, env, { message })
+  return session.reply(appsPage(s, env, { message }))
 }
 
 async function deleteAppFiles(clientHost: string, env: Env): Promise<number> {
@@ -218,13 +263,15 @@ export async function commentSettings(req: Request, s: Settings, env: Env): Prom
   const page = async (o: { message?: string; error?: string; form?: FormData } = {}) => ui.commentsPage(s, {
     inbox: (await inboxSummary(r))!, moderation: await moderationView(r.moderation!, r.now(), o.form), confirm: await confirmOptions(s, env), ...o,
   })
-  if (req.method == 'GET') return s.subdomainMode ? page() : ui.commentsUnlockPage(s, await confirmOptions(s, env))
+  const session = await ownerSession(req, s, env)
+  if (req.method == 'GET') return session.reply(session.active ? page() : ui.commentsUnlockPage(s, await confirmOptions(s, env)))
   const form = await readForm(req)
-  const err = await verifyCredential(form, s, env)
-  if (err) return s.subdomainMode ? page({ error: err }) : ui.commentsUnlockPage(s, await confirmOptions(s, env), err)
-  if (!form.has('save_moderation')) return page()
+  if (session.active && !changes(form, ['save_moderation'])) return session.reply(page())
+  const err = await session.confirm(form)
+  if (err) return session.reply(session.active ? page({ error: err }) : ui.commentsUnlockPage(s, await confirmOptions(s, env), err))
+  if (!form.has('save_moderation')) return session.reply(page())
   const saved = await saveModeration(r.moderation!, form, s.allowHttp)
-  return page('error' in saved ? { error: saved.error, form } : { message: saved.message })
+  return session.reply(page('error' in saved ? { error: saved.error, form } : { message: saved.message }))
 }
 
 // --- Password --------------------------------------------------------------------------
@@ -232,18 +279,20 @@ export async function commentSettings(req: Request, s: Settings, env: Env): Prom
 export async function password(req: Request, s: Settings, env: Env): Promise<Response> {
   const stop = await guard(req, s, env, '/pups/password')
   if (stop) return stop
-  if (req.method == 'GET') return passwordPage(s, env)
+  const session = await ownerSession(req, s, env)
+  if (req.method == 'GET') return session.reply(passwordPage(s, env))
 
   const form = await readForm(req)
   const newPassword = String(form.get('new_password') ?? '')
   const invalid = checkNewPassword(newPassword, form.get('new_password2'))
-  if (invalid) return passwordPage(s, env, { error: invalid })
-  const err = await verifyCredential(form, s, env)
-  if (err) return passwordPage(s, env, { error: err })
+  if (invalid) return session.reply(passwordPage(s, env, { error: invalid }))
+  const err = await session.confirm(form)
+  if (err) return session.reply(passwordPage(s, env, { error: err }))
 
   const db = store(env)
   await db.setPassword(await hashPassword(newPassword))
-  if (!s.subdomainMode) return passwordPage(s, env, { message: 'Your password was changed.' })
+  // A new password ends the page sessions of other pages too (auth.ts): this page gets a new one.
+  if (!s.subdomainMode) return session.reply(passwordPage(s, env, { message: 'Your password was changed. Other pages need a new confirmation.' }))
   // Changing the password ends every other session.
   await db.deleteAllSessions()
   const res = await passwordPage(s, env, { message: 'Your password was changed. All other sessions were logged out.' })
@@ -279,22 +328,24 @@ export async function homepage(req: Request, s: Settings, env: Env): Promise<Res
   const page = async (o: { message?: string; error?: string } = {}) => ui.homepagePage(s, {
     kind: await homepageKind(s, env), state: await homepageState(env), confirm: await confirmOptions(s, env), nav, ...o,
   })
-  if (req.method == 'GET') return s.subdomainMode ? page() : ui.homepageUnlockPage(s, await confirmOptions(s, env), nav)
+  const session = await ownerSession(req, s, env)
+  if (req.method == 'GET') return session.reply(session.active ? page() : ui.homepageUnlockPage(s, await confirmOptions(s, env), nav))
   const form = await readForm(req)
-  const err = await verifyCredential(form, s, env)
-  if (err) return s.subdomainMode ? page({ error: err }) : ui.homepageUnlockPage(s, await confirmOptions(s, env), nav, err)
+  if (session.active && !changes(form, ['webpup'])) return session.reply(page())
+  const err = await session.confirm(form)
+  if (err) return session.reply(session.active ? page({ error: err }) : ui.homepageUnlockPage(s, await confirmOptions(s, env), nav, err))
   const action = form.get('webpup')
   const kind = await homepageKind(s, env)
-  if (!action || kind == 'website') return page()
+  if (!action || kind == 'website') return session.reply(page())
   const db = store(env)
   if (action == 'remove') {
     await db.setSetting('homepage', undefined)
     await setPostUrlTemplate(s, env, false)
-    return page({ message: `webpup was removed. ${s.ownerHost} now forwards to these pages.` })
+    return session.reply(page({ message: `webpup was removed. ${s.ownerHost} now forwards to these pages.` }))
   }
   const theme = String(form.get('theme') ?? '')
-  if (action != 'install' || !isTheme(theme)) return page({ error: 'Choose a theme.' })
+  if (action != 'install' || !isTheme(theme)) return session.reply(page({ error: 'Choose a theme.' }))
   await db.setSetting('homepage', { theme, themeSelector: form.get('theme_selector') == '1' } satisfies HomepageState)
   await setPostUrlTemplate(s, env, true)
-  return page({ message: kind == 'webpup' ? 'Saved.' : `webpup is now the homepage of ${s.ownerHost}.` })
+  return session.reply(page({ message: kind == 'webpup' ? 'Saved.' : `webpup is now the homepage of ${s.ownerHost}.` }))
 }

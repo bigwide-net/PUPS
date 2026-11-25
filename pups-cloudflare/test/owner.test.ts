@@ -1,5 +1,5 @@
-import { beforeAll, describe, expect, it } from 'vitest'
-import { call, connect, form, mockClientFetch, ORIGIN, PASSWORD, put, registerClient, setupOwner } from './helpers'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { call, connect, form, mockClientFetch, ORIGIN, ownerStore, PASSWORD, put, registerClient, setupOwner, useVars } from './helpers'
 
 /** The owner pages in same-domain mode. Own storage: this file changes the password. */
 
@@ -12,6 +12,15 @@ async function rowButton(host: string, name: string, password = PASSWORD) {
   return new RegExp(`name="${name}" value="([^"]+)"`).exec(row.slice(0, row.indexOf('</tr>')))?.[1]
 }
 
+/** Confirms on the apps page as owner.js does, and returns the page session it gets. */
+async function startSession(password = PASSWORD) {
+  const r = await call('/pups/apps', { method: 'POST', body: form({ show: '1', password }), headers: { 'pups-session': 'new' } })
+  expect(r.status).toBe(200)
+  return r.headers.get('pups-session')!
+}
+
+const withSession = (session: string, init: RequestInit = {}): RequestInit => ({ ...init, headers: { 'pups-session': session } })
+
 beforeAll(async () => {
   mockClientFetch()
   await setupOwner()
@@ -22,7 +31,8 @@ describe('markup', () => {
     const html = await (await call('/pups/apps')).text()
     expect(html).toContain('<link rel="stylesheet" href="/pups/assets/owner.css">')
     expect(html).toMatch(/<header>[^]*<nav aria-label="Owner pages">[^]*<main>[^]*<h1>/)
-    expect(html).toContain('<fieldset data-confirm>')
+    // No password field: owner.js asks for the password in a dialog; the field is for pages without script.
+    expect(html).toContain('<div data-confirm data-legend="Confirm that it is you" data-label="Password">\n<noscript><fieldset>')
     expect(html).not.toMatch(/ style=|<style|class=/)
   })
 
@@ -111,6 +121,81 @@ describe('apps page', () => {
   })
 })
 
+describe('page session (same-domain mode)', () => {
+  it('starts with a confirmation, only for owner.js, and then shows the pages without one', async () => {
+    expect((await showApps()).headers.get('pups-session')).toBeNull()
+    expect((await call('/pups/apps', withSession('new'))).headers.get('pups-session')).toBeNull()
+    const session = await startSession()
+    expect(session).toMatch(/^[\w-]+\.[\w-]+$/)
+    for (const path of ['/pups/apps', '/pups/homepage', '/pups/password']) {
+      const r = await call(path, withSession(session))
+      const html = await r.text()
+      expect(html, path).not.toContain('Confirm that you are the owner')
+      expect(r.headers.get('pups-session'), path).toBeTruthy()
+      expect(r.headers.get('cross-origin-opener-policy')).toBe('same-origin')
+      expect(r.headers.get('content-security-policy')).toContain("connect-src 'self'")
+      expect(r.headers.get('set-cookie')).toBeNull()
+    }
+    // Reload needs no confirmation.
+    const reload = await call('/pups/apps', withSession(session, { method: 'POST', body: form({ show: '1' }) }))
+    expect(await reload.text()).toContain('Apps that can write to')
+  })
+
+  it('still needs a confirmation for every change, which starts a new session', async () => {
+    const c = registerClient('session-kept.example')
+    await connect(c, 'write:/appdata/session-kept.example/')
+    const grant = (await rowButton('session-kept.example', 'revoke'))!
+    const session = await startSession()
+    const r = await call('/pups/apps', withSession(session, { method: 'POST', body: form({ revoke: grant }) }))
+    const html = await r.text()
+    expect(html).toContain('Please confirm with your passkey or password.')
+    expect(html).toContain('<th scope="row">session-kept.example')
+    const ok = await call('/pups/apps', withSession(session, { method: 'POST', body: form({ revoke: grant, password: PASSWORD }) }))
+    expect(await ok.text()).not.toContain('<th scope="row">session-kept.example')
+    expect(ok.headers.get('pups-session')).toBeTruthy()
+  })
+
+  it('ignores a changed session and one that expired', async () => {
+    const session = await startSession()
+    const locked = async (s: string) => {
+      const r = await call('/pups/apps', withSession(s))
+      return [(await r.text()).includes('Confirm that you are the owner'), r.headers.get('pups-session')]
+    }
+    expect(await locked(session.slice(0, -2) + (session.endsWith('AA') ? 'BB' : 'AA'))).toEqual([true, null])
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now')
+    try {
+      clock.mockReturnValue(now + 14 * 60_000)
+      const renewed = (await call('/pups/apps', withSession(session))).headers.get('pups-session')!
+      clock.mockReturnValue(now + 28 * 60_000)
+      expect((await locked(renewed))[0]).toBe(false)
+      expect((await locked(session))[0]).toBe(true)
+      clock.mockReturnValue(now + 61 * 60_000)
+      expect(await locked(renewed)).toEqual([true, null])
+    } finally {
+      clock.mockRestore()
+    }
+  })
+})
+
+describe('passkeys', () => {
+  it('while the owner has one, the password is not accepted, and the pages have no password field', async () => {
+    const db = ownerStore()
+    const { passwordHash } = (await db.owner())!
+    await db.replaceCredentials(passwordHash, { id: 'test-passkey', publicKey: 'AAAA', counter: 0, transports: [] })
+    try {
+      const html = await (await call('/pups/apps')).text()
+      expect(html).toContain('<div data-confirm hidden>')
+      expect(html).not.toContain('name="password"')
+      const r = await showApps()
+      expect([r.status, (await r.text()).includes('Confirm with your passkey. The password works only while you have no passkey.')]).toEqual([401, true])
+    } finally {
+      await db.replaceCredentials(passwordHash, null)
+    }
+    expect((await showApps()).status).toBe(200)
+  })
+})
+
 describe('password page', () => {
   const change = (fields: Record<string, string>) => call('/pups/password', { method: 'POST', body: form(fields) })
   const NEW = 'a brand new password'
@@ -128,11 +213,39 @@ describe('password page', () => {
     expect((await showApps()).status).toBe(200)
   })
 
-  it('changes the password', async () => {
-    const r = await change({ password: PASSWORD, new_password: NEW, new_password2: NEW })
+  it('changes the password, which ends the page sessions of other pages', async () => {
+    const other = await startSession()
+    const r = await call('/pups/password', withSession('new', { method: 'POST', body: form({ password: PASSWORD, new_password: NEW, new_password2: NEW }) }))
     expect(r.status).toBe(200)
     expect(await r.text()).toContain('Your password was changed.')
+    expect(await (await call('/pups/apps', withSession(other))).text()).toContain('Confirm that you are the owner')
+    expect(await (await call('/pups/apps', withSession(r.headers.get('pups-session')!))).text()).toContain('Apps that can write to')
     expect((await showApps(PASSWORD)).status).toBe(401)
     expect((await showApps(NEW)).status).toBe(200)
+  })
+})
+
+describe('recovery', () => {
+  const RECOVERY = 'a recovery secret of some length'
+  const recover = (fields: Record<string, string>) => call('/pups/recover', { method: 'POST', body: form(fields) })
+
+  it('exists only while RECOVERY_SECRET is set, replaces the passkeys and the password, and works once per secret', async () => {
+    expect((await call('/pups/recover')).status).toBe(404)
+    useVars({ RECOVERY_SECRET: RECOVERY })
+    try {
+      expect(await (await call('/pups/recover')).text()).toContain('Recover your login')
+      expect(await (await recover({ step: 'secret', secret: 'not the recovery secret' })).text()).toContain('Wrong recovery secret.')
+      const db = ownerStore()
+      await db.replaceCredentials((await db.owner())!.passwordHash, { id: 'lost-passkey', publicKey: 'AAAA', counter: 0, transports: [] })
+      const token = /name="setup" value="([^"]+)"/.exec(await (await recover({ step: 'secret', secret: RECOVERY })).text())![1]
+      const NEW = 'the recovered password'
+      expect(await (await recover({ setup: token, new_password: NEW, new_password2: NEW })).text()).toContain('Remove the secret <code>RECOVERY_SECRET</code> now.')
+      expect((await db.owner())!.passkeys).toEqual([])
+      expect((await showApps(NEW)).status).toBe(200)
+      expect(await (await recover({ step: 'secret', secret: RECOVERY })).text()).toContain('This recovery secret was used already.')
+      expect((await recover({ setup: token, new_password: 'yet another password', new_password2: 'yet another password' })).status).toBe(404)
+    } finally {
+      useVars()
+    }
   })
 })

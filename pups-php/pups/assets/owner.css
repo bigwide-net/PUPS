@@ -5,8 +5,10 @@
  * The pages use plain semantic HTML without classes or inline styles:
  *   body > header      site name and, on management pages, nav
  *   body > main        h1, then sections, forms and tables
- *   form fieldset      grouped inputs; the fieldset with data-confirm asks for the
- *                      owner's passkey or password
+ *   form fieldset      grouped inputs
+ *   [data-confirm]     how a form is confirmed: hidden with a passkey; without one, the
+ *                      password fieldset (noscript, or inline on the login page)
+ *   dialog             owner.js asks for the password: h2, label > input, p > buttons
  *   p[role=alert]      errors           p[role=status]   confirmations
  *   p[role=note]       warnings (new app, app on this computer, same-domain mode)
  *   label > input, label > textarea   a field and its label; text fields are as wide as the page
@@ -85,3 +87,8 @@ tr[data-check] th, tr[data-check] td:nth-child(2) { white-space: nowrap; }
 tr[data-check=ok] td:nth-child(2) { color: var(--ok); }
 tr[data-check=warn] td:nth-child(2) { color: var(--warn); font-weight: 600; }
 tr[data-check=fail] td:nth-child(2) { color: var(--err); font-weight: 600; }
+
+[hidden] { display: none !important; }
+dialog { border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.25rem; background: var(--card); color: var(--fg); width: min(24rem, calc(100vw - 2rem)); }
+dialog::backdrop { background: rgb(0 0 0 / .4); }
+dialog h2 { margin-top: 0; }

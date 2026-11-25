@@ -2,6 +2,7 @@ import { env } from 'cloudflare:workers'
 import { expect, vi } from 'vitest'
 import { randomToken, s256 } from '../src/crypto'
 import worker from '../src/index'
+import { store } from '../src/settings'
 
 export const ORIGIN = 'https://tim.example.com'
 export const PASSWORD = 'correct horse battery staple'
@@ -9,6 +10,10 @@ export const PASSWORD = 'correct horse battery staple'
 let envOverride: object | undefined
 /** Runs every following call() with this environment instead of the configured one. */
 export const useEnv = (env: object | undefined) => envOverride = env
+/** Runs every following call() with these variables added; without, with the default environment. */
+export const useVars = (vars?: Record<string, string>) => useEnv(vars && { ...env, ...vars })
+/** The owner's store, for tests that change the credentials directly. */
+export const ownerStore = () => store(env as any)
 
 const pending: Promise<unknown>[] = []
 /** The execution context of test requests: work passed to waitUntil() runs until settle(). */

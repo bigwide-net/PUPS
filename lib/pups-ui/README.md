@@ -23,7 +23,7 @@ The functions are pure: a server passes in plain data (its settings, the parsed 
 
 ## Contents
 
-- `src/html.ts`: the page frame with its security headers, messages, and the fieldset in which the owner confirms with a passkey or the password.
+- `src/html.ts`: the page frame with its security headers, messages, and `confirmFields()`: how a form is confirmed. With a passkey, nothing visible (`owner.js` asks for it; the servers don't accept the password then); without one, `owner.js` asks for the password in a dialog, and only pages without script (`noscript`) or the login page have a password field.
 - `src/scopes.ts`: `isPrivate()`, the consent groups of the scopes and their wording.
 - `src/consent.ts`: the consent screen.
 - `src/owner.ts`: setup, login, the apps page and the password page.
@@ -33,6 +33,17 @@ The functions are pure: a server passes in plain data (its settings, the parsed 
 - `src/sanitize.ts`: the sanitizer for untrusted text.
 - `texts.json`, `src/texts.ts`: the texts of the consent screen, the permission lists and the confirmation fieldset, read with `t(key, vars)`.
 - `public/pups/assets/`: `owner.css` and `owner.js`, served at `/pups/assets/`. `public/_headers` sets their headers on Cloudflare.
+
+## Page session
+
+In same-domain mode, RFC-6 allows a session only in the memory of the open owner page. `owner.js` holds it:
+
+- Forms with `data-session` (the management pages) are sent with `fetch` and the header `PUPS-Session`: the session, or `new`. The answer replaces the page (`history.pushState` for the links of the owner navigation).
+- After a successful confirmation, or with a valid session, the server answers with a renewed session in the same header. Without one in the answer, `owner.js` forgets its session.
+- Submit buttons with `data-view` (Reload) only show the page again. With a session they submit without asking for the passkey, and the server shows the page without a confirmation. Every other submit still asks.
+- The servers issue and check the token (signed, 15 minutes idle, 1 hour at most, tied to the owner's password and passkeys). In auth subdomain mode the cookie is the session, and no token is issued.
+
+Pages with the owner navigation are sent with `Cross-Origin-Opener-Policy: same-origin`, and every page with `connect-src 'self'`.
 
 ## Use
 

@@ -6,12 +6,14 @@ import { type Env, type Settings, store } from './settings'
 import type { Passkey } from './state'
 
 /**
- * Owner authentication. In same-domain mode the server never sets a cookie: every owner
- * action carries a passkey assertion or the password. In auth subdomain mode an owner
- * session exists, but step-up actions still need a fresh credential.
+ * Owner authentication. In same-domain mode the server never sets a cookie: a page session
+ * held by owner.js, or a passkey assertion or the password with every request. In auth
+ * subdomain mode an owner session cookie exists. Either session is enough for viewing; every
+ * change needs a fresh credential.
  */
 
 const CHALLENGE_TTL = 10 * 60_000
+const PASSKEY_ONLY = 'Confirm with your passkey. The password works only while you have no passkey.'
 const SESSION_COOKIE = '__Host-pups_session'
 
 /**
@@ -105,8 +107,10 @@ export async function verifyPasskeyRegistration(json: string, s: Settings, env: 
 
 /**
  * Verifies a fresh owner credential from a form: a passkey assertion (field `passkey`) or
- * the password (field `password`). Failed attempts are rate-limited. Returns null on
- * success, otherwise an error message.
+ * the password (field `password`). While the owner has a passkey, the password is not
+ * accepted: it is kept for the day the passkeys are lost and removed (RFC-6 "Owner
+ * authentication"). Failed attempts are rate-limited. Returns null on success, otherwise an
+ * error message.
  */
 export async function verifyCredential(form: FormData, s: Settings, env: Env): Promise<string | null> {
   const db = store(env)
@@ -139,6 +143,7 @@ export async function verifyCredential(form: FormData, s: Settings, env: Env): P
       } catch {}
     }
   } else if (typeof password == 'string' && password) {
+    if (owner.passkeys.length) return PASSKEY_ONLY
     ok = !!owner.passwordHash && await verifyPassword(password, owner.passwordHash)
   } else return 'Please confirm with your passkey or password.'
   if (!ok) {
@@ -181,4 +186,47 @@ export async function endSession(req: Request, env: Env): Promise<string> {
   const id = cookie(req, SESSION_COOKIE)
   if (id) await store(env).deleteSession(await hashToken(id))
   return `${SESSION_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`
+}
+
+// --- Page sessions (same-domain mode only) ----------------------------------------------
+
+/** The header in which owner.js sends its page session, or `new`, and gets the renewed one. */
+const PAGE_HEADER = 'pups-session'
+/** A page session ends after this time without use, and this long after the confirmation (RFC-6 "Deployment modes"). */
+const PAGE_IDLE = 15 * 60_000
+const PAGE_MAX = 3600_000
+
+/**
+ * A page session: signed, not stored. `start` is the time of the confirmation; `v` is derived from the owner's password
+ * and passkeys, so that changing them ends every page session.
+ */
+interface PageSession {
+  t: 'page'
+  start: number
+  v: string
+  exp: number
+}
+
+async function credentialsVersion(env: Env): Promise<string> {
+  const owner = await store(env).owner()
+  return (await hashToken([owner?.passwordHash ?? '', ...owner?.passkeys.map(p => p.id) ?? []].join(' '))).slice(0, 16)
+}
+
+/** The time of the confirmation that started the request's page session, if it has a valid one. Never in subdomain mode. */
+export async function pageSession(req: Request, s: Settings, env: Env): Promise<number | null> {
+  const token = req.headers.get(PAGE_HEADER)
+  if (s.subdomainMode || !token || token == 'new' || token.length > 1024) return null
+  const p = await verify<PageSession>(token, await store(env).secret())
+  return p?.t == 'page' && p.start + PAGE_MAX > Date.now() && p.v == await credentialsVersion(env) ? p.start : null
+}
+
+/**
+ * Adds the renewed page session to an owner page, if the request asked for one (owner.js) and the owner confirmed at
+ * `start`, now or when the session began.
+ */
+export async function withPageSession(req: Request, res: Response, s: Settings, env: Env, start: number | null): Promise<Response> {
+  if (s.subdomainMode || start == null || !req.headers.has(PAGE_HEADER)) return res
+  const session: PageSession = { t: 'page', start, v: await credentialsVersion(env), exp: Math.min(Date.now() + PAGE_IDLE, start + PAGE_MAX) }
+  res.headers.set(PAGE_HEADER, await sign(session, await store(env).secret()))
+  return res
 }

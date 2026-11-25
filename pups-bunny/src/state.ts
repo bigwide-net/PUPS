@@ -214,6 +214,12 @@ export class Store {
 
   setPassword = (passwordHash: string) => this.updateOwner(o => { o.passwordHash = passwordHash })
 
+  /** Replaces all passkeys and the password (the recovery, owner.ts). */
+  replaceCredentials = (passwordHash: string | null, passkey: Passkey | null) => this.updateOwner(o => {
+    o.passwordHash = passwordHash
+    o.passkeys = passkey ? [passkey] : []
+  })
+
   updatePasskeyCounter = (id: string, counter: number) => this.updateOwner(o => {
     const p = o.passkeys.find(p => p.id == id)
     if (p) p.counter = counter

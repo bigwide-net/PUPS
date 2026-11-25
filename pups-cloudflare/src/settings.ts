@@ -15,6 +15,8 @@ export interface Env {
   ORIGIN_FALLBACK?: string
   DEV_ALLOW_HTTP?: string
   BOOTSTRAP_SECRET?: string
+  /** Set only to recover a lost login (/pups/recover); each value works once. */
+  RECOVERY_SECRET?: string
   MENTIONS?: string
   COMMENTS?: string
   WEBPUP_OWNER_LINK?: string

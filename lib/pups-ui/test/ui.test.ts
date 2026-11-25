@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appsPage, consentPage, isPrivate, page, permissionList, t, type ScopeView } from '../src'
+import { appsPage, confirmFields, consentPage, isPrivate, loginPage, page, permissionList, t, type ScopeView } from '../src'
 
 const site = { ownerHost: 'tim.example.com', ownerOrigin: 'https://tim.example.com', subdomainMode: false }
 const inbox = { path: '/pups/private/inbox/', rels: [], properties: [], description: 'your inbox' }
@@ -12,6 +12,27 @@ describe('page', () => {
     expect(res.headers.get('x-frame-options')).toBe('DENY')
     expect(res.headers.get('content-security-policy')).toContain("form-action 'self' https://app.example; frame-ancestors 'none'")
     expect(await res.text()).toContain('<link rel="stylesheet" href="/pups/assets/owner.css">')
+  })
+
+  it('isolates the management pages from their opener, but not the consent screen', () => {
+    expect(page('T', '', { nav: '<nav></nav>' }).headers.get('cross-origin-opener-policy')).toBe('same-origin')
+    const consent = page('T', '', { formAction: ['https://app.example'] })
+    expect(consent.headers.get('cross-origin-opener-policy')).toBeNull()
+    expect(consent.headers.get('content-security-policy')).toContain("connect-src 'self'")
+  })
+})
+
+describe('confirmation', () => {
+  it('shows nothing with a passkey, and the password field only without script', async () => {
+    const withPasskey = confirmFields({ passkeyOptions: { challenge: 'c' }, hasPassword: true })
+    expect(withPasskey).toContain('<div data-confirm hidden>')
+    expect(withPasskey).not.toContain('name="password"')
+    const password = confirmFields({ hasPassword: true, legend: 'Confirm changes' })
+    expect(password).toMatch(/^<div data-confirm data-legend="Confirm changes" data-label="Password">\n<noscript><fieldset>/)
+    // The login page keeps its field.
+    const login = await loginPage(site, '/pups/apps', { hasPassword: true }).text()
+    expect(login).toContain('<input type="password" name="password" autocomplete="current-password" required>')
+    expect(login).not.toContain('<noscript><fieldset>')
   })
 })
 
@@ -53,6 +74,12 @@ describe('consent page', () => {
 })
 
 describe('apps page', () => {
+  it('is sent by owner.js with the page session, and Reload is a view', async () => {
+    const html = await appsPage(site, { apps: [], links: [], properties: [], hostMetaStored: true, confirm: { hasPassword: true } }).text()
+    expect(html).toContain('<form method="post" data-session>')
+    expect(html).toContain('<button type="submit" name="show" value="1" data-view>Reload</button>')
+  })
+
   it('lists the apps with their permissions, links and properties', async () => {
     const permissions = permissionList([['write:/appdata/app.example/', { kind: 'write', prefix: '/appdata/app.example/' }], ['write:/gone/', undefined]], site.ownerHost)
     const html = await appsPage(site, {

@@ -195,6 +195,15 @@ export class PupsStore extends DurableObject<Env> {
     if (this.ownerExists()) this.addPasskeyRow(p, Date.now())
   }
 
+  /** Replaces all passkeys and the password (the recovery, owner.ts). */
+  replaceCredentials(passwordHash: string | null, passkey: Passkey | null) {
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('DELETE FROM passkeys')
+      this.sql.exec('UPDATE owner SET password_hash = ? WHERE id = 1', passwordHash)
+      if (passkey) this.addPasskeyRow(passkey, Date.now())
+    })
+  }
+
   setPassword(passwordHash: string) {
     this.sql.exec('UPDATE owner SET password_hash = ? WHERE id = 1', passwordHash)
   }

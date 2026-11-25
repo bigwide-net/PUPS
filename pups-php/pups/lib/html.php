@@ -29,8 +29,13 @@ function t(string $key, array $vars = []): string
 
 /**
  * An owner page. Owner pages can't be framed, run only owner.js, and set no cookie.
- * Options: `nav` (the navigation of the management pages), `formAction` (origins a form may
+ * Options: `nav` (the navigation of the management pages, which may hold a page session:
+ * they are also isolated from the page that opened them), `formAction` (origins a form may
  * submit to; the consent form redirects to the app), `status`.
+ *
+ * Forms with `data-session` (the management pages) are sent by owner.js with the page session,
+ * and their answer replaces the page; submit buttons with `data-view` only show the page
+ * again, which needs no confirmation with a session.
  */
 function page(Config $c, string $title, string $body, array $opts = []): Response
 {
@@ -38,13 +43,13 @@ function page(Config $c, string $title, string $body, array $opts = []): Respons
     $formAction = implode(' ', array_merge(["'self'"], array_filter($opts['formAction'] ?? [], fn($o) => isCspOrigin($o))));
     $assets = h($c->path('/pups/assets'));
     $nav = $opts['nav'] ?? '';
-    return new Response($opts['status'] ?? 200, [
+    return new Response($opts['status'] ?? 200, ($nav === '' ? [] : ['Cross-Origin-Opener-Policy' => 'same-origin']) + [
         'Content-Type' => 'text/html; charset=utf-8',
         'Cache-Control' => 'no-store',
         'X-Frame-Options' => 'DENY',
         'X-Content-Type-Options' => 'nosniff',
         'Referrer-Policy' => 'no-referrer',
-        'Content-Security-Policy' => "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; "
+        'Content-Security-Policy' => "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; "
             . "form-action $formAction; frame-ancestors 'none'; base-uri 'none'",
     ], '<!doctype html>
 <html lang="en">
@@ -91,19 +96,29 @@ function jsonScript(string $id, mixed $value): string
 }
 
 /**
- * The fieldset in which the owner confirms an action with a passkey or the password. With a
- * passkey, owner.js asks for it when the form is submitted with an empty password field.
+ * How the owner confirms a form (`[data-confirm]`). With a passkey, the page shows nothing:
+ * owner.js asks for the passkey when the form is submitted, and the password is not accepted
+ * (RFC-6 "Owner authentication"). Without one, owner.js asks for the password in a dialog; the
+ * page has a password field only without JavaScript (`noscript`).
  */
 function confirmFields(?array $passkeyOptions, bool $hasPassword, ?string $legend = null, ?string $passwordLabel = null, bool $withOptions = true): string
 {
-    $hint = t($passkeyOptions && $hasPassword ? 'confirm.passkeyOrPassword' : ($passkeyOptions ? 'confirm.passkey' : 'confirm.password'));
-    return '<fieldset data-confirm>
-<legend>' . ($legend === null ? t('confirm.legend') : h($legend)) . '</legend>
-<p>' . $hint . '</p>
+    if ($passkeyOptions)
+        return '<div data-confirm hidden>
 <input type="hidden" name="passkey" value="">
-' . ($hasPassword ? '<label>' . ($passwordLabel === null ? t('confirm.passwordLabel') : h($passwordLabel)) . ' <input type="password" name="password" autocomplete="current-password"></label>' : '') . '
-' . ($passkeyOptions && $withOptions ? jsonScript('passkey-get-options', $passkeyOptions) : '') . '
-</fieldset>';
+' . ($withOptions ? jsonScript('passkey-get-options', $passkeyOptions) : '') . '
+</div>
+<noscript><p>' . t('confirm.passkeyNeedsScript') . '</p></noscript>';
+    if (!$hasPassword)
+        return '';
+    $legend = $legend === null ? t('confirm.legend') : h($legend);
+    $label = $passwordLabel === null ? t('confirm.passwordLabel') : h($passwordLabel);
+    return '<div data-confirm data-legend="' . $legend . '" data-label="' . $label . '">
+<noscript><fieldset>
+<legend>' . $legend . '</legend>
+<label>' . $label . ' <input type="password" name="password" autocomplete="current-password"></label>
+</fieldset></noscript>
+</div>';
 }
 
 /**

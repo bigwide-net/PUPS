@@ -34,6 +34,8 @@ export interface Post {
   /** ISO 8601 in UTC. */
   date?: string
   allowComments: boolean
+  /** RFC-4 `commenting`: false if the author wants no reply mentions (RFC-11 "Opting out"). */
+  notifyReplies?: false
   /** HTML pages: the reply links first, then every other link of the post. */
   links: string[]
 }
@@ -265,7 +267,7 @@ function jsonFeed(j: Record<string, any>): Omit<Feed, 'url'> {
       id: String(id), url: str(it.url), title: str(it.title), html: str(it.content_html), text: str(it.content_text), markdown: str(src.markdown),
       author: firstName(it.authors) ?? str(obj(it.author)?.name) ?? feedAuthor,
       account: str(obj(src.accounts)?.socialspec), inReplyTo: str(src.inReplyTo), date: isoDate(str(it.date_published)),
-      allowComments: obj(it._commenting)?.allowComments !== false, links: [],
+      allowComments: obj(it._commenting)?.allowComments !== false, ...obj(it._commenting)?.notifyReplies === false && { notifyReplies: false }, links: [],
     })
   }
   // RFC-13 archive fields.
@@ -323,9 +325,9 @@ function rssFeed(xml: string): Omit<Feed, 'url'> | undefined {
   for (const it of kids(ch, undefined, 'item')) {
     const id = text(kid(it, undefined, 'guid'))
     if (id == undefined) continue
-    const closed = NS_RM.some(ns => {
+    const off = (field: string) => NS_RM.some(ns => {
       const c = kid(it, ns, 'commenting')
-      return !!c && text(kid(c, ns, 'allowComments'))?.toLowerCase() == 'false'
+      return !!c && text(kid(c, ns, field))?.toLowerCase() == 'false'
     })
     items.push({
       id, url: text(kid(it, undefined, 'link')), title: text(kid(it, undefined, 'title')),
@@ -333,7 +335,7 @@ function rssFeed(xml: string): Omit<Feed, 'url'> | undefined {
       markdown: text(kid(it, NS_SOURCE, 'markdown')),
       author: text(kid(it, NS_DC, 'creator')) ?? text(kid(it, undefined, 'author')),
       account: rssAccount(it), inReplyTo: text(kid(it, NS_SOURCE, 'inReplyTo')),
-      date: isoDate(text(kid(it, undefined, 'pubDate'))), allowComments: !closed, links: [],
+      date: isoDate(text(kid(it, undefined, 'pubDate'))), allowComments: !off('allowComments'), ...off('notifyReplies') && { notifyReplies: false }, links: [],
     })
   }
   return { title: text(kid(ch, undefined, 'title')), account: rssAccount(ch), submissions, next, page: false, items }

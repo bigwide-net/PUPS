@@ -41,8 +41,6 @@
   "notSetUp.again": "Then go back to the app and log in again.",
 
   "confirm.legend": "Confirm that it is you",
-  "confirm.passkeyOrPassword": "Enter your password, or leave it empty to use your passkey.",
-  "confirm.passkey": "You will be asked for your passkey.",
-  "confirm.password": "Enter your password.",
-  "confirm.passwordLabel": "Password"
+  "confirm.passwordLabel": "Password",
+  "confirm.passkeyNeedsScript": "Confirming with your passkey needs JavaScript."
 }

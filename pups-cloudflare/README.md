@@ -52,11 +52,23 @@ Then:
 
 The pages are plain semantic HTML: `header` with `nav`, `main`, `section`s, `form`s with `fieldset`/`legend`/`label`, `table`s with `th scope`, and `p role="alert" | "status" | "note"` for messages. They have no classes and no inline styles, so all styling goes into **`owner.css`** in pups-ui (`public/pups/assets/owner.css`), together with the HTML of the pages (`src/`). A comment at the top of that file describes the structure; its rules are only a readable baseline. The Content-Security-Policy allows stylesheets and scripts from the server's own origin only.
 
-Every change (removing an app, a link or a property, changing the password) needs a fresh confirmation in the same request, in both modes. The confirmation fieldset has a password field. If you have a passkey, `owner.js` (in pups-ui) asks for it when you submit the form with an empty password field. Without JavaScript, the forms work with the password.
+Every change (removing an app, a link or a property, changing the password) needs a fresh confirmation in the same request, in both modes. If you have a passkey, `owner.js` (in pups-ui) asks for it when you submit the form, and the password is not accepted: it is kept for the day you lose your passkeys. Without a passkey, `owner.js` asks for the password in a dialog. Without JavaScript, the pages have a password field, and passkeys don't work.
+
+#### Lost passkey
+
+While you have a passkey, the owner pages offer no way around it. To get back in, prove that you control the Worker: set a recovery secret, open `/pups/recover`, and choose a new passkey or password there. It replaces all your passkeys and your password, and ends every session. Then delete the secret; the same value doesn't work a second time.
+
+```sh
+npx wrangler secret put RECOVERY_SECRET      # a long random value
+# open https://<your domain>/pups/recover (or on AUTH_HOST)
+npx wrangler secret delete RECOVERY_SECRET
+```
+
+Viewing a page needs a session. In auth subdomain mode that is the cookie. In same-domain mode, `owner.js` keeps a **page session** after your first confirmation: a signed token in the memory of the open page, never in a cookie or storage, sent in the `PUPS-Session` header. The pages then load without a full reload, and moving between them or reloading their content needs no new confirmation. The session ends after 15 minutes without use, an hour after the confirmation, when you reload the page or close the tab, and when the password changes. Owner pages are sent with `Cross-Origin-Opener-Policy: same-origin` and can't be framed, so no page of your website can reach into them.
 
 ### Auth subdomain mode (recommended if your domain runs web applications)
 
-Set `AUTH_HOST` to e.g. `id.tim.example.com` and attach that host to the same Worker as a second custom domain. The OAuth endpoints and owner pages then live on that host, isolated by the browser's same-origin policy from any script on your main domain. Only the issuer and the endpoint URLs change; your identity (`me`) stays `https://tim.example.com/`. In this mode the owner gets a 30-day `__Host-` session cookie. In same-domain mode the server never sets a cookie, so you confirm every owner action with your passkey or password.
+Set `AUTH_HOST` to e.g. `id.tim.example.com` and attach that host to the same Worker as a second custom domain. The OAuth endpoints and owner pages then live on that host, isolated by the browser's same-origin policy from any script on your main domain. Only the issuer and the endpoint URLs change; your identity (`me`) stays `https://tim.example.com/`. In this mode the owner gets a 30-day `__Host-` session cookie. In same-domain mode the server never sets a cookie: you confirm once per page load (see the page session above), and every change.
 
 ## Configuration
 
@@ -65,6 +77,7 @@ All settings are `vars` in `wrangler.jsonc`, plus one secret.
 | Name | Default | Meaning |
 | --- | --- | --- |
 | `BOOTSTRAP_SECRET` (secret) | — | Single-use secret that protects `/pups/setup`. At least 16 characters. |
+| `RECOVERY_SECRET` (secret) | — | Set only when you lost your passkey: opens `/pups/recover`, see [Lost passkey](#lost-passkey). Each value works once. At least 16 characters. |
 | `OWNER_HOST` | request host | Your domain, e.g. `tim.example.com`. It is your identity (`me`). Set it in production. |
 | `AUTH_HOST` | — | Optional auth subdomain, e.g. `id.tim.example.com`. Requires `OWNER_HOST`. |
 | `PUBLIC_BASE` | `https://<OWNER_HOST>/files/` | Base URL for public reads, e.g. a CDN. It should stay on your own host, see RFC-6 "Public URLs". It must be served by this Worker, or by a CDN that pulls through it, never directly by a public R2 bucket (see [Private areas](#private-areas)); an `r2.dev` URL is rejected. |
@@ -135,6 +148,7 @@ The Worker has a small built-in receiver, the same as the PHP and Bunny implemen
 - **Mentions** ([RFC-11](https://github.com/bigwide-net/RFCs/blob/main/RFC-11-Mentions.md)): other sites send a webmention to `/pups/mention` when a post names `@yourdomain` or replies to one of your posts. The generated `host-meta.json` links it (rel `https://bigwide.net/ns/mention`); a stored `host-meta.json` gets the link once, and if you remove it, it stays removed. The configuration document says `mention_endpoint`.
 - **Comments** ([RFC-4](https://github.com/bigwide-net/RFCs/blob/main/RFC-4-Feed-Submissions.md)) on your feeds, if a feed names `/pups/comments` in `_submissions.url` (`comment_endpoint` in the configuration document). They are checked against the feed's rules, including the formatting the policy allows ([RFC-5](https://github.com/bigwide-net/RFCs/blob/main/RFC-5-Comment-HTML.md): `allowStyle`, `allowLinks`, `allowImages` …; a missing one is off), and land in your inbox. In a kept feed with `republish: "full"` or `"summary"`, *Publish Comment* publishes one in the comment feed of the post or comment it answers (`/feed/comments/<index>.json`, RFC-7 "Publishing comments"). `/pups/comments/status/s-…` tells the sender how it went.
 - **Auto-moderation**, off by default. On the page *Comments* (`/pups/comment-settings`) you can enter the API key of an OpenAI-compatible chat API (OpenRouter by default, model `openai/gpt-5-nano`; both can be changed), your own criteria, a threshold (90 % by default) and a daily limit of tokens in thousands (500 by default, at most 10,000). A model then rates each comment against general rules (spam, scams, illegal and adult content, abuse, personal data) and your criteria; comments rated at least as likely acceptable as the threshold are published at once, all others wait in your inbox with the rating. If the API fails or the day's tokens are used up, comments simply wait in your inbox. Your own comments, from a feed on your domain, are always published at once.
+- **Telling people about published comments** ([RFC-11](https://github.com/bigwide-net/RFCs/blob/main/RFC-11-Mentions.md)): when a comment is published, the author of the comment it answers gets a reply mention, unless they wrote RFC-4's `notifyReplies: false` on their comment, and every other `@domain` it names a mention by name; never the comment's author or you. Edits and deletes send them again. They go out after the response, through the same queue; failed deliveries are retried for about a day.
 - Webmentions are answered at once (`202`, or `201` for comments) and checked after the response, with `waitUntil()`: the Worker fetches the post (1 MB, 10 s, 3 redirects; `global_fetch_strictly_public` keeps it on public addresses), and puts it into the inbox if it really names you or replies to you. At most 100 webmentions wait, 5 per site (`429` beyond). Each request checks at most 4, which keeps it under the 50 subrequests a request may make on the free plan; the next webmention picks up the rest.
 - **Limits.** The inbox holds 100 items, 10 per site. Mentions make room for new ones after 30 days or when the inbox is full; comments are never dropped, a comment that doesn't fit is refused.
 - **Dismiss.** Every item has an RFC-9 action that removes it (`/pups/inbox/action`, with a key only your inbox contains), and a link to a page that asks first (`/pups/inbox/dismiss`) for readers without actions.

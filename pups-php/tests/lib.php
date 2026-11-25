@@ -166,6 +166,8 @@ final class T
     public array $web = [];
     /** URLs fetched for webmention checks, in order. */
     public array $fetched = [];
+    /** The POST requests the server made, such as mentions sent: [url, body], answered from `web`. */
+    public array $posted = [];
     /** Added to the clock, in ms. */
     public int $offset = 0;
 
@@ -185,6 +187,10 @@ final class T
                 $this->fetched[] = $url;
                 return $this->web[$url] ?? ['status' => 404, 'headers' => [], 'body' => 'not found'];
             });
+        $this->ctx->send = function (string $url, array $headers, string $body) {
+            $this->posted[] = [$url, $body];
+            return $this->web[$url] ?? ['status' => 404, 'headers' => [], 'body' => 'not found'];
+        };
         if ($withOwner && !$this->ctx->state->owner())
             $this->ctx->state->createOwner(hashPassword(PASSWORD), null);
     }

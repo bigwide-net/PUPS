@@ -1,7 +1,7 @@
 import { expect } from 'vitest'
 import { randomToken, s256 } from '../src/crypto'
 import { handle } from '../src/index'
-import { type Env, envFrom } from '../src/settings'
+import { type Env, envFrom, store } from '../src/settings'
 import { ACCESS_KEY, cimdFetches, clientDocs, installFetch, STORAGE_HOST, ZONE } from './fakes'
 
 export { cimdFetches }
@@ -31,6 +31,10 @@ export const env = testEnv()
 let envOverride: Env | undefined
 /** Runs every following call() with this environment instead of the default one. */
 export const useEnv = (e: Env | undefined) => envOverride = e
+/** Runs every following call() with these variables added; without, with the default environment. */
+export const useVars = (vars?: Record<string, string>) => useEnv(vars && testEnv(vars))
+/** The owner's store, for tests that change the credentials directly. */
+export const ownerStore = () => store(env)
 
 /** Every response is checked: same-domain mode never sets a cookie. */
 export async function call(path: string, init?: RequestInit): Promise<Response> {

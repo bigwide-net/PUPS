@@ -164,3 +164,77 @@ test('owner pages: no CORS, no cookies, strict CSP, assets served', function () 
     eq([$css->status, $css->header('content-type')], [200, 'text/css; charset=utf-8']);
     contains($t->get('/pups/assets/owner.js')->text, 'navigator.credentials');
 });
+
+/** Confirms on the apps page as owner.js does, and returns the page session it gets. */
+function startSession(T $t, string $password = PASSWORD): string
+{
+    $res = $t->post('/pups/apps', ['show' => '1', 'password' => $password], ['pups-session' => 'new']);
+    eq($res->status, 200);
+    return $res->header('pups-session');
+}
+
+test('page session: starts with a confirmation, only for owner.js, and then shows the pages without one', function () {
+    $t = new T();
+    eq($t->post('/pups/apps', ['show' => '1', 'password' => PASSWORD])->header('pups-session'), null);
+    eq($t->get('/pups/apps', ['pups-session' => 'new'])->header('pups-session'), null);
+    $session = startSession($t);
+    ok((bool) preg_match('/^[\w-]+\.[\w-]+$/', $session), $session);
+    foreach (['/pups/apps', '/pups/homepage', '/pups/sign-in', '/pups/server'] as $p) {
+        $res = $t->get($p, ['pups-session' => $session]);
+        eq([$p, str_contains($res->text, 'Confirm that you are the owner'), (bool) $res->header('pups-session'), $res->header('cross-origin-opener-policy'), $res->header('set-cookie')],
+            [$p, false, true, 'same-origin', null]);
+        contains($res->header('content-security-policy'), "connect-src 'self'");
+    }
+    contains($t->post('/pups/server', ['show' => '1'], ['pups-session' => $session])->text, '<h2>Checks</h2>', 'Reload needs no confirmation');
+    eq($t->get('/oauth/authorize')->header('cross-origin-opener-policy'), null, 'the consent screen keeps its opener');
+});
+
+test('page session: every change still needs a confirmation, which starts a new session', function () {
+    $t = new T();
+    $session = startSession($t);
+    $res = $t->post('/pups/sign-in', ['new_password' => 'my new password', 'new_password2' => 'my new password'], ['pups-session' => $session]);
+    contains($res->text, 'Please confirm with your passkey or password.');
+    contains($res->text, '<h2 id="passkeys-heading">', 'the page, not the unlock page');
+    $res = $t->post('/pups/sign-in', ['password' => PASSWORD, 'new_password' => 'my new password', 'new_password2' => 'my new password'], ['pups-session' => $session]);
+    contains($res->text, 'Your password was changed');
+    // The new password ends the other pages' sessions; this page has a new one.
+    contains($t->get('/pups/apps', ['pups-session' => $session])->text, 'Confirm that you are the owner');
+    contains($t->get('/pups/apps', ['pups-session' => $res->header('pups-session')])->text, 'Apps that can write to');
+});
+
+test('page session: a changed session and one that expired are ignored', function () {
+    $t = new T();
+    $session = startSession($t);
+    $locked = fn(string $s) => str_contains($t->get('/pups/apps', ['pups-session' => $s])->text, 'Confirm that you are the owner');
+    ok($locked(substr($session, 0, -2) . (str_ends_with($session, 'AA') ? 'BB' : 'AA')), 'changed');
+    $t->offset += 14 * 60_000;
+    $renewed = $t->get('/pups/apps', ['pups-session' => $session])->header('pups-session');
+    $t->offset += 14 * 60_000;
+    eq([$locked($renewed), $locked($session)], [false, true], 'renewed with use, ended after 15 minutes without');
+    $t->offset += 33 * 60_000;
+    ok($locked($renewed), 'at most an hour after the confirmation');
+});
+
+test('passkeys: while the owner has one, the password is not accepted, and the pages have no password field', function () {
+    $t = new T();
+    $a = new Authenticator('alice.pups.test', ORIGIN);
+    $page = $t->post('/pups/sign-in', ['password' => PASSWORD]);
+    contains($t->post('/pups/sign-in', ['password' => PASSWORD, 'passkey_registration' => $a->create(pageJson($page->text, 'passkey-create-options'))])->text, 'The passkey was added');
+    $unlock = $t->get('/pups/apps');
+    notContains($unlock->text, 'name="password"');
+    contains($unlock->text, '<div data-confirm hidden>');
+    $res = $t->post('/pups/apps', ['show' => '1', 'password' => PASSWORD]);
+    eq($res->status, 401);
+    contains($res->text, 'Confirm with your passkey. The password works only while you have no passkey.');
+    // Removed from the data file, the passkey no longer stands in the way: the password works again.
+    $t->ctx->state->removePasskey($t->ctx->state->owner()['passkeys'][0]['id']);
+    eq($t->post('/pups/apps', ['show' => '1', 'password' => PASSWORD])->status, 200);
+});
+
+test('password confirmation: in a dialog of owner.js, and a field only without JavaScript', function () {
+    $t = new T();
+    $html = $t->get('/pups/apps')->text;
+    contains($html, '<div data-confirm data-legend="Confirm that it is you" data-label="Password">
+<noscript><fieldset>');
+    eq(substr_count($html, 'name="password"'), 1);
+});

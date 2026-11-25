@@ -6,7 +6,7 @@
 
 namespace Pups;
 
-foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments', 'moderation', 'markdown', 'commenthtml'] as $f)
+foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments', 'sender', 'moderation', 'markdown', 'commenthtml'] as $f)
     require_once __DIR__ . "/lib/$f.php";
 foreach (['discovery', 'hostmeta', 'files', 'oauth', 'admin', 'setup', 'homepage', 'mentions', 'inbox'] as $f)
     require_once __DIR__ . "/handler/$f.php";
@@ -24,6 +24,7 @@ function handle(Request $req, Ctx $ctx): Response
     $rel = $b === '' ? $abs : ($abs === $b ? '/' : (str_starts_with($abs, "$b/") ? substr($abs, strlen($b)) : null));
     $ownerPage = $rel !== null && in_array($rel, OWNER_PAGES, true);
     ensureMentionLink($ctx);
+    $ctx->pageSession = null;
     try {
         if ($req->method === 'OPTIONS' && !$ownerPage)
             $res = preflight();
@@ -37,6 +38,8 @@ function handle(Request $req, Ctx $ctx): Response
     }
     if (!$ownerPage)
         $res->set(corsHeaders());
+    elseif ($ctx->pageSession !== null && $req->header(PAGE_HEADER) !== null)
+        $res->set([PAGE_HEADER => pageSessionToken($ctx, $ctx->pageSession)]);
     if (str_starts_with($c->origin, 'https:'))
         $res->set(['Strict-Transport-Security' => 'max-age=31536000']);
     return $res;

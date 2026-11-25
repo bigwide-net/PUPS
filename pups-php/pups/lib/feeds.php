@@ -10,7 +10,8 @@ namespace Pups;
  *
  * A parsed feed: ['url', 'title', 'account', 'submissions' (?array), 'next' (?string),
  * 'updates' (?string: the feed file of an RFC-13 archive), 'page' (true for an HTML page), 'items']. An item: ['id' (?string), 'url', 'title', 'html',
- * 'text', 'markdown', 'author', 'account', 'inReplyTo', 'date', 'allowComments', 'links'].
+ * 'text', 'markdown', 'author', 'account', 'inReplyTo', 'date', 'allowComments', 'notifyReplies', 'links'].
+ * `notifyReplies` is false if the author wants no reply mentions (RFC-4 `commenting`, RFC-11 "Opting out").
  */
 
 const FEED_MAX_BYTES = 1024 * 1024;
@@ -226,7 +227,8 @@ function jsonFeed(array $j): array
             'author' => $firstName($it['authors'] ?? null) ?? (is_array($it['author'] ?? null) ? $str($it['author']['name'] ?? null) : null) ?? $feedAuthor,
             'account' => is_array($src['accounts'] ?? null) ? $str($src['accounts']['socialspec'] ?? null) : null,
             'inReplyTo' => $str($src['inReplyTo'] ?? null), 'date' => isoDate($str($it['date_published'] ?? null)),
-            'allowComments' => !is_array($it['_commenting'] ?? null) || ($it['_commenting']['allowComments'] ?? null) !== false, 'links' => [],
+            'allowComments' => !is_array($it['_commenting'] ?? null) || ($it['_commenting']['allowComments'] ?? null) !== false,
+            'notifyReplies' => !is_array($it['_commenting'] ?? null) || ($it['_commenting']['notifyReplies'] ?? null) !== false, 'links' => [],
         ];
     }
     $src = is_array($j['_source'] ?? null) ? $j['_source'] : [];
@@ -278,16 +280,19 @@ function rssFeed(string $xml): ?array
         $id = $text($it->guid);
         if ($id === null)
             continue;
-        $closed = false;
-        foreach (NS_RM as $ns)
-            $closed = $closed || (count($it->children($ns)->commenting) && strtolower(trim((string) $it->children($ns)->commenting->children($ns)->allowComments)) === 'false');
+        $off = function (string $field) use ($it) {
+            foreach (NS_RM as $ns)
+                if (count($it->children($ns)->commenting) && strtolower(trim((string) $it->children($ns)->commenting->children($ns)->$field)) === 'false')
+                    return true;
+            return false;
+        };
         $items[] = [
             'id' => $id, 'url' => $text($it->link), 'title' => $text($it->title),
             'html' => $text($it->children(NS_CONTENT)->encoded) ?? $text($it->description), 'text' => null,
             'markdown' => $text($it->children(NS_SOURCE)->markdown),
             'author' => $text($it->children(NS_DC)->creator) ?? $text($it->author),
             'account' => rssAccount($it), 'inReplyTo' => $text($it->children(NS_SOURCE)->inReplyTo),
-            'date' => isoDate($text($it->pubDate)), 'allowComments' => !$closed, 'links' => [],
+            'date' => isoDate($text($it->pubDate)), 'allowComments' => !$off('allowComments'), 'notifyReplies' => !$off('notifyReplies'), 'links' => [],
         ];
     }
     return ['title' => $text($ch->title), 'account' => rssAccount($ch), 'submissions' => $submissions, 'next' => $next, 'updates' => null, 'page' => false, 'items' => $items];
@@ -350,7 +355,7 @@ function parseHtmlPage(string $html): array
         'id' => null, 'url' => $url ? ($url->getAttribute('href') ?: null) : null,
         'title' => $entry ? $text(firstWithClass($entry, 'p-name')) : $pageTitle,
         'html' => $root ? innerHtml($content ?? $root) : '', 'text' => null, 'markdown' => null,
-        'author' => $authorName, 'account' => null, 'inReplyTo' => $reply[0] ?? null, 'date' => null, 'allowComments' => true,
+        'author' => $authorName, 'account' => null, 'inReplyTo' => $reply[0] ?? null, 'date' => null, 'allowComments' => true, 'notifyReplies' => true,
         'links' => array_values(array_unique([...$reply, ...$other])),
     ];
     // A p-name that is the whole entry (an h-entry without e-content) is no title.

@@ -126,11 +126,11 @@ export interface HomepagePage {
   error?: string
 }
 
-/** /pups/homepage before the owner confirmed (same-domain mode). */
+/** /pups/homepage before the owner confirmed (same-domain mode without a page session). */
 export const homepageUnlockPage = (site: HomepageSite, confirm: ConfirmOptions, nav: string, error?: string) => page('Homepage', `<h1>Homepage</h1>
 <p>Confirm that you are the owner of <strong>${h(site.ownerHost)}</strong> to change the homepage of your domain.</p>
 ${alert(error)}
-<form method="post">
+<form method="post" data-session>
 ${confirmFields(confirm)}
 <p><button type="submit" name="show" value="1">Continue</button></p>
 </form>`, { site: site.ownerHost, nav, status: error ? 401 : 200 })
@@ -153,7 +153,7 @@ ${INTRO}
 ${installed ? `<p>webpup is the homepage of <a href="${home}">${h(site.ownerHost)}</a>. Every post has a page of its own on it, and apps that
 write your feeds link new posts to it: <code>host-meta.json</code> tells them the address, <code>${h(webpupPostUrlTemplate(site.ownerOrigin))}</code>.</p>`
     : `<p>Your domain has no homepage yet: <a href="${home}">${h(site.ownerHost)}</a> forwards to these pages.</p>`}
-<form method="post">
+<form method="post" data-session>
 <fieldset>
 <legend>Theme</legend>
 ${choices.join('\n')}

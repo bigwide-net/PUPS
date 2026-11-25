@@ -208,7 +208,7 @@ function homepageEndpoint(Request $req, Ctx $ctx): Response
         $form = $req->isForm() ? $req->form() : [];
         $do = field($form, 'webpup');
         $g = guardOwner($req, $ctx, 'Homepage', 'Confirm that you are the owner of <strong>' . h($c->host) . '</strong> to change the homepage of your domain.',
-            '/pups/homepage', $do === 'install' ? 'install webpup' : ($do === 'remove' ? 'remove webpup' : 'view homepage page'));
+            '/pups/homepage', $do === 'install' ? 'install webpup' : ($do === 'remove' ? 'remove webpup' : 'view homepage page'), fn($err) => homepagePage($ctx, null, $err));
         if ($g instanceof Response)
             return $g;
         $kind = homepageKind($c);
@@ -264,7 +264,7 @@ when your apps change these files.</p>';
 write your feeds link new posts to it: <code>host-meta.json</code> tells them the address, <code>' . h(webpupPostUrlTemplate($c)) . '</code>.</p>'
             : '<p>Your domain has no homepage yet: <a href="/">' . h($c->host) . '</a> forwards to these pages.</p>')
         . ($outdated ? "\n<p role=\"note\">This version of PUPS comes with another version of webpup. Save to install it.</p>" : '') . '
-<form method="post">
+<form method="post" data-session>
 <fieldset>
 <legend>Theme</legend>
 ' . implode("\n", $choices) . '
