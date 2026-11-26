@@ -49,6 +49,8 @@ export interface Feed {
   next?: string
   /** The feed file of an RFC-13 archive. */
   updates?: string
+  /** The item an RFC-7 comment feed answers (`_pups.inReplyTo`): a post, or a comment one level up. */
+  parent?: string
   /** An HTML page with one post. */
   page: boolean
   items: Post[]
@@ -275,7 +277,8 @@ function jsonFeed(j: Record<string, any>): Omit<Feed, 'url'> {
   return {
     title: str(j.title), account: str(obj(obj(j._source)?.accounts)?.socialspec), submissions: obj(j._submissions),
     // Feed files point to their newest archive with _archive.archive_url; archives to their feed file with updates_url.
-    next: str(j.next_url) ?? archive('archive_url'), updates: archive('updates_url'), page: false, items,
+    next: str(j.next_url) ?? archive('archive_url'), updates: archive('updates_url'),
+    parent: str(obj(j._pups)?.inReplyTo), page: false, items,
   }
 }
 

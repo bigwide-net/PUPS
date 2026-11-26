@@ -191,6 +191,41 @@ describe('mentions', () => {
     expect([r3._actions.actions[0].text, r1._actions.actions[0].text]).toEqual([
       'Reply from @bob.example.', 'Reply from rm.example.'])
   })
+
+  it("arrive as replies to the owner's comments in RFC-7 comment feeds, whose feed file has the submissions", async () => {
+    // As on rhinoreader.com: the owner commented on a post that is in an archive by now. The comment feeds carry no
+    // _submissions; their _pups.inReplyTo leads to the archive, whose updates_url leads to the feed file that has them.
+    const { r, files, web } = await testReceiver()
+    const rh = 'https://rhino.example'
+    const pups = (parent: string) => ({ _pups: { pupsControlled: true, inReplyTo: parent } })
+    const mine = (id: string) => ({ id, content_html: '<p>Mine</p>', _source: { accounts: { socialspec: '@alice.pups.test' } } })
+    const reply = (id: string, target: string) => ({ id, content_text: 'Re', _source: { inReplyTo: target } })
+    web.set(`${rh}/feed.json`, feedDoc([{ id: 'new', content_text: 'New' }],
+      { _submissions: { url: `${rh}/pups/comments` }, _archive: { archive_url: `${rh}/feed/feed.000000.json` } }))
+    web.set(`${rh}/feed/feed.000000.json`, feedDoc([{ id: 't2w', content_text: 'Post 4' }], { _archive: { updates_url: `${rh}/feed.json` } }))
+    web.set(`${rh}/feed/comments/3.json`, feedDoc([mine('s-x')], pups(`${rh}/feed/feed.000000.json#t2w`)))
+    // A reply to the owner's comment, and the owner's answer to it, one level deeper.
+    web.set(`${rh}/feed/comments/3/s-x.json`, feedDoc([reply('s-y', `${rh}/feed/comments/3.json#s-x`), mine('s-z')], pups(`${rh}/feed/comments/3.json#s-x`)))
+    web.set(`${rh}/feed/comments/3/s-x/s-z.json`, feedDoc([reply('s-w', `${rh}/feed/comments/3/s-x.json#s-z`)], pups(`${rh}/feed/comments/3/s-x.json#s-z`)))
+    // Not republished for the owner: a comment feed of a feed without submissions, and one whose _pups.inReplyTo
+    // leaves the host.
+    web.set('https://plain.example/feed.json', feedDoc([{ id: 'p', content_text: 'Post' }]))
+    for (const [host, parent] of [['plain.example', 'https://plain.example/feed.json#p'], ['away.example', `${rh}/feed.json#new`]]) {
+      web.set(`https://${host}/comments/1.json`, feedDoc([mine('c')], pups(parent)))
+      web.set(`https://${host}/comments/1/c.json`, feedDoc([reply('d', `https://${host}/comments/1.json#c`)], pups(`https://${host}/comments/1.json#c`)))
+    }
+    const sent = {
+      [`${rh}/feed/comments/3/s-x.json#s-y`]: `${rh}/feed/comments/3.json#s-x`,
+      [`${rh}/feed/comments/3/s-x/s-z.json#s-w`]: `${rh}/feed/comments/3/s-x.json#s-z`,
+      'https://plain.example/comments/1/c.json#d': 'https://plain.example/comments/1.json#c',
+      'https://away.example/comments/1/c.json#d': 'https://away.example/comments/1.json#c',
+    }
+    for (const [source, target] of Object.entries(sent)) await mentionEndpoint(webmention(MENTION, source, target), r)
+    await processQueue(r)
+    const items = inbox(files).items
+    expect(items.map((i: any) => i._inbox.source).sort()).toEqual([`${rh}/feed/comments/3/s-x.json#s-y`, `${rh}/feed/comments/3/s-x/s-z.json#s-w`])
+    expect(items.every((i: any) => i._inbox.type == 'reply')).toBe(true)
+  })
 })
 
 describe('comments', () => {

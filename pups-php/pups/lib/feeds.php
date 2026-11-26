@@ -9,7 +9,8 @@ namespace Pups;
  * own feeds are read from storage, not over HTTP.
  *
  * A parsed feed: ['url', 'title', 'account', 'submissions' (?array), 'next' (?string),
- * 'updates' (?string: the feed file of an RFC-13 archive), 'page' (true for an HTML page), 'items']. An item: ['id' (?string), 'url', 'title', 'html',
+ * 'updates' (?string: the feed file of an RFC-13 archive), 'parent' (?string: the item an RFC-7
+ * comment feed answers, `_pups.inReplyTo`), 'page' (true for an HTML page), 'items']. An item: ['id' (?string), 'url', 'title', 'html',
  * 'text', 'markdown', 'author', 'account', 'inReplyTo', 'date', 'allowComments', 'notifyReplies', 'links'].
  * `notifyReplies` is false if the author wants no reply mentions (RFC-4 `commenting`, RFC-11 "Opting out").
  */
@@ -241,6 +242,8 @@ function jsonFeed(array $j): array
         'next' => $str($j['next_url'] ?? null) ?? $archive('archive_url'),
         // Archives point to their feed file with _archive.updates_url.
         'updates' => $archive('updates_url'),
+        // RFC-7 comment feeds name the item they answer: a post, or a comment one level up.
+        'parent' => $str(is_array($j['_pups'] ?? null) ? ($j['_pups']['inReplyTo'] ?? null) : null),
         'page' => false, 'items' => $items,
     ];
 }
@@ -295,7 +298,7 @@ function rssFeed(string $xml): ?array
             'date' => isoDate($text($it->pubDate)), 'allowComments' => !$off('allowComments'), 'notifyReplies' => !$off('notifyReplies'), 'links' => [],
         ];
     }
-    return ['title' => $text($ch->title), 'account' => rssAccount($ch), 'submissions' => $submissions, 'next' => $next, 'updates' => null, 'page' => false, 'items' => $items];
+    return ['title' => $text($ch->title), 'account' => rssAccount($ch), 'submissions' => $submissions, 'next' => $next, 'updates' => null, 'parent' => null, 'page' => false, 'items' => $items];
 }
 
 /** The class tokens of an element. */
@@ -361,5 +364,5 @@ function parseHtmlPage(string $html): array
     // A p-name that is the whole entry (an h-entry without e-content) is no title.
     if ($entry && !$content && $item['title'] === $text($entry))
         $item['title'] = null;
-    return ['title' => $pageTitle, 'account' => null, 'submissions' => null, 'next' => null, 'updates' => null, 'page' => true, 'items' => $root ? [$item] : []];
+    return ['title' => $pageTitle, 'account' => null, 'submissions' => null, 'next' => null, 'updates' => null, 'parent' => null, 'page' => true, 'items' => $root ? [$item] : []];
 }

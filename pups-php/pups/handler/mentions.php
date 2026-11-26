@@ -434,8 +434,41 @@ function replyTargetsOwner(Ctx $ctx, array $post, array $feed, string $target): 
     [$url] = splitRef($target);
     if (urlHost($url) === ownerHost($c) || ownerStoragePath($url, $c) !== null)
         return true;
-    // Republished for the owner: a feed with submissions, and the item carries the owner's account.
-    return $t['feed']['submissions'] !== null && accountHost($t['item']['account']) === ownerHost($c);
+    // Republished for the owner: the item carries the owner's account, in a feed with submissions.
+    if (accountHost($t['item']['account']) !== ownerHost($c))
+        return false;
+    try {
+        return republishedFeedSubmissions($ctx, $t['feed']) !== null;
+    } catch (FetchError $e) {
+        return $e->gone ? false : null;
+    }
+}
+
+/** How many feeds republishedFeedSubmissions follows: comment feeds up to the deepest reply, an archive, the feed file. */
+const MAX_FEED_HOPS = 13;
+
+/**
+ * The RFC-4 `_submissions` that apply to a feed on another host (RFC-7 "Receiving comments"): its
+ * own; for an RFC-13 archive, those of its feed file (`_archive.updates_url`); for an RFC-7 comment
+ * feed, which carries none, those of the feed it belongs to, found by following `_pups.inReplyTo`
+ * (a post in the feed file or an archive, or a comment in the comment feed one level up). Only
+ * on the same host. Null if there are none.
+ */
+function republishedFeedSubmissions(Ctx $ctx, array $feed): ?array
+{
+    $host = urlHost($feed['url']);
+    $seen = [];
+    for ($hop = 0; $hop < MAX_FEED_HOPS; $hop++) {
+        $seen[$feed['url']] = true;
+        $next = $feed['updates'] ?? ($feed['submissions'] === null ? $feed['parent'] : null);
+        if ($next === null)
+            return $feed['submissions'];
+        [$next] = splitRef(resolveUrl($feed['url'], $next));
+        if (urlHost($next) !== $host || isset($seen[$next]))
+            return null;
+        $feed = loadFeed($ctx, $next);
+    }
+    return null;
 }
 
 /**

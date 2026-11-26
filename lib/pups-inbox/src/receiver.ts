@@ -436,8 +436,36 @@ async function replyTargetsOwner(r: Receiver, post: Post, feed: Feed, target: st
   if (!answers) return false
   const [url] = splitRef(target)
   if (urlHost(url) == r.ownerHost || r.feeds.ownerPath(url) != undefined) return true
-  // Republished for the owner: a feed with submissions, and the item carries the owner's account.
-  return t.feed.submissions != undefined && accountHost(t.item.account) == r.ownerHost
+  // Republished for the owner: the item carries the owner's account, in a feed with submissions.
+  if (accountHost(t.item.account) != r.ownerHost) return false
+  try {
+    return await republishedFeedSubmissions(r, t.feed) != undefined
+  } catch (e) {
+    if (!(e instanceof FetchError)) throw e
+    return e.gone ? false : undefined
+  }
+}
+
+/** How many feeds republishedFeedSubmissions follows: comment feeds up to the deepest reply, an archive, the feed file. */
+const MAX_FEED_HOPS = 13
+
+/**
+ * The RFC-4 `_submissions` that apply to a feed on another host (RFC-7 "Receiving comments"): its own; for an RFC-13
+ * archive, those of its feed file (`_archive.updates_url`); for an RFC-7 comment feed, which carries none, those of
+ * the feed it belongs to, found by following `_pups.inReplyTo` (a post in the feed file or an archive, or a comment
+ * in the comment feed one level up). Only on the same host. Undefined if there are none.
+ */
+async function republishedFeedSubmissions(r: Receiver, feed: Feed): Promise<Record<string, any> | undefined> {
+  const host = urlHost(feed.url)
+  const seen = new Set<string>()
+  for (let hop = 0; hop < MAX_FEED_HOPS; hop++) {
+    seen.add(feed.url)
+    const ref = feed.updates ?? (feed.submissions == undefined ? feed.parent : undefined)
+    if (ref == undefined) return feed.submissions
+    const [next] = splitRef(resolveUrl(feed.url, ref))
+    if (urlHost(next) != host || seen.has(next)) return
+    feed = await loadFeed(r.feeds, next)
+  }
 }
 
 /**

@@ -242,6 +242,43 @@ test('replies: to the owner\'s items, also in archives, and to items republished
     eq([$r3['_actions']['actions'][0]['text'], $r1['_actions']['actions'][0]['text']], ['Reply from @bob.example.', 'Reply from rm.example.'], 'the host without a verified account');
 });
 
+test('replies: to the owner\'s comments in RFC-7 comment feeds, whose feed file has the submissions', function () {
+    // As on rhinoreader.com: the owner commented on a post that is in an archive by now. The comment
+    // feeds carry no _submissions; their _pups.inReplyTo leads to the archive, whose updates_url
+    // leads to the feed file that has them.
+    $t = receiver();
+    $r = 'https://rhino.example';
+    $pups = fn(string $parent) => ['_pups' => ['pupsControlled' => true, 'inReplyTo' => $parent]];
+    $mine = fn(string $id) => ['id' => $id, 'content_html' => '<p>Mine</p>', '_source' => ['accounts' => ['socialspec' => '@alice.pups.test']]];
+    serve($t, "$r/feed.json", [['id' => 'new', 'content_text' => 'New']], ['_submissions' => ['url' => "$r/pups/comments"], '_archive' => ['archive_url' => "$r/feed/feed.000000.json"]]);
+    serve($t, "$r/feed/feed.000000.json", [['id' => 't2w', 'content_text' => 'Post 4']], ['_archive' => ['updates_url' => "$r/feed.json"]]);
+    serve($t, "$r/feed/comments/3.json", [$mine('s-x')], $pups("$r/feed/feed.000000.json#t2w"));
+    // A reply to the owner's comment, and the owner's answer to it, one level deeper.
+    serve($t, "$r/feed/comments/3/s-x.json", [['id' => 's-y', 'content_text' => 'Yes, it worked.', '_source' => ['inReplyTo' => "$r/feed/comments/3.json#s-x"]],
+        $mine('s-z')], $pups("$r/feed/comments/3.json#s-x"));
+    serve($t, "$r/feed/comments/3/s-x/s-z.json", [['id' => 's-w', 'content_text' => 'And again.', '_source' => ['inReplyTo' => "$r/feed/comments/3/s-x.json#s-z"]]],
+        $pups("$r/feed/comments/3/s-x.json#s-z"));
+    // Not republished for the owner: a comment feed of a feed without submissions, and one whose
+    // _pups.inReplyTo leaves the host.
+    serve($t, 'https://plain.example/feed.json', [['id' => 'p', 'content_text' => 'Post']]);
+    serve($t, 'https://plain.example/comments/1.json', [$mine('c')], $pups('https://plain.example/feed.json#p'));
+    serve($t, 'https://plain.example/comments/1/c.json', [['id' => 'd', 'content_text' => 'Re', '_source' => ['inReplyTo' => 'https://plain.example/comments/1.json#c']]],
+        $pups('https://plain.example/comments/1.json#c'));
+    serve($t, 'https://away.example/comments/1.json', [$mine('c')], $pups("$r/feed.json#new"));
+    serve($t, 'https://away.example/comments/1/c.json', [['id' => 'd', 'content_text' => 'Re', '_source' => ['inReplyTo' => 'https://away.example/comments/1.json#c']]],
+        $pups('https://away.example/comments/1.json#c'));
+    foreach (["$r/feed/comments/3/s-x.json#s-y" => "$r/feed/comments/3.json#s-x", "$r/feed/comments/3/s-x/s-z.json#s-w" => "$r/feed/comments/3/s-x.json#s-z",
+            'https://plain.example/comments/1/c.json#d' => 'https://plain.example/comments/1.json#c',
+            'https://away.example/comments/1/c.json#d' => 'https://away.example/comments/1.json#c'] as $source => $target)
+        webmention($t, MENTION, $source, $target);
+    processQueue($t->ctx);
+    $sources = array_map(fn($i) => $i['_inbox']['source'], inbox($t)['items'] ?? []);
+    sort($sources);
+    eq($sources, ["$r/feed/comments/3/s-x.json#s-y", "$r/feed/comments/3/s-x/s-z.json#s-w"]);
+    foreach (inbox($t)['items'] as $i)
+        eq($i['_inbox']['type'], 'reply');
+});
+
 test('comments: on the owner\'s posts, checked against the feed\'s rules, into the inbox, not published', function () {
     $t = receiver();
     ownerFeed($t, ['requireSocialSpec' => true]);
