@@ -7,7 +7,8 @@ import { type ModerationView, sanitizeText } from 'pups-ui'
  * illegal or adult content, abuse) and the owner's own criteria. A comment rated at least as likely as the threshold
  * (90 % by default) is published at once; all others go into the inbox as before, with the rating. If the model can't
  * be reached, answers nonsense, or the tokens of the day (UTC) are used up, the comment goes into the inbox:
- * moderation never loses a comment.
+ * moderation never loses a comment. Unless the owner turns it off (`notify`), the published comments are in the inbox
+ * too, as replies the owner may reject (inbox.ts publishedItem()).
  */
 
 export const MODERATION_ENDPOINT = 'https://openrouter.ai/api/v1'
@@ -52,6 +53,8 @@ export interface ModerationSettings {
   criteria: string
   /** Thousands of tokens per day. */
   dailyTokens: number
+  /** Whether comments published by auto-moderation go into the inbox, so that the owner can reject them. */
+  notify: boolean
 }
 
 /** Where the server keeps the settings and counts the tokens; `fetch` calls the model (tests replace it). */
@@ -110,6 +113,7 @@ export function moderationSettings(json: string | undefined): ModerationSettings
     threshold: isInt(s.threshold) ? clamp(s.threshold, MODERATION_MIN_THRESHOLD, 100) : MODERATION_THRESHOLD,
     criteria: typeof s.criteria == 'string' ? s.criteria : '',
     dailyTokens: isInt(s.dailyTokens) ? clamp(s.dailyTokens, 1, MODERATION_MAX_DAILY_TOKENS) : MODERATION_DAILY_TOKENS,
+    notify: s.notify !== false,
   }
 }
 
@@ -138,7 +142,7 @@ export function moderationFromForm(form: FormLike, old: ModerationSettings, allo
   const apiKey = form.has('moderation_forget_key') ? undefined : key || old.apiKey
   const s: ModerationSettings = {
     enabled: form.has('moderation_enabled'), ...apiKey && { apiKey }, endpoint, model: get('moderation_model') || MODERATION_MODEL,
-    threshold: Number(threshold), criteria, dailyTokens: Number(daily),
+    threshold: Number(threshold), criteria, dailyTokens: Number(daily), notify: form.has('moderation_notify'),
   }
   if (!/^https:\/\/[^\s/?#]+(\/[^\s?#]*)?$/.test(endpoint) && !(allowHttp && endpoint.startsWith('http://')))
     return { error: `The API endpoint must be an https URL, such as ${MODERATION_ENDPOINT}.` }
@@ -160,7 +164,11 @@ export async function saveModeration(store: ModerationStore, form: FormLike, all
   const s = moderationFromForm(form, moderationSettings(await store.load()), allowHttp)
   if ('error' in s) return s
   await store.save(JSON.stringify(s))
-  return { message: moderationActive(s) ? `Auto-moderation is on: comments rated at least ${s.threshold} % likely acceptable are published at once.` : 'Auto-moderation is off.' }
+  return {
+    message: moderationActive(s)
+      ? `Auto-moderation is on: comments rated at least ${s.threshold} % likely acceptable are published at once${s.notify ? ', and shown in your inbox' : ''}.`
+      : 'Auto-moderation is off.',
+  }
 }
 
 /** The settings for the apps page; `form`, a refused form, is shown again (without the key). */
@@ -177,6 +185,7 @@ export async function moderationView(store: ModerationStore, now: number, form?:
     threshold: v('moderation_threshold', s.threshold), minThreshold: MODERATION_MIN_THRESHOLD,
     criteria: v('moderation_criteria', s.criteria), criteriaChars: MODERATION_CRITERIA_CHARS,
     dailyTokens: v('moderation_daily_tokens', s.dailyTokens), maxDailyTokens: MODERATION_MAX_DAILY_TOKENS,
+    notify: form ? form.has('moderation_notify') : s.notify,
     usedToday: await store.tokens(utcDay(now)),
   }
 }
@@ -210,9 +219,9 @@ export function parseModeration(text: string): ModerationRating | undefined {
 export const moderationApproves = (s: ModerationSettings, rating?: ModerationRating) => !!rating && rating.safe * 100 >= s.threshold
 
 /** The rating as the owner reads it in the inbox. */
-export function moderationNote(r: ModerationRating): string {
+export function moderationNote(r: ModerationRating, lead = 'Auto-moderation'): string {
   const why = r.reason ? ` ${r.reason}` : r.categories.length ? ` ${r.categories.join(', ')}.` : ''
-  return `Auto-moderation: ${Math.round(r.safe * 100)} % likely acceptable.${why}`
+  return `${lead}: ${Math.round(r.safe * 100)} % likely acceptable.${why}`
 }
 
 /**

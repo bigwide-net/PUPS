@@ -9,6 +9,7 @@
 :root {
     --wp-bg: #f6f5f1;            /* page background */
     --wp-surface: #ffffff;       /* the header card, posts */
+    --wp-popup: var(--wp-surface); /* the follow menu and dialog; must be opaque */
     --wp-text: #1d1c1a;          /* text */
     --wp-text-2: #4b4842;        /* secondary text */
     --wp-muted: #6f6b63;         /* meta lines, labels */
@@ -83,7 +84,7 @@
 
     --ink: var(--wp-text);
     --paper: var(--wp-bg);
-    --white: var(--wp-surface);
+    --white: var(--wp-popup);
     --line: var(--wp-line);
     --line-soft: var(--wp-line-soft);
     --dashed: var(--wp-muted);
@@ -95,7 +96,7 @@
     --fd-accent: var(--wp-accent);
     --fd-accent-hover: color-mix(in srgb, var(--wp-accent) 85%, #000);
     --fd-on-accent: var(--wp-on-accent);
-    --fd-accent-on-dark: var(--wp-surface);
+    --fd-accent-on-dark: var(--wp-popup);
 }
 
 * { box-sizing: border-box; }
@@ -135,7 +136,7 @@ body:not([data-state="loading"]) .wp-loading { display: none; }
 /* ---------- Header ---------- */
 
 .wp-header { background: var(--wp-surface); border: 1px solid var(--wp-line); border-radius: var(--wp-radius) var(--wp-radius) 0 0; border-bottom: 0; overflow: hidden; }
-.wp-banner { aspect-ratio: 3 / 1; max-height: 260px; width: 100%; background: var(--wp-banner); }
+.wp-banner { aspect-ratio: 5 / 1; max-height: 260px; width: 100%; background: var(--wp-banner); }
 .wp-banner img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .wp-banner-plain { aspect-ratio: auto; height: 120px; }
 .wp-head { --overlap: 56px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 0 24px; margin-top: calc(-1 * var(--overlap)); }
@@ -152,7 +153,7 @@ body:not([data-state="loading"]) .wp-loading { display: none; }
 .wp-summary { margin: 8px 0 0; font-size: 19px; line-height: 1.45; color: var(--wp-text-2); }
 
 /* Follow split button: "Follow" and the chevron menu (feed URL, "Choose a reader…"). */
-.wp-follow { position: relative; display: flex; }
+.wp-follow { position: relative; display: flex; -webkit-user-select: none; user-select: none; }
 .wp-follow .follow-label { border-radius: 999px 0 0 999px; padding-right: 16px; }
 .wp-follow-more { display: flex; }
 .wp-follow-chevron {
@@ -164,7 +165,7 @@ body:not([data-state="loading"]) .wp-loading { display: none; }
 .wp-follow-more[open] .wp-follow-chevron svg { transform: rotate(180deg); }
 .wp-follow-menu {
     position: absolute; right: 0; top: calc(100% + 6px); z-index: 10; min-width: 220px; padding: 6px; display: flex; flex-direction: column;
-    background: var(--wp-surface); border: 1px solid var(--wp-line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+    background: var(--wp-popup); border: 1px solid var(--wp-line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
 }
 .wp-follow-menu a, .wp-follow-menu button {
     display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 0; border-radius: 6px;
@@ -232,6 +233,16 @@ body:not([data-state="loading"]) .wp-loading { display: none; }
 .wp-post-action { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; color: var(--wp-muted); font: 500 14px var(--wp-ui-font); text-decoration: none; }
 .wp-post-action:hover { color: var(--wp-text); background: var(--wp-bg); }
 .wp-post-reply { margin-left: auto; }
+button.wp-post-action { border: 0; background: none; cursor: pointer; }
+.wp-comments-toggle[aria-expanded="true"] { color: var(--wp-text); }
+
+/* Comments (comments.ts): postviewer's comment lists, below the post's actions; replies indented under their comment. */
+.wp-comments { margin-top: 10px; padding-top: 16px; border-top: 1px solid var(--wp-line-soft); }
+.wp-comments .commentMeta, .wp-comments .commentReplies { font-family: var(--wp-ui-font); }
+.wp-comments .commentBody { font-size: 16px; }
+.wp-comments-note { margin: 0; font: 14px var(--wp-ui-font); color: var(--wp-muted); }
+.wp-comments-error { color: var(--wp-error); }
+.wp-replies { margin: 12px 0 0 2px; padding-left: 14px; border-left: 2px solid var(--wp-line-soft); }
 
 .wp-pager { display: flex; justify-content: space-between; gap: 12px; padding: 24px 0 0; font-family: var(--wp-ui-font); }
 .wp-pager-link { padding: 10px 18px; border: 1px solid var(--wp-line); border-radius: 999px; background: var(--wp-surface); font-weight: 600; font-size: 15px; text-decoration: none; }
@@ -252,6 +263,11 @@ body:not([data-state="loading"]) .wp-loading { display: none; }
 .wp-md pre { overflow-x: auto; padding: 12px 14px; background: var(--wp-bg); border-radius: 6px; }
 
 .wp-count { margin: 18px 0 4px; }
+.wp-following-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 18px 0 4px; }
+.wp-following-head .wp-count { margin: 0; }
+.wp-opml { display: inline-flex; align-items: center; gap: 6px; color: var(--wp-muted); font: 500 14px var(--wp-ui-font); text-decoration: none; }
+.wp-opml:hover { color: var(--wp-text); text-decoration: underline; }
+.wp-follow-site { flex: none; height: 38px; padding: 0 14px; gap: 6px; font-size: 15px; }
 .wp-follow-list { margin: 0; padding: 0; list-style: none; }
 .wp-follow-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--wp-line-soft); }
 .wp-follow-row:last-child { border-bottom: 0; }
@@ -332,7 +348,8 @@ body:not([data-state="loading"]) .wp-loading { display: none; }
     .wp-avatar { width: 92px; height: 92px; border-width: 4px; }
     .wp-actions { margin-top: calc(var(--overlap) + 10px); gap: 8px; }
     .wp-id { padding: 10px 16px 18px; }
-    .wp-name { font-size: 27px; }
+    .wp-name { font-size: 24px; }
+    .fd-head h2 { font-size: 22px; }
     .wp-banner-plain { height: 84px; }
     .wp-main { margin-top: 12px; padding: 0 8px; }
     :where(.wp-tabs[hidden]) + .wp-main { margin-top: 10px; }

@@ -8,7 +8,8 @@ import { type ModerationRating, moderationNote } from './moderation'
  * comments waiting for the owner (RFC-4). This server writes it as `pups`, with conditional writes. Every item has a
  * Dismiss action (RFC-9) with a capability URL, and a link to a confirmation page for readers without actions
  * (RFC-8). Comments on feeds that republish them (RFC-4 `republish: "full"`) also have an Approve action, which
- * publishes them in the post's comment feed (comments.ts).
+ * publishes them in the post's comment feed (comments.ts). Comments that auto-moderation published (moderation.ts) are
+ * replies with a Reject action instead, which removes them again.
  */
 
 export const INBOX_PATH = '/pups/private/inbox.json'
@@ -76,12 +77,24 @@ export function isInboxKey(c: InboxContext, key: unknown): boolean {
   return !diff
 }
 
-/** The page where readers without actions dismiss or approve an item (RFC-8 fallback). */
-export const dismissPageUrl = (c: InboxContext, id: string, action: 'dismiss' | 'approve' = 'dismiss') =>
+export type InboxAction = 'dismiss' | 'approve' | 'reject'
+
+/** What readers ask before they send Reject Comment (RFC-9 `confirm`). */
+export const REJECT_CONFIRM = 'Remove this comment from your site? Its author is told that you rejected it.'
+
+/** The page where readers without actions dismiss, approve or reject an item (RFC-8 fallback). */
+export const dismissPageUrl = (c: InboxContext, id: string, action: InboxAction = 'dismiss') =>
   `${c.base}/pups/inbox/${action}?id=${encodeURIComponent(id)}&key=${c.key}`
 
+/** A link of the fallback for readers without actions (RFC-8), to the page where the owner confirms `action`. */
+const fallbackLink = (c: InboxContext, id: string, action: InboxAction, label: string) =>
+  `<p class="without-extension-actions"><a href="${h(dismissPageUrl(c, id, action))}">${label}</a></p>`
+
+const hasAction = (item: InboxItem, template: string) => Array.isArray(item._actions?.actions) && item._actions.actions.some((a: any) => a?.template == template)
 /** Whether an inbox item has the Approve action: a comment that the owner can publish. */
-export const isApprovable = (item: InboxItem) => Array.isArray(item._actions?.actions) && item._actions.actions.some((a: any) => a?.template == 'approve')
+export const isApprovable = (item: InboxItem) => hasAction(item, 'approve')
+/** Whether an inbox item has the Reject action: a comment that auto-moderation published. */
+export const isRejectable = (item: InboxItem) => hasAction(item, 'reject')
 
 /** The host of an item's source, for the limit per host. */
 const itemSourceHost = (item: InboxItem) => typeof item._inbox?.source == 'string' ? urlHost(item._inbox.source) : undefined
@@ -117,10 +130,14 @@ function newInbox(c: InboxContext): InboxFeed {
     version: 'https://jsonfeed.org/version/1.1',
     title: 'Inbox',
     home_page_url: `${c.base}/pups/apps`,
-    _inbox: { about: INBOX_ABOUT, writer: INBOX_WRITER, categories: [...c.mentions ? ['mentions'] : [], ...c.comments ? ['moderation'] : []] },
+    // Comments that auto-moderation published are replies, in `mentions`.
+    _inbox: { about: INBOX_ABOUT, writer: INBOX_WRITER, categories: [...c.mentions || c.comments ? ['mentions'] : [], ...c.comments ? ['moderation'] : []] },
     _actions: {
       about: ACTIONS_ABOUT, templates: {
         approve: { type: 'button', label: 'Publish Comment', style: 'major', action: `${c.base}/pups/inbox/action?do=approve&id={id}&key=${c.key}` },
+        reject: {
+          type: 'button', label: 'Reject Comment', confirm: REJECT_CONFIRM, action: `${c.base}/pups/inbox/action?do=reject&id={id}&key=${c.key}`,
+        },
         dismiss: { type: 'button', label: 'Dismiss', action: `${c.base}/pups/inbox/action?id={id}&key=${c.key}` },
       },
     },
@@ -224,8 +241,7 @@ export function inboxItem(c: InboxContext, id: string, type: ItemType, source: s
   const approve = publish != undefined
   const url = post.url
   const text = originText(type, source, account, edit, toComment)
-  const link = (action: 'dismiss' | 'approve', label: string) =>
-    `<p class="without-extension-actions"><a href="${h(dismissPageUrl(c, id, action))}">${label}</a></p>`
+  const link = (action: InboxAction, label: string) => fallbackLink(c, id, action, label)
   const from = `<p class="without-extension-actions"><a href="${h(source)}">${h(text)}</a></p>`
   const fallback = from + (approve ? link('approve', 'Publish Comment') : '') + link('dismiss', 'Dismiss')
   const origin = { type: 'display', text, url: source, group: 'origin' }
@@ -255,6 +271,33 @@ export function withModerationNote(item: InboxItem, rating: ModerationRating) {
   item._actions.actions.splice(1, 0, { type: 'display', text: note, group: 'origin' })
   item.content_html += `<p class="without-extension-actions"><small>${h(note)}</small></p>`
 }
+
+/**
+ * The inbox item for a comment that auto-moderation published at `url`, from its item as a submission: a reply
+ * (RFC-12), which needs no decision, with the rating and a link to the comment, Reject Comment and Dismiss.
+ */
+export function publishedItem(c: InboxContext, item: InboxItem, url: string, rating: ModerationRating): InboxItem {
+  const id = String(item.id)
+  const note = moderationNote(rating, 'Published by auto-moderation')
+  const [origin] = item._actions.actions
+  const { republish: _, ...pups } = item._pups ?? {}
+  return {
+    ...item,
+    content_html: String(item.content_html).replace(FALLBACK, '')
+      + `<p class="without-extension-actions"><a href="${h(origin.url)}">${h(origin.text)}</a></p>`
+      + `<p class="without-extension-actions"><small><a href="${h(url)}">${h(note)}</a></small></p>`
+      + fallbackLink(c, id, 'reject', 'Reject Comment') + fallbackLink(c, id, 'dismiss', 'Dismiss'),
+    _inbox: { ...item._inbox, type: 'reply' },
+    _pups: { ...pups, published: url, moderation: rating },
+    _actions: {
+      about: ACTIONS_ABOUT,
+      actions: [origin, { type: 'display', text: note, url, group: 'origin' }, { template: 'reject', group: 'decide' }, { template: 'dismiss', group: 'decide' }],
+    },
+  }
+}
+
+/** The links and notes that inboxItem() adds for readers without actions. */
+export const FALLBACK = /<p class="without-extension-actions">[\s\S]*?<\/p>/g
 
 /** A short excerpt of a post for a mention: its plain text, at most 500 characters. */
 export const excerptHtml = (post: Post) => textHtml(sanitizeText(plainText(post), EXCERPT_CHARS) ?? '')

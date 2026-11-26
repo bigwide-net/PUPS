@@ -31,7 +31,7 @@ const FEED_JSON = JSON_FLAGS | JSON_PRESERVE_ZERO_FRACTION;
 const FEED_COMMENT = 'This feed is kept by a Personal Upload Server (PUPS), following ' . FEED_SPEC
     . '. It contains the newest items; all items are in the archives, starting with the one at _archive.archive_url.';
 /** Top-level fields of the feed file that the server sets, not the apps. */
-const MANAGED_FIELDS = ['version', 'home_page_url', 'feed_url', 'user_comment', 'next_url', 'items', '_archive'];
+const MANAGED_FIELDS = ['version', 'home_page_url', 'feed_url', 'user_comment', 'next_url', 'items', '_archive', 'hubs'];
 /** Names in `/feed/` that belong to the main feed, so no named feed can have them (RFC-7 "Named feeds"). */
 const RESERVED_FEED_NAMES = ['images', 'media', 'comments'];
 
@@ -338,7 +338,7 @@ final class KeptFeed
     private function create(int $n, array $items): \stdClass
     {
         $a = (object) ['version' => JSON_FEED_VERSION];
-        $skip = [...MANAGED_FIELDS, 'hubs', 'author', '_pups', '_submissions'];
+        $skip = [...MANAGED_FIELDS, 'author', '_pups', '_submissions'];
         foreach ($this->doc as $k => $v)
             if (!in_array($k, $skip, true))
                 $a->$k = deepCopy($v);
@@ -636,11 +636,14 @@ final class KeptFeed
         $c = $this->ctx->config;
         $d = (object) ['version' => JSON_FEED_VERSION];
         foreach ($this->doc as $k => $v)
-            if (!in_array($k, ['version', 'items', 'author', 'next_url', '_archive'], true))
+            if (!in_array($k, ['version', 'items', 'author', 'next_url', '_archive', 'hubs'], true))
                 $d->$k = $v;
         $author = $this->doc->author ?? null;
         if ($author instanceof \stdClass && !isset($d->authors))
             $d->authors = [$author];
+        // While the WebSub hub is on (websub.php).
+        if (websubOn($this->ctx))
+            $d->hubs = [(object) ['type' => 'WebSub', 'url' => hubUrl($c)]];
         $d->home_page_url = $c->me;
         $d->feed_url = publicUrl($this->path, $c);
         $d->user_comment = FEED_COMMENT;
@@ -719,6 +722,7 @@ function putKeptFeed(Ctx $ctx, string $path, string $rawPath, string $text, ?arr
     $feed = new KeptFeed($ctx, $path, $existing ? parseJsonFeed($ctx->files->read($path)) : null);
     $feed->apply($body);
     $stored = $feed->commit();
+    websubChanged($ctx, $path);
     Log::event($existing ? 'file.replaced' : 'file.created', ['client' => $grant['clientId'], 'grant' => $grant['id'], 'path' => $path, 'kept' => true, 'etag' => $stored['etag']]);
     $c = $ctx->config;
     return new Response($existing ? 200 : 201, [
@@ -761,12 +765,15 @@ function postItem(Request $req, string $rawPath, Ctx $ctx): Response
             $id = itemId($item) ?? throw new HttpError(400, 'invalid_request', 'A delete names the item by its id');
             $deleted = $feed->delete($id, itemIndex($item)) ?? throw new HttpError(404, 'not_found', "The feed has no item \"$id\"");
             $feed->commit();
+            websubChanged($ctx, $path);
             Log::event('item.deleted', $log + ['id' => $id]);
             return json($deleted);
         }
         $r = $feed->put($item);
-        if ($r['changed'])
+        if ($r['changed']) {
             $feed->commit();
+            websubChanged($ctx, $path);
+        }
         Log::event($r['created'] ? 'item.created' : ($r['changed'] ? 'item.replaced' : 'item.unchanged'), $log + ['id' => itemId($r['item'])]);
         return json(['item' => $r['item'], 'address' => $r['address']], $r['created'] ? 201 : 200, $r['created'] ? ['Location' => $r['address']] : []);
     });

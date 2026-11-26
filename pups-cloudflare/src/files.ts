@@ -1,4 +1,5 @@
 import { hashToken } from './crypto'
+import { feedLinks } from './websub'
 import { feedOf, isKeptPut, postItemEndpoint, putKept, refuseKeptFileWrite, withFeedLock } from './feeds'
 import { checkUploadType, checkUtf8, fileType, servedType } from './filetypes'
 import { header, HttpError, LIMITS, methodNotAllowed, readLimited, readQuery } from './http'
@@ -190,7 +191,7 @@ export async function serve(req: Request, rawPath: string, s: Settings, env: Env
   // which is strongly consistent). An invalid token gets 401.
   const fresh = atStorageBase && hasBearer(req) && await authenticate(req, s, env)
   checkRead(req)
-  return readFile(req, path, env, fresh ? FRESH_READ : atStorageBase ? PUBLIC_READ : {})
+  return readFile(req, path, s, env, fresh ? FRESH_READ : atStorageBase ? PUBLIC_READ : {})
 }
 
 /**
@@ -202,7 +203,7 @@ async function privateRead(req: Request, path: string, s: Settings, env: Env): P
     checkRead(req)
     if (!hasBearer(req)) throw new HttpError(401, 'invalid_token', 'Private files need a bearer token', { 'WWW-Authenticate': 'Bearer' })
     requireScope(await authenticate(req, s, env), path, true)
-    return await readFile(req, path, env, FRESH_READ)
+    return await readFile(req, path, s, env, FRESH_READ)
   } catch (e) {
     if (e instanceof HttpError) Object.assign(e.headers, PRIVATE_ERROR)
     throw e
@@ -210,7 +211,7 @@ async function privateRead(req: Request, path: string, s: Settings, env: Env): P
 }
 
 /** `extra` headers replace or add to the file headers. */
-async function readFile(req: Request, path: string | undefined, env: Env, extra: Record<string, string>): Promise<Response> {
+async function readFile(req: Request, path: string | undefined, s: Settings, env: Env, extra: Record<string, string>): Promise<Response> {
   const type = path && fileType(path)
   if (!type) throw new HttpError(404, 'not_found', 'Not found')
   const key = keyOf(path)
@@ -222,12 +223,16 @@ async function readFile(req: Request, path: string | undefined, env: Env, extra:
     headers.set('ETag', obj.httpEtag)
     headers.set('Last-Modified', obj.uploaded.toUTCString())
     headers.set('Content-Length', String(obj.size))
+    const links = await feedLinks(path!, obj.customMetadata?.kept == 'true', s, env)
+    if (links) headers.set('Link', links)
     return new Response(null, { headers })
   }
 
   const obj = await env.FILES.get(key, { onlyIf: req.headers, range: req.headers })
   if (!obj) throw new HttpError(404, 'not_found', 'Not found')
   headers.set('ETag', obj.httpEtag)
+  const links = await feedLinks(path!, obj.customMetadata?.kept == 'true', s, env)
+  if (links) headers.set('Link', links)
   headers.set('Last-Modified', obj.uploaded.toUTCString())
   if (!('body' in obj)) {
     // A failed precondition: 304 for If-None-Match / If-Modified-Since, 412 otherwise.

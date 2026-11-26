@@ -3,7 +3,7 @@
 namespace Pups;
 
 /**
- * The owner's management pages: apps (grants, host-meta.json), comments (the inbox and
+ * The owner's management pages: apps (grants, host-meta.json), feeds (WebSub), comments (the inbox and
  * auto-moderation), sign-in (passkeys and password) and server (checks and log). Same-domain mode has no cookie session:
  * viewing a page needs the page session of owner.js or a fresh passkey assertion or the password, and every change a fresh
  * confirmation (RFC-6 "Deployment modes").
@@ -12,7 +12,7 @@ namespace Pups;
 function nav(Config $c, string $current): string
 {
     $item = fn(string $p, string $label) => '<li><a href="' . h($c->path($p)) . '"' . ($p === $current ? ' aria-current="page"' : '') . ">$label</a></li>";
-    return "<nav aria-label=\"Owner pages\">\n<ul>\n" . $item('/pups/apps', 'Apps') . "\n" . $item('/pups/homepage', 'Homepage') . "\n"
+    return "<nav aria-label=\"Owner pages\">\n<ul>\n" . $item('/pups/apps', 'Apps') . "\n" . $item('/pups/homepage', 'Homepage') . "\n" . $item('/pups/feed-settings', 'Feeds') . "\n"
         . ($c->comments ? $item('/pups/comment-settings', 'Comments') . "\n" : '') . $item('/pups/sign-in', 'Passkeys and password')
         . "\n" . $item('/pups/server', 'Server') . "\n</ul>\n</nav>";
 }
@@ -251,7 +251,9 @@ function commentsEndpoint(Request $req, Ctx $ctx): Response
         if ($error !== null)
             return commentsPage($ctx, null, $error, $form);
         $s = moderationSettings($ctx);
-        return commentsPage($ctx, moderationActive($s) ? "Auto-moderation is on: comments rated at least {$s['threshold']} % likely acceptable are published at once." : 'Auto-moderation is off.');
+        return commentsPage($ctx, moderationActive($s)
+            ? "Auto-moderation is on: comments rated at least {$s['threshold']} % likely acceptable are published at once" . ($s['notify'] ? ', and shown in your inbox.' : '.')
+            : 'Auto-moderation is off.');
     });
 }
 
@@ -280,13 +282,15 @@ function moderationSection(Ctx $ctx, ?array $form = null): string
     $s = moderationSettings($ctx);
     $v = fn(string $name, string|int $stored) => h($form === null ? (string) $stored : (field($form, $name, MODERATION_CRITERIA_CHARS * 4) ?? ''));
     $enabled = $form === null ? $s['enabled'] : isset($form['moderation_enabled']);
+    $notify = $form === null ? $s['notify'] : isset($form['moderation_notify']);
     $key = $s['apiKey'] === null ? 'e.g. sk-or-v1-…' : 'Stored, ending in …' . substr($s['apiKey'], -4) . '. Leave empty to keep it.';
     return '<section aria-labelledby="moderation-heading">
 <h2 id="moderation-heading">Auto-moderation</h2>
 <p>Comments wait in your inbox until you publish them. With auto-moderation, a language model rates each comment first, and publishes those that are likely acceptable at once.
-You find all others in your inbox as before, with the rating. The model checks for spam, scams, illegal and adult content, abuse and personal data, and for your own criteria.
+You find all others in your inbox as before, with the rating, and, unless you turn it off, the published ones too, where you can reject them. The model checks for spam, scams, illegal and adult content, abuse and personal data, and for your own criteria.
 The comments are sent to the API below, which usually charges for it. If it can\'t be reached, the comments go into your inbox.</p>
 <label><input type="checkbox" name="moderation_enabled" value="1"' . ($enabled ? ' checked' : '') . '> Moderate comments automatically</label>
+<label><input type="checkbox" name="moderation_notify" value="1"' . ($notify ? ' checked' : '') . '> Show the comments it publishes in my inbox, so that I can reject them</label>
 <label>API key
 <input type="password" name="moderation_key" autocomplete="off" spellcheck="false" placeholder="' . h($key) . '">
 <small>Create a new key for this domain only, with a low spending limit (on OpenRouter: a credit limit for the key). It is stored on this server; should it ever leak, it can\'t cost you much, and you can revoke it without affecting anything else.</small></label>
@@ -303,6 +307,67 @@ The comments are sent to the API below, which usually charges for it. If it can\
 <label>Your criteria (optional)
 <textarea name="moderation_criteria" rows="5" maxlength="' . MODERATION_CRITERIA_CHARS . '" placeholder="e.g. Only comments in English or German. No election campaigning. Links to shops are fine.">'
         . $v('moderation_criteria', $s['criteria']) . '</textarea></label>
+</section>';
+}
+
+// --- Feeds ------------------------------------------------------------------------------------
+
+/** /pups/feed-settings: the WebSub hub (websub.php). */
+function feedsEndpoint(Request $req, Ctx $ctx): Response
+{
+    $c = $ctx->config;
+    return htmlErrors($c, function () use ($req, $ctx, $c) {
+        $form = $req->isForm() ? $req->form() : [];
+        $save = isset($form['save_websub']);
+        $g = guardOwner($req, $ctx, 'Feeds', 'Confirm that you are the owner of <strong>' . h($c->host) . '</strong> to change the settings of your feeds.',
+            '/pups/feed-settings', $save ? 'change feed settings' : 'view feeds page', fn($err) => feedsPage($ctx, null, $err, $form));
+        if ($g instanceof Response)
+            return $g;
+        if (!$save)
+            return feedsPage($ctx);
+        $error = saveWebsubSettings($ctx, $form);
+        if ($error !== null)
+            return feedsPage($ctx, null, $error, $form);
+        return feedsPage($ctx, websubOn($ctx) ? 'Saved. Subscribed feed readers learn about new posts right away.' : 'Saved. WebSub is off: feed readers check your feeds as usual.');
+    });
+}
+
+/** The feeds page. `form` is a submitted form that was refused, shown again. */
+function feedsPage(Ctx $ctx, ?string $message = null, ?string $error = null, ?array $form = null): Response
+{
+    $c = $ctx->config;
+    $s = websubSettings($ctx);
+    $enabled = $form === null ? $s['enabled'] : isset($form['websub_enabled']);
+    $max = $form === null ? (string) $s['maxSubscribers'] : (field($form, 'websub_max', 10) ?? '');
+    $trusted = $form === null ? implode("\n", $s['trustedDomains']) : (field($form, 'websub_trusted', 20000) ?? '');
+    $stats = subscriptionStats($ctx);
+    return page($c, 'Feeds', '<h1>Feeds</h1>
+' . status($message) . '
+' . alert($error) . '
+<form method="post" data-session>
+' . websubSection(['enabled' => $enabled, 'max' => $max, 'domains' => $trusted] + $stats) . '
+' . ownerConfirm($ctx, 'Confirm changes') . '
+<p><button type="submit" name="save_websub" value="1">Save</button> <button type="submit" name="show" value="1" data-view>Reload</button></p>
+</form>', ['nav' => nav($c, '/pups/feed-settings'), 'status' => $error ? 400 : 200]);
+}
+
+/** The WebSub section of the feeds page; the same as pups-ui's websubSection(). */
+function websubSection(array $o): string
+{
+    $count = $o['total'] === 1 ? '1 subscription' : number_format($o['total']) . ' subscriptions';
+    return '<section aria-labelledby="websub-heading">
+<h2 id="websub-heading">Real-time updates (WebSub)</h2>
+<p>Feed readers usually check your feeds every hour or so. With WebSub, they can subscribe to your feeds instead: this server tells them
+as soon as an app has posted, and they fetch the feed right away. Only your feeds take part, not their archives or comment feeds.</p>
+<p>' . $count . ' now' . ($o['total'] ? ', ' . number_format($o['trusted']) . ' of them from trusted feed readers' : '') . '.</p>
+<label><input type="checkbox" name="websub_enabled" value="1"' . ($o['enabled'] ? ' checked' : '') . '> Tell subscribed feed readers about new posts</label>
+<label>At most this many subscriptions
+<input type="number" name="websub_max" min="0" max="' . WEBSUB_MAX . '" step="1" value="' . h($o['max']) . '">
+<small>Each subscription means one request to a feed reader for every post. Once the limit is reached, further feed readers are turned away, and check your feeds as before.</small></label>
+<label>Trusted feed readers
+<textarea name="websub_trusted" rows="7" spellcheck="false" autocapitalize="off">' . h($o['domains']) . '</textarea>
+<small>Domains, one per line. Subscriptions from these domains and their subdomains are always accepted, also beyond the limit, at most ' . WEBSUB_MAX_PER_HOST . ' per feed and host.
+The domain can\'t be faked: a subscription only counts once the feed reader has confirmed it at its own address.</small></label>
 </section>';
 }
 

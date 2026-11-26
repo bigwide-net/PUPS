@@ -33,3 +33,4 @@
 .wp-posts .postBody > p:first-of-type::first-letter { float: left; font-size: 3.4em; line-height: 0.85; padding: 4px 8px 0 0; font-family: var(--wp-ui-font); }
 .wp-posts .postImage img { filter: grayscale(1); }
 .wp-btn, .wp-follow .follow-label, .wp-follow-chevron, .wp-pager-link { border-radius: 0; }
+@media (max-width: 600px) { .wp-name { font-size: 32px; } }

@@ -26,6 +26,8 @@ import type { Files } from './storage'
  *   _pups/settings/<key>.json    settings the owner chose (the homepage) and markers (the mention link)
  *   _pups/mentions/queue/<key>.json   webmentions waiting to be checked (pups-inbox)
  *   _pups/mentions/status/<id>.json   comment status pages, for 24 hours
+ *   _pups/websub/topics/<key>.json    the WebSub subscriptions of a feed (websub.ts)
+ *   _pups/websub/pending/<key>.json   a changed feed whose subscribers are being pinged
  */
 
 export const STATE_PREFIX = '_pups/'

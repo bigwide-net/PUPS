@@ -16,6 +16,12 @@ final class Ctx
     public $send;
     /** Set when a webmention was queued: run() works through the queue after the response. */
     public bool $workPending = false;
+    /** @var callable(array): array the pings of the WebSub hub (websub.php): [['url', 'headers'], …] → statuses */
+    public $ping;
+    /** @var list<callable> work after the response, e.g. verifying a WebSub subscription */
+    public array $afterResponse = [];
+    /** The WebSub settings, once read (websubSettings()). */
+    public ?array $websub = null;
     /** The start of the page session of the current request (guardOwner), which handle() renews in the response. */
     public ?int $pageSession = null;
 
@@ -33,6 +39,7 @@ final class Ctx
         $this->http = $http ?? httpFetch($config);
         $this->llm = moderationHttp($config);
         $this->send = mentionHttp($config);
+        $this->ping = websubPinger($config);
     }
 
     public function now(): int

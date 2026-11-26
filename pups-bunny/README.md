@@ -109,17 +109,19 @@ The script keeps your feeds ([RFC-7](https://github.com/bigwide-net/RFCs/blob/ma
 
 RFC-7 asks for a lock around each request. Bunny Storage has none, so requests to the same feed take their turn within one script instance, but not across instances (see [Consistency](#consistency)).
 
+**Real-time updates.** The script is a minimal [WebSub](https://www.w3.org/TR/websub/) hub for your kept feeds, on by default (RFC-7 "Real-time updates"). Feed files name it in `hubs` and in a `Link` header; archives and comment feeds don't take part. Feed readers subscribe at `/pups/websub`; the script checks the callback's host (DNS over HTTPS, as for client metadata) and verifies the subscription there after the response. After an app changed a feed, it sends every subscriber an empty `POST`, 35 per request; while subscribers are left, it calls itself at `/pups/websub/work` (with a key derived from your installation's secret), so that each batch has its own 50 subrequests. The subscriptions of a feed are one file, `_pups/websub/topics/<feed>.json`; a changed feed waits in `_pups/websub/pending/`. On the page *Feeds* you turn the hub off (the script then removes `hubs` from your feed files at once), set how many subscriptions it takes (1000 by default, at most 10,000; further readers get `403` and poll as before), and list the trusted feed readers, whose subscriptions are always accepted: by default Downread, Feedly, Inoreader, Feedbin, NewsBlur, The Old Reader and BazQux, by domain. The callback's domain is what the hub goes by: a `User-Agent` or an IP address can be faked or change, but a subscription only counts once its callback has echoed the hub's random challenge, so nobody can subscribe in the name of another domain. Each callback host gets at most 5 subscriptions per feed.
+
 ## Inbox
 
 The script has the same small built-in receiver as the PHP and Cloudflare versions. It puts what other sites send you into your **inbox**, a private JSON Feed at `/pups/private/inbox.json` ([RFC-12](https://github.com/bigwide-net/RFCs/blob/main/RFC-12-Inbox-Feeds.md)), which your feed reader shows if you allow it `read:/pups/private/inbox.json`. The path is declared automatically while the receiver is on. `MENTIONS` and `COMMENTS` turn the two parts off.
 
 - **Mentions** ([RFC-11](https://github.com/bigwide-net/RFCs/blob/main/RFC-11-Mentions.md)) at `/pups/mention`, when a post names `@yourdomain` or replies to one of your posts. The generated `host-meta.json` links it (rel `https://bigwide.net/ns/mention`); a stored one gets the link once, and if you remove it, it stays removed.
 - **Comments** ([RFC-4](https://github.com/bigwide-net/RFCs/blob/main/RFC-4-Feed-Submissions.md)) on feeds that name `/pups/comments` in `_submissions.url`. They are checked against the feed's rules, including the formatting the policy allows ([RFC-5](https://github.com/bigwide-net/RFCs/blob/main/RFC-5-Comment-HTML.md): `allowStyle`, `allowLinks`, `allowImages` …; a missing one is off), and land in your inbox. In a kept feed with `republish: "full"` or `"summary"`, *Publish Comment* publishes one in the comment feed of the post or comment it answers (`/feed/comments/<index>.json`, RFC-7 "Publishing comments"). `/pups/comments/status/s-…` tells the sender how it went.
-- **Auto-moderation**, off by default. On the page *Comments* (`/pups/comment-settings`) you can enter the API key of an OpenAI-compatible chat API (OpenRouter by default, model `openai/gpt-5-nano`; both can be changed), your own criteria, a threshold (90 % by default) and a daily limit of tokens in thousands (500 by default, at most 10,000). A model then rates each comment against general rules (spam, scams, illegal and adult content, abuse, personal data) and your criteria; comments rated at least as likely acceptable as the threshold are published at once, all others wait in your inbox with the rating. If the API fails or the day's tokens are used up, comments simply wait in your inbox. Your own comments, from a feed on your domain, are always published at once.
+- **Auto-moderation**, off by default. On the page *Comments* (`/pups/comment-settings`) you can enter the API key of an OpenAI-compatible chat API (OpenRouter by default, model `openai/gpt-5-nano`; both can be changed), your own criteria, a threshold (90 % by default) and a daily limit of tokens in thousands (500 by default, at most 10,000). A model then rates each comment against general rules (spam, scams, illegal and adult content, abuse, personal data) and your criteria; comments rated at least as likely acceptable as the threshold are published at once, all others wait in your inbox with the rating. The published ones are in your inbox too, as replies with the rating and a *Reject Comment* button, which removes the comment, and the replies to it, from your site after asking (*Dismiss* only removes it from the inbox); you can turn that off. If the API fails or the day's tokens are used up, comments simply wait in your inbox. Your own comments, from a feed on your domain, are always published at once.
 - **Telling people about published comments** ([RFC-11](https://github.com/bigwide-net/RFCs/blob/main/RFC-11-Mentions.md)): when a comment is published, the author of the comment it answers gets a reply mention, unless they wrote RFC-4's `notifyReplies: false` on their comment, and every other `@domain` it names a mention by name; never the comment's author or you. Edits and deletes send them again. They go out after the response, through the same queue; failed deliveries are retried for about a day.
 - Webmentions are answered at once and checked after the response with `Bunny.v1.waitUntil()`: the script fetches the post (1 MB, 10 s, 3 redirects, after the same DNS check as client metadata documents) and puts it into the inbox if it really names or answers you. They wait as files in `_pups/mentions/queue/`, at most 100, 5 per site. Each request checks at most 2, to stay under the 50 subrequests; the next webmention picks up the rest.
 - The inbox holds 100 items, 10 per site. Mentions make room after 30 days or when the inbox is full; comments are never dropped.
-- **Dismiss**: every item has an RFC-9 action (`/pups/inbox/action`) and a link to a page that asks first (`/pups/inbox/dismiss`).
+- **Dismiss**: every item has an RFC-9 action (`/pups/inbox/action`) and a link to a page that asks first (`/pups/inbox/dismiss`); likewise *Publish Comment* (`/pups/inbox/approve`) and *Reject Comment* (`/pups/inbox/reject`).
 
 ## Homepage
 
@@ -134,7 +136,8 @@ On the page *Homepage* (`/pups/homepage`) you can make **webpup** the homepage o
 ## Limits
 
 - **50 subrequests per request.** Every storage access is one. Most requests need 3 to 10. The apps page needs about 10 plus one per app, so it works for about 40 apps. Checking a webmention takes about a dozen, which is why a request checks at most two. Posting to a kept feed takes about a dozen too; a `PUT` of a feed file that changes many old posts needs one more per archive it touches.
-- **Work after the response.** Whether `waitUntil()` work has its own limits is not documented ([Open questions](#open-questions)). Webmentions that weren't checked stay in the queue for the next one.
+- **Work after the response.** Whether `waitUntil()` work has its own limits is not documented ([Open questions](#open-questions)). Webmentions that weren't checked stay in the queue for the next one. WebSub pings that a run didn't send wait for the next change of the feed, if the script's call of itself fails.
+- **WebSub.** The callback's host is checked for private addresses when the subscription is verified, not before every ping: that would take two more subrequests per subscriber. Two instances that change a feed's subscriptions in the same instant can lose one of the changes.
 - **One owner per script and storage zone**, as in RFC-6.
 
 ## Open questions
@@ -150,6 +153,7 @@ These are undocumented by Bunny. Check them on the first deployment:
 7. Does the pull zone leave `no-cache` and `no-store` responses (404s of files included) uncached? Does it pass requests with `Authorization` to the script (fresh reads, private files)? Does the edge rule for the private areas keep them out of the cache?
 8. Can a script reach private addresses (`10.0.0.1`, `169.254.169.254`)?
 9. Does work passed to `Bunny.v1.waitUntil()` run to its end after the response, and do the CPU and subrequest limits of the request apply to it?
+10. Does a request of the script to its own domain (`/pups/websub/work`) reach the script again, as a request with its own limits?
 
 ## Development
 
@@ -172,6 +176,7 @@ The code is a port of pups-cloudflare. What differs:
 | `src/main.ts` | New: the Edge Script entry point; passes `Bunny.v1.waitUntil` on. |
 | `src/receiver.ts` | The receiver's storage: the queue and status pages as files, the inbox reread before each write. |
 | `src/feeds.ts` | Kept feeds: the lock is per instance only. |
+| `src/websub.ts` | New: the WebSub hub, with the subscriptions of a feed in one file and pings that continue in a call of the script to itself. |
 | `files.ts`, `hostmeta.ts` | Preconditions checked by reading and hashing the current file; byte ranges cut from the buffer. |
 | `auth.ts` | Signed WebAuthn challenges. |
 | `index.ts` | Bundled assets, `ORIGIN_URL` proxy, `X-Forwarded-Proto`. |

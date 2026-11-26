@@ -1,5 +1,5 @@
 // JSON Feed 1.1 (https://www.jsonfeed.org/version/1.1/) with the extensions PUPS clients write:
-// _archive (RFC-13), _source (RFC-1: inReplyTo, markdown), _image (alt text). Items become the Post
+// _archive (RFC-13), _source (RFC-1: inReplyTo, markdown, comments), _image (alt text). Items become the Post
 // objects that postviewer (bigwide-net/lib) renders.
 import { renderMarkdown } from '@lib/postviewer/src/markdown';
 import type {ExternalScript, Post, PostInReplyTo } from '@lib/postviewer/src/types';
@@ -35,7 +35,8 @@ export interface JsonFeedItem {
     tags?: string[];
     attachments?: JsonFeedAttachment[];
     _image?: {alt?: string};
-    _source?: {inReplyTo?: string | {value?: string, isPermaLink?: boolean, feedUrl?: string, feedTitle?: string}, markdown?: string};
+    _source?: {inReplyTo?: string | {value?: string, isPermaLink?: boolean, feedUrl?: string, feedTitle?: string}, markdown?: string,
+        comments?: {feedUrl?: string, count?: number, total?: number}};
     _archive?: {index?: number};
     /** Earlier drafts of RFC-7 kept the index here (RFC-13 "Earlier drafts"). */
     _pups?: {index?: number};
@@ -196,3 +197,24 @@ export const itemIndex = (item: JsonFeedItem) => {
 /** The item's tags, cleaned up. */
 export const itemTags = (item: JsonFeedItem) =>
     (Array.isArray(item.tags) ? item.tags : []).map(str).filter((t): t is string => !!t);
+
+/** Where an item's comments are (RFC-1 `_source.comments`): the comment feed, resolved against `base`, and how many
+ *  there are on all levels (`total`, else the direct replies, `count`), if the feed says. Undefined without a comment
+ *  feed, or when the counts say there are none. */
+export function itemComments(item: JsonFeedItem, base: string): {feedUrl: string, count?: number} | undefined {
+    const c = item._source?.comments;
+    const url = typeof c == 'object' && c ? str(c.feedUrl) : undefined;
+    if (!url)
+        return undefined;
+    let feedUrl: URL;
+    try {
+        feedUrl = new URL(url, base);
+    } catch {
+        return undefined;
+    }
+    if (!/^https?:$/.test(feedUrl.protocol))
+        return undefined;
+    const int = (n: unknown) => Number.isInteger(n) && (n as number) >= 0 ? n as number : undefined;
+    const count = int(c!.total) ?? int(c!.count);
+    return count == 0 ? undefined : {feedUrl: feedUrl.href, count};
+}

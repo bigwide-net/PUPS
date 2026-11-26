@@ -183,6 +183,7 @@ ${o.hasOwner ? homepageSummary(site, o.homepage) : '<p role="note">This server h
 <ul>
 <li><a href="/pups/apps">Your apps</a>: see which apps have access, and remove them.</li>
 <li><a href="/pups/homepage">Homepage</a>: install webpup as the homepage of your domain, choose its theme, or remove it.</li>
+<li><a href="/pups/feed-settings">Feeds</a>: real-time updates for feed readers (WebSub).</li>
 ${site.comments ? '<li><a href="/pups/comment-settings">Comments</a>: the comments waiting for you, and auto-moderation.</li>\n' : ''}<li>Discovery: <a href="${h(site.ownerOrigin)}/.well-known/host-meta.json">/.well-known/host-meta.json</a> → <a href="${h(o.configUrl)}">${h(o.configUrl)}</a>
 · <a href="/.well-known/oauth-authorization-server">OAuth metadata</a></li>
 </ul>`, { site: site.ownerHost, nav: o.nav })

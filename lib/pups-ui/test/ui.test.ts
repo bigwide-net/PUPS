@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appsPage, confirmFields, consentPage, isPrivate, loginPage, page, permissionList, t, type ScopeView } from '../src'
+import { appsPage, confirmFields, consentPage, feedsPage, isPrivate, loginPage, ownerNav, page, permissionList, t, type ScopeView } from '../src'
 
 const site = { ownerHost: 'tim.example.com', ownerOrigin: 'https://tim.example.com', subdomainMode: false }
 const inbox = { path: '/pups/private/inbox/', rels: [], properties: [], description: 'your inbox' }
@@ -101,5 +101,28 @@ describe('texts', () => {
   it('replaces placeholders and leaves unknown ones', () => {
     expect(t('scope.read', { what: '<code>/x</code>' })).toBe('read <code>/x</code>')
     expect(t('scope.read')).toBe('read {what}')
+  })
+})
+
+describe('feeds page', () => {
+  const site = { ownerHost: 'tim.example', ownerOrigin: 'https://tim.example', subdomainMode: false }
+  const websub = { enabled: true, max: 1000, domains: 'feedly.com\n<b>.example', total: 3, trusted: 1, maxLimit: 10000, maxPerHost: 5 }
+
+  it('shows the WebSub settings and the subscriptions, escaped', async () => {
+    const html = await feedsPage(site, { websub, confirm: { hasPassword: true } }).text()
+    expect(html).toContain('name="websub_enabled" value="1" checked')
+    expect(html).toContain('max="10000" step="1" value="1000"')
+    expect(html).toContain('feedly.com\n&lt;b&gt;.example</textarea>')
+    expect(html).toContain('3 subscriptions now, 1 of them from trusted feed readers.')
+    expect(html).toContain('<a href="/pups/feed-settings" aria-current="page">Feeds</a>')
+    const off = await feedsPage(site, { websub: { ...websub, enabled: false, total: 1 }, confirm: { hasPassword: true }, error: 'Bad' })
+    expect(off.status).toBe(400)
+    const text = await off.text()
+    expect(text).not.toContain('checked')
+    expect(text).toContain('1 subscription now, 1 of them')
+  })
+
+  it('is in the owner navigation, after Homepage', () => {
+    expect(ownerNav(site, '').indexOf('Feeds')).toBeGreaterThan(ownerNav(site, '').indexOf('Homepage'))
   })
 })

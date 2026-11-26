@@ -1,6 +1,7 @@
 :root:root {
   --wp-bg: #ffb48a;
   --wp-surface: rgba(255, 255, 255, 0.68);
+  --wp-popup: #fff4ec;
   --wp-text: #2e1a33;
   --wp-text-2: #4a2f4f;
   --wp-muted: #7a5a72;

@@ -8,7 +8,7 @@ import { onGrantRevoked } from './hostmeta'
 import { HttpError, json, methodNotAllowed, readForm, readQuery } from './http'
 import { loginPage } from './owner'
 import { isPrivate, needsStepUp, parseScope, parseScopes, type Scope } from './paths'
-import { CONFIG_PATH, type Env, type Settings, SPEC_VERSION, store } from './settings'
+import { CONFIG_PATH, type Env, type Settings, IMPLEMENTATION, SPEC_VERSION, store } from './settings'
 import { ACCESS_TTL, wantsRefresh } from './store'
 
 // --- Discovery documents ---------------------------------------------------------------
@@ -43,6 +43,8 @@ export const configDocument = (s: Settings) => ({
   kept_feeds: true,
   max_upload_bytes: s.maxUploadBytes,
   spec_version: SPEC_VERSION,
+  // Which server this is, so that clients can recognize problems of one implementation or its hosting.
+  implementation: IMPLEMENTATION,
 })
 
 /** RFC 8414 metadata, for generic OAuth tooling. */

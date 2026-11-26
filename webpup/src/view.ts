@@ -164,20 +164,28 @@ function followRow(f: FollowEntry): HTMLElement {
         newHtml('span', {class: 'wp-follow-name'}, f.name),
         newHtml('span', {class: 'wp-follow-handle'}, f.handle),
     ]));
-    if (f.feedUrl)
-        li.appendChild(iconLink(f.feedUrl, `Feed of ${f.name}`, 'rss'));
+    // Follow opens the follow dialog for the site's feed, as the header's Follow button does (data-follow-open, lib/follow).
+    if (f.feedUrl) {
+        const feed: FollowFeed = {title: f.name, url: f.feedUrl, meta: f.handle, site: f.host};
+        addHtml(li, 'button', {type: 'button', class: 'wp-btn wp-follow-site', 'data-follow': JSON.stringify(feed), 'data-follow-open': '',
+            'aria-label': `Follow ${f.name}`}, [icon('rss', 16), 'Follow']);
+    }
     return li;
 }
 
 const FOLLOWING_PAGE = 100;
 
-function followingPanel(following: FollowEntry[]): HTMLElement {
+function followingPanel(following: FollowEntry[], origin: string): HTMLElement {
     const panel = newHtml('section', {class: 'wp-following'});
     if (!following.length) {
         addHtml(panel, 'p', {class: 'wp-empty'}, 'The list is empty.');
         return panel;
     }
-    addHtml(panel, 'p', {class: 'wp-kicker wp-count'}, `Follows ${following.length.toLocaleString()} site${following.length == 1 ? '' : 's'}`);
+    addHtml(panel, 'div', {class: 'wp-following-head'}, [
+        newHtml('p', {class: 'wp-kicker wp-count'}, `Follows ${following.length.toLocaleString()} site${following.length == 1 ? '' : 's'}`),
+        // The list as it is, to import into a reader.
+        newHtml('a', {class: 'wp-opml', href: `${origin}/.well-known/following.opml`, download: 'following.opml'}, [icon('download', 15), 'Download OPML']),
+    ]);
     const list = addHtml(panel, 'ul', {class: 'wp-follow-list'});
     const more = newHtml('button', {type: 'button', class: 'wp-btn wp-more'});
     let shown = 0;
@@ -290,7 +298,7 @@ export function renderPage(app: HTMLElement, s: Site, requested: Route, ctx: Pos
         title = `Pages · ${name}`;
         done();
     } else if (route.page != 'feed' && route.page != 'post' && route.page != 'notfound' && route.page != 'page' && route.page != 'pages' && hasInfo(s, route.page)) {
-        panel = route.page == 'about' ? aboutPanel(s) : route.page == 'following' ? followingPanel(s.following!) : contactPanel(s.contact!);
+        panel = route.page == 'about' ? aboutPanel(s) : route.page == 'following' ? followingPanel(s.following!, s.origin) : contactPanel(s.contact!);
         title = `${INFO_TABS.find(t => t.page == route.page)!.label} · ${name}`;
         done();
     } else {

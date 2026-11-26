@@ -1,5 +1,5 @@
 import express from 'express';
-import { CONFIG_PATH, PupsConfig, SPEC_VERSION } from '../lib/config';
+import { CONFIG_PATH, IMPLEMENTATION, PupsConfig, SPEC_VERSION } from '../lib/config';
 import { Ctx } from '../lib/context';
 import { escapeHtml as h, page } from 'pups-ui';
 import { send } from '../lib/html';
@@ -30,6 +30,7 @@ export const configDocument = (c: PupsConfig) => ({
     ...c.postFallback && { post_endpoint: `${c.origin}/pups/post` },
     max_upload_bytes: c.maxUploadBytes,
     spec_version: SPEC_VERSION,
+    implementation: IMPLEMENTATION,
 });
 
 /** RFC 8414 metadata, for generic OAuth tooling. */

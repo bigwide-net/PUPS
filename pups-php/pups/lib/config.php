@@ -3,6 +3,8 @@
 namespace Pups;
 
 const VERSION = '0.1.0';
+/** The name in the configuration document's `implementation` (RFC-6). */
+const IMPLEMENTATION = 'pups-php';
 const SPEC_VERSION = '0.1';
 /** Link relation of the configuration document in host-meta.json (placeholder, see RFC-6). */
 const PUPS_REL = 'https://bigwide.net/ns/personal-storage';

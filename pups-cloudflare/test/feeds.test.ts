@@ -133,7 +133,7 @@ describe('kept feeds', () => {
     expect((await call('/feed/talk/comments/0.json')).status).toBe(404)
   })
 
-  it('auto-moderation: the owner turns it on, and comments rated acceptable are published at once', async () => {
+  it('auto-moderation: the owner turns it on, comments rated acceptable are published at once, and the owner may reject them', async () => {
     const COMMENTS = `${ORIGIN}/pups/comments`
     const submissions = { url: COMMENTS, republish: 'full', policies: { comments: { minLength: 2 } } }
     expect((await put('/feed/mod.json', token, feedBody({ _submissions: submissions }), { 'if-none-match': '*' })).status).toBe(201)
@@ -147,9 +147,10 @@ describe('kept feeds', () => {
     expect(html).toContain('<h2 id="moderation-heading">Auto-moderation</h2>')
     expect(html).toContain('Create a new key for this domain only, with a low spending limit')
     expect(html).not.toContain('name="moderation_enabled" value="1" checked')
+    expect(html).toContain('name="moderation_notify" value="1" checked')
     expect(await (await apps({ save_moderation: '1', moderation_enabled: '1' })).text()).toContain('Auto-moderation needs an API key.')
-    html = await (await apps({ save_moderation: '1', moderation_enabled: '1', moderation_key: 'sk-or-v1-secret1234', moderation_daily_tokens: '20' })).text()
-    expect(html).toContain('Auto-moderation is on: comments rated at least 90 % likely acceptable are published at once.')
+    html = await (await apps({ save_moderation: '1', moderation_enabled: '1', moderation_notify: '1', moderation_key: 'sk-or-v1-secret1234', moderation_daily_tokens: '20' })).text()
+    expect(html).toContain('Auto-moderation is on: comments rated at least 90 % likely acceptable are published at once, and shown in your inbox.')
     expect([html.includes('secret1234'), html.includes('ending in …1234'), html.includes('name="moderation_daily_tokens" min="1" max="10000" step="1" value="20"')])
       .toEqual([false, true, true])
 
@@ -165,6 +166,19 @@ describe('kept feeds', () => {
     expect([status.status, status.pubUrl]).toEqual(['success', `${ORIGIN}/feed/mod/comments/0.json#${status.guid}`])
     expect((await stored('/feed/mod/comments/0.json')).items[0].content_html).toBe('<p>Well said.</p>')
     expect(await (await apps({ show: '1' })).text()).toContain('Used today (UTC): 700 tokens.')
+
+    // In the inbox as a reply; rejected on the fallback page, it leaves the site.
+    const item = (await stored('/pups/private/inbox.json')).items.find((i: any) => i.id == status.guid)
+    expect([item._inbox.type, item._actions.actions.map((a: any) => a.template ?? a.type)]).toEqual(['reply', ['display', 'display', 'reject', 'dismiss']])
+    const link = /href="([^"]+)">Reject Comment</.exec(item.content_html)![1]!.replace(/&amp;/g, '&')
+    const page = await (await call(link)).text()
+    expect(page).toContain('Reject this comment?')
+    const hidden = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(page)![1]!
+    expect(await (await call('/pups/inbox/reject', { method: 'POST', body: form({ id: hidden('id'), key: hidden('key') }) })).text())
+      .toContain('The comment was removed from your site.')
+    await settle()
+    expect([(await call('/feed/mod/comments/0.json')).status, (await stored('/pups/private/inbox.json')).items.some((i: any) => i.id == status.guid)]).toEqual([404, false])
+    expect(await (await call(res.headers.get('location')!)).json()).toMatchObject({ status: 'failure', code: 'moderation-rejected' })
     await apps({ save_moderation: '1' })
   })
 })

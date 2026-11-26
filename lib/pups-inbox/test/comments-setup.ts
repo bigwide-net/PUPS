@@ -73,7 +73,7 @@ export async function setupComments(policy: Record<string, unknown> = {}, republ
     await processQueue(r)
     return res.headers.get('location')!
   }
-  const action = (id: string, what: 'approve' | 'dismiss') => inboxActionEndpoint(new Request(
+  const action = (id: string, what: 'approve' | 'dismiss' | 'reject') => inboxActionEndpoint(new Request(
     inbox(files)._actions.templates[what].action.replace('{id}', encodeURIComponent(id)), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }), r)
   return { ...t, host, app, stored, post, status, comment, replyTo, action }
 }

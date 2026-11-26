@@ -48,14 +48,15 @@ small { color: var(--muted); }
 fieldset { margin: 1rem 0; border: 1px solid var(--line); border-radius: 12px; padding: .75rem 1rem; background: var(--card); }
 legend { font-weight: 600; padding: 0 .25rem; }
 label { display: block; margin: .6rem 0; }
-fieldset label:has(input[type=checkbox]) { display: flex; gap: .6rem; align-items: flex-start; }
+label:has(> input[type=checkbox]) { display: flex; gap: .6rem; align-items: flex-start; }
 fieldset label:has(input[type=radio]) { display: flex; gap: .75rem; align-items: center; }
 label img { flex: none; border: 1px solid var(--line); }
-input[type=checkbox] { margin-top: .35rem; }
+/* 20px, centered on the first line of the label (24px). */
+input[type=checkbox] { flex: none; width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--accent); cursor: pointer; }
 fieldset > div { border-top: 1px solid var(--line); }
 fieldset > div > label { margin-bottom: .2rem; }
 details { font-size: .875rem; color: var(--muted); }
-fieldset > div > details { margin: 0 0 .6rem calc(13px + .6rem); }
+fieldset > div > details { margin: 0 0 .6rem calc(20px + .6rem); }
 summary { cursor: pointer; }
 details p, details ul { margin: .25rem 0; }
 details ul { padding-left: 1.1rem; }

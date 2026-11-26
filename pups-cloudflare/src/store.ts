@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { pingAll, type Subscription } from 'pups-feeds'
 import { randomToken } from './crypto'
 import type { Env } from './settings'
 
@@ -19,6 +20,8 @@ export const SESSION_TTL = 30 * 24 * 3600_000
 export const REFRESH_GRACE = 120_000
 const LOGIN_WINDOW = 15 * 60_000
 const LOGIN_FREE_FAILURES = 5
+/** Pings per alarm: an alarm may make at most 50 subrequests on the free plan. */
+export const WEBSUB_BATCH = 40
 
 export interface Passkey {
   id: string
@@ -91,6 +94,9 @@ export class PupsStore extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS mention_queue (key TEXT PRIMARY KEY, job TEXT NOT NULL, received_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS comment_status (id TEXT PRIMARY KEY, status TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, token TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS websub_subscriptions (topic TEXT NOT NULL, callback TEXT NOT NULL, host TEXT NOT NULL, secret TEXT,
+        expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (topic, callback));
+      CREATE TABLE IF NOT EXISTS websub_pending (topic TEXT PRIMARY KEY, hub TEXT NOT NULL, changed_at INTEGER NOT NULL, cursor TEXT NOT NULL);
     `)
     // Refresh state per grant: the current refresh token, the one it replaced and when, the
     // access token issued with the current one, and whether anything issued by that refresh
@@ -530,5 +536,73 @@ export class PupsStore extends DurableObject<Env> {
 
   statusGet(id: string, now = Date.now()): string | undefined {
     return this.one('SELECT status FROM comment_status WHERE id = ? AND expires_at >= ?', id, now)?.status as string | undefined
+  }
+
+  // --- The WebSub hub (pups-feeds' websub.ts) --------------------------------------------
+
+  wsGet(topic: string, callback: string): Subscription | undefined {
+    const r = this.one('SELECT * FROM websub_subscriptions WHERE topic = ? AND callback = ?', topic, callback)
+    return r && {
+      topic: r.topic as string, callback: r.callback as string, host: r.host as string, ...r.secret != null && { secret: r.secret as string },
+      expiresAt: r.expires_at as number, createdAt: r.created_at as number,
+    }
+  }
+
+  wsPut(sub: Subscription) {
+    this.sql.exec(`INSERT INTO websub_subscriptions (topic, callback, host, secret, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (topic, callback) DO UPDATE SET host = excluded.host, secret = excluded.secret, expires_at = excluded.expires_at`,
+    sub.topic, sub.callback, sub.host, sub.secret ?? null, sub.expiresAt, sub.createdAt)
+  }
+
+  wsDelete(topic: string, callback: string) {
+    this.sql.exec('DELETE FROM websub_subscriptions WHERE topic = ? AND callback = ?', topic, callback)
+  }
+
+  /** The subscriptions that haven't expired: all, of a feed, or of a feed and callback host. */
+  wsCount(now: number, topic?: string, host?: string): number {
+    return Number(this.one(`SELECT COUNT(*) AS n FROM websub_subscriptions WHERE expires_at > ?${topic == undefined ? '' : ' AND topic = ?'}${host == undefined ? '' : ' AND host = ?'}`,
+      now, ...topic == undefined ? [] : [topic], ...host == undefined ? [] : [host])?.n ?? 0)
+  }
+
+  /** The callback hosts of the subscriptions that haven't expired, with their number. */
+  wsHosts(now: number): { host: string; n: number }[] {
+    return this.sql.exec('SELECT host, COUNT(*) AS n FROM websub_subscriptions WHERE expires_at > ? GROUP BY host', now).toArray()
+      .map(r => ({ host: r.host as string, n: Number(r.n) }))
+  }
+
+  /** A feed changed: its subscribers are pinged by the alarm, WEBSUB_BATCH at a time. A feed that changes again starts over. */
+  async wsChanged(topic: string, hub: string, now = Date.now()) {
+    if (!this.wsCount(now, topic)) return
+    this.sql.exec(`INSERT INTO websub_pending (topic, hub, changed_at, cursor) VALUES (?, ?, ?, '')
+      ON CONFLICT (topic) DO UPDATE SET hub = excluded.hub, changed_at = excluded.changed_at, cursor = ''`, topic, hub, now)
+    if (await this.ctx.storage.getAlarm() == null) await this.ctx.storage.setAlarm(Date.now())
+  }
+
+  /** The feeds whose subscribers wait for pings. */
+  wsPending(): number {
+    return Number(this.one('SELECT COUNT(*) AS n FROM websub_pending')?.n ?? 0)
+  }
+
+  /** Pings the next batch of subscribers of a changed feed, and sets the alarm again while there are more. */
+  async alarm() {
+    const now = Date.now()
+    this.sql.exec('DELETE FROM websub_subscriptions WHERE expires_at <= ?', now)
+    const job = this.one('SELECT topic, hub, changed_at, cursor FROM websub_pending ORDER BY changed_at LIMIT 1')
+    if (!job) return
+    const [topic, hub, changedAt] = [job.topic as string, job.hub as string, job.changed_at as number]
+    const subs = this.sql.exec('SELECT callback, host, secret FROM websub_subscriptions WHERE topic = ? AND callback > ? ORDER BY callback LIMIT ?',
+      topic, job.cursor, WEBSUB_BATCH).toArray().map(r => ({ topic, callback: r.callback as string, host: r.host as string, ...r.secret != null && { secret: r.secret as string } }))
+    if (subs.length) {
+      const results = await pingAll(hub, subs, fetch)
+      results.forEach((r, i) => {
+        if (r == 'gone') this.wsDelete(topic, subs[i]!.callback)
+        if (r != 'sent') console.log(`websub.${r == 'gone' ? 'gone' : 'failed'}`, JSON.stringify({ topic, callbackHost: subs[i]!.host }))
+      })
+      this.sql.exec('UPDATE websub_pending SET cursor = ? WHERE topic = ? AND changed_at = ?', subs.at(-1)!.callback, topic, changedAt)
+    } else {
+      this.sql.exec('DELETE FROM websub_pending WHERE topic = ? AND changed_at = ?', topic, changedAt)
+      console.log('websub.notified', JSON.stringify({ topic }))
+    }
+    if (this.one('SELECT topic FROM websub_pending LIMIT 1')) await this.ctx.storage.setAlarm(Date.now())
   }
 }

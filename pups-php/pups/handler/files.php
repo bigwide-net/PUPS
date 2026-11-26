@@ -201,6 +201,9 @@ function fileResponse(Request $req, ?string $path, bool $fresh, Ctx $ctx): Respo
     if (!$info)
         throw new HttpError(404, 'not_found', 'Not found');
     $headers = fileHeaders(servedType($type), $fresh) + ['ETag' => $info['etag'], 'Last-Modified' => gmdate('D, d M Y H:i:s', $info['mtime']) . ' GMT'];
+    // WebSub discovery for the feed files of kept feeds.
+    if (isFeedPath($path, $ctx->config) && websubOn($ctx) && isKeptFile($ctx, $path))
+        $headers['Link'] = hubLinks($ctx->config, publicUrl($path, $ctx->config));
     $inm = reqHeader($req, 'if-none-match');
     $ims = $inm === null ? reqHeader($req, 'if-modified-since') : null;
     if (($inm !== null && etagMatches($inm, $info['etag'])) || ($ims !== null && ($t = strtotime($ims)) && $info['mtime'] <= $t))

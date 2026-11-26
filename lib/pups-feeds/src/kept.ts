@@ -30,9 +30,11 @@ const MAX_ITEM_ID = 200
 const FEED_COMMENT = `This feed is kept by a Personal Upload Server (PUPS), following ${FEED_SPEC}. ` +
   'It contains the newest items; all items are in the archives, starting with the one at _archive.archive_url.'
 /** Top-level fields of the feed file that the server sets, not the apps. */
-const MANAGED_FIELDS = ['version', 'home_page_url', 'feed_url', 'user_comment', 'next_url', 'items', '_archive']
+const MANAGED_FIELDS = ['version', 'home_page_url', 'feed_url', 'user_comment', 'next_url', 'items', '_archive', 'hubs']
 /** Names in `/feed/` that belong to the main feed, so no named feed can have them (RFC-7 "Named feeds"). */
 export const RESERVED_FEED_NAMES = ['images', 'media', 'comments']
+
+import { feedHubs } from './websub'
 
 export type Json = null | boolean | number | string | Json[] | JsonObject
 export interface JsonObject { [key: string]: Json }
@@ -64,6 +66,8 @@ export interface FeedHost {
    * `_submissions.url` names it get their `_source.comments` from the server.
    */
   commentEndpoint?: string
+  /** The server's WebSub hub, while it is on (websub.ts): feed files get it as their `hubs`. */
+  hub?: string
 }
 
 /** A declared well-known path, as far as kept feeds care. */
@@ -355,7 +359,7 @@ export class KeptFeed {
    */
   private async create(n: number, items: Item[]): Promise<JsonObject> {
     const a: JsonObject = { version: JSON_FEED_VERSION }
-    const skip = [...MANAGED_FIELDS, 'hubs', 'author', '_pups', '_submissions']
+    const skip = [...MANAGED_FIELDS, 'author', '_pups', '_submissions']
     for (const [k, v] of Object.entries(this.doc))
       if (!skip.includes(k)) a[k] = deepCopy(v)
     if (isObject(a._podcast)) delete a._podcast.liveItems
@@ -594,8 +598,9 @@ export class KeptFeed {
   private async feedFile(): Promise<JsonObject> {
     const d: JsonObject = { version: JSON_FEED_VERSION }
     for (const [k, v] of Object.entries(this.doc))
-      if (!['version', 'items', 'author', 'next_url', '_archive'].includes(k)) d[k] = v
+      if (!['version', 'items', 'author', 'next_url', '_archive', 'hubs'].includes(k)) d[k] = v
     if (isObject(this.doc.author) && d.authors == undefined) d.authors = [this.doc.author]
+    if (this.host.hub) d.hubs = feedHubs(this.host.hub)
     d.home_page_url = this.host.me
     d.feed_url = this.host.publicUrl(this.path)
     d.user_comment = FEED_COMMENT
@@ -675,6 +680,17 @@ export async function putKeptFeed(host: FeedHost, path: string, text: string, st
   const feed = await KeptFeed.open(host, path, parseJsonFeed(storedText))
   await feed.apply(body)
   return feed.commit()
+}
+
+/**
+ * Writes a kept feed file again without changing its items, e.g. after the hub was turned on or off, so that its
+ * `hubs` follow. Undefined if it isn't kept or wouldn't change.
+ */
+export async function rewriteKeptFeed(host: FeedHost, path: string, storedText: string | undefined): Promise<Committed | undefined> {
+  const stored = parseJsonFeed(storedText)
+  if (!stored || !isKept(stored)) return
+  const c = await (await KeptFeed.open(host, path, stored)).commit()
+  return c.text == storedText ? undefined : c
 }
 
 /** Checks the body of a POST to a feed file (RFC-7 "Posting items") and returns the item. Throws 415 and 400. */

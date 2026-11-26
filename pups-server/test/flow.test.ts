@@ -20,6 +20,8 @@ describe('discovery', () => {
             storage_base: `${ORIGIN}/`, public_base: `${ORIGIN}/`, spec_version: '0.1', max_upload_bytes: 26214400,
             host_meta_endpoint: `${ORIGIN}/pups/host-meta`,
         });
+        // The version is package.json's.
+        expect(cfg.body.implementation).toEqual({ name: 'pups-server', version: require('../package.json').version });
         expect(cfg.body.post_endpoint).toBeUndefined();
         const feed = ['https://bigwide.net/ns/feed'];
         expect(cfg.body.well_known_paths).toEqual([

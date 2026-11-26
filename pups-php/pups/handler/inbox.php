@@ -3,10 +3,10 @@
 namespace Pups;
 
 /**
- * Dismissing and approving inbox items: the RFC-9 actions that readers send (POST
- * /pups/inbox/action, with `do=approve` for Approve), and, for readers without actions, the
- * pages that the fallback links open (/pups/inbox/dismiss, /pups/inbox/approve), where the
- * owner confirms. All are authorized by the inbox's capability key, which only apps that can
+ * Dismissing, approving and rejecting inbox items: the RFC-9 actions that readers send (POST
+ * /pups/inbox/action, with `do=approve` for Approve, `do=reject` for Reject), and, for readers
+ * without actions, the pages that the fallback links open (/pups/inbox/dismiss,
+ * /pups/inbox/approve, /pups/inbox/reject), where the owner confirms. All are authorized by the inbox's capability key, which only apps that can
  * read the private inbox know.
  */
 
@@ -45,6 +45,24 @@ function approveItem(Ctx $ctx, string $id, string $via): string
     return $url;
 }
 
+/**
+ * Removes a comment that auto-moderation published, and the replies to it, from the comment feeds
+ * (withdrawComment()), removes it from the inbox, and tells its author on the status page (RFC-4
+ * `moderation-rejected`). Returns whether the comment was still published. Throws 404 if the item
+ * isn't in the inbox, 409 if it can't be rejected.
+ */
+function rejectItem(Ctx $ctx, string $id, string $via): bool
+{
+    $item = findInboxItem($ctx, $id) ?? throw new HttpError(404, 'not_found', 'The comment is not in your inbox anymore.');
+    if (!isRejectable($item))
+        throw new HttpError(409, 'conflict', 'This item can\'t be rejected.');
+    $removed = withdrawComment($ctx, $item['_inbox']['target'], $id);
+    removeInboxItem($ctx, $id);
+    writeStatus($ctx, $id, ['status' => 'failure', 'code' => 'moderation-rejected', 'text' => 'The owner removed the comment.']);
+    Log::event('inbox.rejected', ['id' => $id, 'removed' => count($removed), 'via' => $via]);
+    return (bool) $removed;
+}
+
 /** POST /pups/inbox/action?id=…&key=… (RFC-9 "Performing an action"). */
 function inboxActionEndpoint(Request $req, Ctx $ctx): Response
 {
@@ -62,6 +80,10 @@ function inboxActionEndpoint(Request $req, Ctx $ctx): Response
             $url = approveItem($ctx, $id, 'action');
             return json(['message' => 'Published', 'actions' => [['type' => 'display', 'text' => 'Comment published.', 'url' => $url]]], 200, ['Cache-Control' => 'no-store']);
         }
+        if (field($q, 'do') === 'reject') {
+            rejectItem($ctx, $id, 'action');
+            return json(['message' => 'Rejected', 'actions' => [['type' => 'display', 'text' => 'Comment rejected and removed.']]], 200, ['Cache-Control' => 'no-store']);
+        }
         // Idempotent: dismissing a dismissed item dismisses it.
         dismissItem($ctx, $id, 'action');
     } catch (ForeignInbox $e) {
@@ -72,7 +94,7 @@ function inboxActionEndpoint(Request $req, Ctx $ctx): Response
     return json(['message' => 'Removed from your inbox', 'actions' => [['type' => 'display', 'text' => 'Dismissed']]], 200, ['Cache-Control' => 'no-store']);
 }
 
-/** GET shows the item and a button, POST dismisses or approves it (RFC-9: a link never acts by itself). */
+/** GET shows the item and a button, POST dismisses, approves or rejects it (RFC-9: a link never acts by itself). */
 function dismissPage(Request $req, Ctx $ctx, string $do = 'dismiss'): Response
 {
     $c = $ctx->config;
@@ -92,6 +114,15 @@ function dismissPage(Request $req, Ctx $ctx, string $do = 'dismiss'): Response
 ' . status('The comment is published.') . '
 <p><a href="' . h($url) . '">' . h(visible($url)) . '</a></p>');
         }
+        if ($req->method === 'POST' && $do === 'reject') {
+            try {
+                $removed = rejectItem($ctx, $id, 'page');
+            } catch (HttpError $e) {
+                return errorPage($c, 'Not rejected', $e->getMessage(), $e->status);
+            }
+            return page($c, 'Comment rejected', '<h1>Comment rejected</h1>
+' . status($removed ? 'The comment was removed from your site.' : 'The comment was not published anymore.'));
+        }
         if ($req->method === 'POST') {
             $removed = dismissItem($ctx, $id, 'page');
             return page($c, 'Dismissed', '<h1>Dismissed</h1>
@@ -108,16 +139,23 @@ function dismissPage(Request $req, Ctx $ctx, string $do = 'dismiss'): Response
 ' . status('The item is not in your inbox anymore.'));
     if ($do === 'approve' && !isApprovable($item))
         return errorPage($c, 'Not published', 'This item can\'t be approved.', 409);
-    $what = match ($item['_inbox']['type'] ?? null) { 'submission' => 'comment', 'reply' => 'reply', default => 'mention' };
-    [$verb, $question] = $do === 'approve' ? ['Publish Comment', "Publish this $what?"] : ['Dismiss', "Dismiss this $what?"];
+    if ($do === 'reject' && !isRejectable($item))
+        return errorPage($c, 'Not rejected', 'This item can\'t be rejected.', 409);
+    $what = isRejectable($item) ? 'comment' : match ($item['_inbox']['type'] ?? null) { 'submission' => 'comment', 'reply' => 'reply', default => 'mention' };
+    [$verb, $question] = match ($do) {
+        'approve' => ['Publish Comment', "Publish this $what?"],
+        'reject' => ['Reject Comment', "Reject this $what?"],
+        default => ['Dismiss', "Dismiss this $what?"],
+    };
     $author = $item['authors'][0]['name'] ?? null;
     $account = $item['_source']['accounts']['socialspec'] ?? null;
     $source = $item['_inbox']['source'] ?? '';
     return page($c, $question, '<h1>' . h($question) . '</h1>
-<p>' . ($author ? 'From <strong>' . h(visible($author)) . '</strong>' . ($account ? ' (' . h(visible($account)) . ')' : '') . ', ' : '')
+' . ($do === 'reject' ? '<p>Auto-moderation published it. Rejecting removes it, and the replies to it, from your site, and tells its author that you rejected it.</p>
+' : '') . '<p>' . ($author ? 'From <strong>' . h(visible($author)) . '</strong>' . ($account ? ' (' . h(visible($account)) . ')' : '') . ', ' : '')
         . 'source <code>' . h(visible($source)) . '</code></p>
 ' . (isset($item['title']) ? '<p><strong>' . h(visible($item['title'])) . '</strong></p>' : '') . '
-<blockquote>' . h(sanitizeText(visibleText(preg_replace('#<p class="without-extension-actions">.*?</p>#s', '', $item['content_html'] ?? '')), 300) ?? '') . '</blockquote>
+<blockquote>' . h(sanitizeText(visibleText(preg_replace(FALLBACK, '', $item['content_html'] ?? '')), 300) ?? '') . '</blockquote>
 <form method="post">
 <input type="hidden" name="id" value="' . h($id) . '">
 <input type="hidden" name="key" value="' . h($key) . '">

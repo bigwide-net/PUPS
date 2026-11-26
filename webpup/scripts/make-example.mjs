@@ -132,7 +132,7 @@ const date = i => new Date(Date.UTC(2026, 10, 15, 9, 30) - i * 2 * 86400000).toI
 const item = i => {
     const n = TOTAL - i; // post number, 1 = oldest
     const id = `p-${String(n).padStart(4, '0')}-exampleXyz9`;
-    const base = { id, date_published: date(i) };
+    const base = { id, date_published: date(i), _archive: { index: n - 1 } };
     if (n == 46)
         return episode(base);
     switch ((n + 3) % 7) { // the newest post has an image
@@ -147,6 +147,26 @@ const item = i => {
     }
 };
 const items = Array.from({ length: TOTAL }, (_, i) => item(i));
+
+// Comments (RFC-1 _source.comments, RFC-7 "Publishing comments"): three on the newest post, one with a reply, and one on post 44.
+const commentFeed = (file, title, inReplyTo, comments) => {
+    write(file, { version: 'https://jsonfeed.org/version/1.1', title, home_page_url: `${O}/`, feed_url: `${O}/${file}`,
+        _pups: { about: RFC7, pupsControlled: true, inReplyTo }, items: comments });
+    return { feedUrl: `${O}/${file}`, count: comments.length, total: comments.reduce((t, c) => t + 1 + (c._source?.comments?.total ?? 0), 0) };
+};
+const comment = (id, name, hoursAfter, i, body, extra = {}) => ({ id, url: `https://${name.toLowerCase()}.example/notes/${id}`,
+    date_published: new Date(Date.parse(date(i)) + hoursAfter * 3600000).toISOString().replace('.000', ''),
+    authors: [{ name, url: `https://${name.toLowerCase()}.example/` }], content_html: `<p>${body}</p>`, ...extra });
+const withComments = (i, comments) => { items[i]._source = { ...items[i]._source, comments }; };
+const reply = commentFeed('feed/comments/47/c-alice1.json', 'Replies to a comment by Alice', `${O}/feed/comments/47.json#c-alice1`,
+    [comment('c-tim1', 'Tim', 5, 0, 'Thanks! It is the one past the old mill.')]);
+withComments(0, commentFeed('feed/comments/47.json', 'Comments on “A walk along the river (47)”', `${O}/feed.json#${items[0].id}`, [
+    comment('c-bob1', 'Bob', 9, 0, 'Lovely photo. I need to go there this autumn.'),
+    comment('c-carol1', 'Carol', 6, 0, '', { content_html: undefined, _source: { markdown: 'Did you walk the **whole loop**? The [trail map](https://example.org/map) says 14 km.' } }),
+    comment('c-alice1', 'Alice', 2, 0, 'Which bridge is that?', { _source: { comments: reply } }),
+]));
+withComments(3, commentFeed('feed/comments/44.json', 'Comments on a post in “Tim’s Notes”', `${O}/feed.json#${items[3].id}`,
+    [comment('c-dave1', 'Dave', 3, 3, 'Seconded. A JSON file and a static host go a long way.')]));
 const fields = { version: 'https://jsonfeed.org/version/1.1', title: 'Tim’s Notes', home_page_url: `${O}/`, description: 'Notes on feeds and the web.',
     authors: [{ name: 'Tim Example', url: `${O}/` }], language: 'en' };
 const archiveCount = Math.ceil(TOTAL / 20);

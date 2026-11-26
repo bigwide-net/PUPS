@@ -49,6 +49,8 @@ function configDocument(Config $c): array
         'kept_feeds' => true,
         'max_upload_bytes' => maxUploadBytes($c),
         'spec_version' => SPEC_VERSION,
+        // Which server this is, so that clients can recognize problems of one implementation or its hosting.
+        'implementation' => ['name' => IMPLEMENTATION, 'version' => VERSION],
     ];
 }
 
@@ -99,6 +101,7 @@ function startPage(Ctx $ctx): Response
 <li><a href="' . h($c->path('/pups/apps')) . '">Your apps</a>: see which apps have access, and remove them.</li>
 ' . ($c->comments ? '<li><a href="' . h($c->path('/pups/comment-settings')) . '">Comments</a>: the comments waiting for you, and auto-moderation.</li>
 ' : '') . '' . ($c->basePath === '' ? '<li><a href="' . h($c->path('/pups/homepage')) . '">Homepage</a>: install webpup as the homepage of your domain, choose its theme, or remove it.</li>' : '') . '
+<li><a href="' . h($c->path('/pups/feed-settings')) . '">Feeds</a>: real-time updates for feed readers (WebSub).</li>
 <li>Discovery: <a href="/.well-known/host-meta.json">/.well-known/host-meta.json</a> → <a href="' . h($c->configUrl) . '">' . h($c->configUrl) . '</a>
 · <a href="' . h(OAUTH_METADATA_PATH) . '">OAuth metadata</a></li>
 </ul>');

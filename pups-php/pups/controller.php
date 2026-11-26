@@ -6,13 +6,13 @@
 
 namespace Pups;
 
-foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments', 'sender', 'moderation', 'markdown', 'commenthtml'] as $f)
+foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments', 'sender', 'moderation', 'markdown', 'commenthtml', 'websub'] as $f)
     require_once __DIR__ . "/lib/$f.php";
 foreach (['discovery', 'hostmeta', 'files', 'oauth', 'admin', 'setup', 'homepage', 'mentions', 'inbox'] as $f)
     require_once __DIR__ . "/handler/$f.php";
 
 /** Paths (relative to the base) that are never CORS-enabled: the owner pages and their assets. */
-const OWNER_PAGES = ['/pups/', '/pups/homepage', '/oauth/authorize', '/pups/apps', '/pups/comment-settings', '/pups/sign-in', '/pups/server', '/pups/setup', '/pups/inbox/dismiss', '/pups/inbox/approve', '/pups/assets/owner.css', '/pups/assets/owner.js'];
+const OWNER_PAGES = ['/pups/', '/pups/homepage', '/oauth/authorize', '/pups/apps', '/pups/comment-settings', '/pups/feed-settings', '/pups/sign-in', '/pups/server', '/pups/setup', '/pups/inbox/dismiss', '/pups/inbox/approve', '/pups/inbox/reject', '/pups/assets/owner.css', '/pups/assets/owner.js'];
 
 /** Handles one request. Never throws. */
 function handle(Request $req, Ctx $ctx): Response
@@ -77,6 +77,10 @@ function dispatch(Request $req, string $abs, ?string $rel, Ctx $ctx): ?Response
             return appsEndpoint($req, $ctx);
         case '/pups/comment-settings':
             return $c->comments ? commentsEndpoint($req, $ctx) : null;
+        case '/pups/feed-settings':
+            return feedsEndpoint($req, $ctx);
+        case HUB_PATH:
+            return hubEndpoint($req, $ctx);
         case '/pups/sign-in':
             return signInEndpoint($req, $ctx);
         case '/pups/server':
@@ -100,6 +104,8 @@ function dispatch(Request $req, string $abs, ?string $rel, Ctx $ctx): ?Response
             return htmlErrors($c, fn() => dismissPage($req, $ctx));
         case '/pups/inbox/approve':
             return htmlErrors($c, fn() => dismissPage($req, $ctx, 'approve'));
+        case '/pups/inbox/reject':
+            return htmlErrors($c, fn() => dismissPage($req, $ctx, 'reject'));
     }
     if ($rel !== null && str_starts_with($rel, '/pups/comments/status/'))
         return commentStatusEndpoint($req, substr($rel, 22), $ctx);
@@ -201,10 +207,17 @@ function run(string $dir): void
         'method' => $req->method, 'url' => $req->target, 'status' => $res->status, 'ms' => (int) round((microtime(true) - $start) * 1000),
         'in' => $req->header('content-length'), 'out' => $out, 'error' => $res->error, 'ua' => $req->header('user-agent'),
     ]);
-    // Webmentions are checked after the response, as they mean fetching documents from other servers.
-    if ($ctx->workPending) {
+    // Webmentions are checked, WebSub subscriptions verified and their pings sent after the response, as they mean
+    // requests to other servers.
+    $pings = websubPending($ctx);
+    if ($ctx->workPending || $ctx->afterResponse || $pings) {
         $how = finishResponse();
-        @set_time_limit(60);
-        Log::event('mention.worker', ['finish' => $how, 'done' => processQueue($ctx)]);
+        @set_time_limit(120);
+        foreach ($ctx->afterResponse as $fn)
+            $fn();
+        if ($ctx->workPending)
+            Log::event('mention.worker', ['finish' => $how, 'done' => processQueue($ctx)]);
+        if ($pings)
+            websubWork($ctx);
     }
 }

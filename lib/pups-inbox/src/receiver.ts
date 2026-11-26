@@ -5,8 +5,8 @@ import { type Feed, FetchError, type FeedSource, findItem, loadFeed, type Post, 
 import { COMMENTING_ABOUT, commentItem, type CommentFeeds, isSameComment, PUBLISHING, refusal } from './comments'
 import { moderateComment, moderationActive, moderationApproves, moderationSettings, type ModerationStore } from './moderation'
 import {
-  checkRoomForSubmission, excerptHtml, findInboxItem, ForeignInbox, type InboxContext, InboxFull, inboxItem, putInboxItem, removeInboxItem, SOURCE_ABOUT,
-  withModerationNote,
+  checkRoomForSubmission, excerptHtml, findInboxItem, ForeignInbox, type InboxContext, InboxFull, inboxItem, modifyInbox, publishedItem, putInboxItem,
+  removeInboxItem, SOURCE_ABOUT, withModerationNote,
 } from './inbox'
 import { processSend, queueMentions, RETRY_MS, SEND_PREFIX } from './sender'
 
@@ -454,6 +454,40 @@ function attribution(post: Post, feed: Feed, sourceUrl: string): [string | undef
 
 // --- Comments (RFC-4) ----------------------------------------------------------------------
 
+/**
+ * Removes a published comment and the replies to it from the comment feeds and from the inbox (those that auto-moderation
+ * published), and queues their mentions again, so that receivers drop them. Returns what was removed.
+ */
+export async function withdrawComment(r: Receiver, target: string, id: string) {
+  if (!r.commentFeeds) return []
+  const answered = await r.commentFeeds.item(target)
+  const removed = await r.commentFeeds.unpublish(target, id)
+  const ids = new Set(removed.map(({ item }) => item.id))
+  try {
+    await modifyInbox(r, items => {
+      const before = items.length
+      items.splice(0, before, ...items.filter(i => !ids.has(i.id) || i._inbox?.type == 'submission'))
+      return items.length < before
+    })
+  } catch (e) {
+    if (!(e instanceof ForeignInbox)) throw e
+  }
+  await queueMentions(r, removed.map(({ item, address }, i) => ({
+    address, before: item, answered: i ? removed.find(p => sameRef(p.address, item._source?.inReplyTo))?.item : answered,
+  })))
+  return removed
+}
+
+/** Puts a comment that auto-moderation published into the inbox. It is published already, so a full inbox only skips it. */
+async function notifyPublished(r: Receiver, item: Record<string, any>) {
+  try {
+    await putInboxItem(r, item)
+  } catch (e) {
+    if (!(e instanceof InboxFull || e instanceof ForeignInbox)) throw e
+    r.log('comment.not-notified', { id: item.id, reason: e.message })
+  }
+}
+
 async function processComment(r: Receiver, job: Job) {
   const { source } = job
   const id = job.id!
@@ -483,12 +517,7 @@ async function processComment(r: Receiver, job: Job) {
   if (gone) {
     if ((existing || published) && policy.allowDelete) {
       await removeInboxItem(r, id)
-      const answered = published && await r.commentFeeds!.item(job.target)
-      const removed = await r.commentFeeds?.unpublish(job.target, id) ?? []
-      // The mentions of the comment and of every reply removed with it are sent again, so that receivers drop them.
-      await queueMentions(r, removed.map(({ item, address }, i) => ({
-        address, before: item, answered: i ? removed.find(p => sameRef(p.address, item._source?.inReplyTo))?.item : answered || undefined,
-      })))
+      if (published) await withdrawComment(r, job.target, id)
       await writeStatus(r, id, { status: 'deleted' })
       r.log('comment.deleted', { source })
       return
@@ -537,7 +566,8 @@ async function processComment(r: Receiver, job: Job) {
     return
   }
   // Published without review: the owner's own comment, one that auto-moderation finds acceptable, or a change of notifyReplies.
-  const publishNow = async (why: string, extra: Record<string, unknown> = {}) => {
+  // Returns the comment's address once it is published.
+  const publishNow = async (why: string, extra: Record<string, unknown> = {}): Promise<string | undefined> => {
     await removeInboxItem(r, id)
     const pubDate = published?.item.date_published ?? date
     if (!approve) {
@@ -551,17 +581,19 @@ async function processComment(r: Receiver, job: Job) {
     } catch (e) {
       const x = refusal(e)
       if (!x) throw e
-      return fail(x.code == 'conflict' ? 'target-gone' : x.code, x.message)
+      await fail(x.code == 'conflict' ? 'target-gone' : x.code, x.message)
+      return
     }
     if (why != 'notify-replies') await queueMentions(r, [{ address: pubUrl, before: published?.item, after, answered: await r.commentFeeds!.item(job.target) }])
     await writeStatus(r, id, { status: 'success', pubDate, pubUrl })
     r.log(`comment.${why}`, { source, target: job.target, published: true, url: pubUrl, ...extra })
+    return pubUrl
   }
   // A change of notifyReplies alone needs neither approval nor allowEdit (RFC-4 "Edits and deletes"), and changes no mentions.
-  if (published && isSameComment(item, published.item, true)) return publishNow('notify-replies')
+  if (published && isSameComment(item, published.item, true)) return void await publishNow('notify-replies')
   if (published && !policy.allowEdit) return editNotAllowed()
   // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
-  if (isOwnerUrl(r, source) && isOwnerUrl(r, found!.feed.url)) return publishNow('own')
+  if (isOwnerUrl(r, source) && isOwnerUrl(r, found!.feed.url)) return void await publishNow('own')
   const settings = approve && r.moderation ? moderationSettings(await r.moderation.load()) : undefined
   if (settings && moderationActive(settings)) {
     const parent = await r.commentFeeds?.post(job.target)
@@ -570,7 +602,12 @@ async function processComment(r: Receiver, job: Job) {
       links: [...new Set([...content.html.matchAll(/(?:href|src)="([^"]+)"/g)].map(m => m[1]!.replace(/&amp;/g, '&').replace(/&quot;/g, '"')))],
       postTitle: parent?.title, postUrl: parent?.url,
     }, r.now(), r.log)
-    if (moderationApproves(settings, rating)) return publishNow('auto-approved', { safe: rating!.safe })
+    if (moderationApproves(settings, rating)) {
+      const url = await publishNow('auto-approved', { safe: rating!.safe })
+      // The owner sees it in the inbox, where they can reject it, unless they turned that off.
+      if (url && settings.notify) await notifyPublished(r, publishedItem(r, item, url, rating!))
+      return
+    }
     if (rating) withModerationNote(item, rating)
   }
   try {

@@ -9,6 +9,7 @@ import { HttpError, json, readLimited } from './http'
 import { pathFromPublicUrl, publicUrl } from './paths'
 import { type Env, type Settings, store } from './settings'
 import type { Grant } from './state'
+import { feedHostWithHub, websubChanged } from './websub'
 
 /**
  * Kept feeds (RFC-7, pups-feeds): feed files with the `_pups` marker, whose archives (RFC-13) the server writes.
@@ -73,7 +74,7 @@ export async function refuseKeptFileWrite(path: string, s: Settings, env: Env) {
  * Writes what a kept feed committed, the archives first and the feed file last. Throws 507 before writing anything if
  * the storage quota would be exceeded. Returns the ETag of the feed file.
  */
-async function writeCommitted(c: Committed, s: Settings, env: Env): Promise<string> {
+export async function writeCommitted(c: Committed, s: Settings, env: Env): Promise<string> {
   const files = env.files!
   const encoded = c.files.map(f => ({ ...f, bytes: new TextEncoder().encode(f.text) }))
   const sizes = await Promise.all(encoded.map(async f => (await files.stat(keyOf(f.path)))?.size ?? 0))
@@ -108,9 +109,10 @@ export function isKeptPut(path: string, body: Uint8Array, s: Settings): string |
  * holds the feed file as stored; it has an ETag only if that is the body that was sent.
  */
 export async function putKept(path: string, rawPath: string, text: string, exists: boolean, s: Settings, env: Env): Promise<Response> {
-  const host = feedHost(s, env)
+  const host = await feedHostWithHub(s, env)
   const c = await feedErrors(async () => putKeptFeed(host, path, text, exists ? await host.read(path) : undefined))
   const etag = await writeCommitted(c, s, env)
+  await websubChanged(path, s, env)
   const url = s.storageBase + rawPath.slice(1)
   return new Response(c.text, {
     status: exists ? 200 : 201,
@@ -134,10 +136,13 @@ export async function postItemEndpoint(req: Request, rawPath: string, s: Setting
   const body = await readLimited(req.body, s.maxUploadBytes)
   if (!body) throw new HttpError(413, 'too_large', `Items may be at most ${s.maxUploadBytes} bytes`)
   const item = await feedErrors(async () => readItem(req.headers.get('content-type'), new TextDecoder().decode(body)))
-  const host = feedHost(s, env)
+  const host = await feedHostWithHub(s, env)
   return withFeedLock(path, async () => {
     const r = await feedErrors(async () => postItem(host, path, item, await host.read(path)))
-    if (r.committed) await writeCommitted(r.committed, s, env)
+    if (r.committed) {
+      await writeCommitted(r.committed, s, env)
+      await websubChanged(path, s, env)
+    }
     console.log(r.event, JSON.stringify({ client: grant.clientId, path, id: r.id }))
     return json(r.body, r.status, r.headers)
   })
@@ -147,8 +152,8 @@ export async function postItemEndpoint(req: Request, rawPath: string, s: Setting
  * The comment feeds of the owner's kept feeds (RFC-7 "Publishing comments", pups-feeds) for the built-in receiver: approved
  * comments are published under the lock of their post's feed. `ownerPath` maps the URLs of posts to storage paths.
  */
-export const serverCommentFeeds = (s: Settings, env: Env, ownerPath: (url: string) => string | undefined) => commentFeeds({
-  host: feedHost(s, env), wellKnown: s.wellKnown, ownerPath,
+export const serverCommentFeeds = async (s: Settings, env: Env, ownerPath: (url: string) => string | undefined) => commentFeeds({
+  host: await feedHostWithHub(s, env), wellKnown: s.wellKnown, ownerPath,
   withLock: (feedPath, fn) => withFeedLock(feedPath, fn),
   write: async c => void await feedErrors(async () => writeCommitted(c, s, env)),
 })

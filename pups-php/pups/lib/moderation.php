@@ -11,7 +11,8 @@ namespace Pups;
  * all others go into the inbox as before, with the rating. If the model can't be reached or
  * answers nonsense, the comment goes into the inbox: moderation never loses a comment. So it
  * does when the tokens of the day (UTC) are used up: the owner limits them, in thousands, to keep
- * the costs down.
+ * the costs down. Unless the owner turns it off (`notify`), the published comments are in the
+ * inbox too, as replies the owner may reject (inbox.php publishedItem()).
  *
  * The settings, the API key among them, are in data/moderation.json, which only the owner's
  * pages read and write; the tokens used today in data/moderation-usage.json.
@@ -58,7 +59,8 @@ function moderationFile(Config $c): string
 
 /**
  * The settings with their defaults: enabled, apiKey (or null), endpoint, model, threshold
- * (percent), criteria, dailyTokens (thousands).
+ * (percent), criteria, dailyTokens (thousands), notify (whether comments that auto-moderation
+ * published go into the inbox, so that the owner can reject them).
  */
 function moderationSettings(Ctx $ctx): array
 {
@@ -72,6 +74,7 @@ function moderationSettings(Ctx $ctx): array
         'threshold' => is_int($s['threshold'] ?? null) ? max(MODERATION_MIN_THRESHOLD, min(100, $s['threshold'])) : MODERATION_THRESHOLD,
         'criteria' => is_string($s['criteria'] ?? null) ? $s['criteria'] : '',
         'dailyTokens' => is_int($s['dailyTokens'] ?? null) ? max(1, min(MODERATION_MAX_DAILY_TOKENS, $s['dailyTokens'])) : MODERATION_DAILY_TOKENS,
+        'notify' => ($s['notify'] ?? true) !== false,
     ];
 }
 
@@ -114,6 +117,7 @@ function saveModerationSettings(Ctx $ctx, array $form): ?string
         'threshold' => (int) $threshold,
         'criteria' => $criteria,
         'dailyTokens' => (int) $daily,
+        'notify' => isset($form['moderation_notify']),
     ];
     if (!preg_match('#^https://[^\s/?\#]+(/[^\s?\#]*)?$#D', $endpoint) && !($ctx->config->allowHttp && str_starts_with($endpoint, 'http://')))
         return 'The API endpoint must be an https URL, such as ' . MODERATION_ENDPOINT . '.';
@@ -129,7 +133,7 @@ function saveModerationSettings(Ctx $ctx, array $form): ?string
         return 'Auto-moderation needs an API key.';
     writeAtomic(moderationFile($ctx->config), json_encode($s, JSON_FLAGS), 0600);
     Log::event('moderation.settings', ['enabled' => $s['enabled'], 'endpoint' => $endpoint, 'model' => $model, 'threshold' => $s['threshold'], 'dailyTokens' => $s['dailyTokens'],
-        'criteria' => mb_strlen($criteria), 'key' => $s['apiKey'] !== null]);
+        'notify' => $s['notify'], 'criteria' => mb_strlen($criteria), 'key' => $s['apiKey'] !== null]);
     return null;
 }
 
@@ -236,8 +240,8 @@ function moderationApproves(array $s, ?array $rating): bool
 }
 
 /** The rating as the owner reads it in the inbox. */
-function moderationNote(array $rating): string
+function moderationNote(array $rating, string $lead = 'Auto-moderation'): string
 {
     $why = $rating['reason'] !== '' ? ' ' . $rating['reason'] : ($rating['categories'] ? ' ' . implode(', ', $rating['categories']) . '.' : '');
-    return 'Auto-moderation: ' . round($rating['safe'] * 100) . ' % likely acceptable.' . $why;
+    return "$lead: " . round($rating['safe'] * 100) . ' % likely acceptable.' . $why;
 }

@@ -5,8 +5,8 @@ import { sanitizeText, visible } from './sanitize'
 import { t } from './texts'
 
 /**
- * Owner pages: first-run setup, login (auth subdomain mode only), the apps page, the comments
- * page and the password page. The servers handle the requests and pass in what the pages show.
+ * Owner pages: first-run setup, login (auth subdomain mode only), the apps page, the feeds page, the
+ * comments page and the password page. The servers handle the requests and pass in what the pages show.
  */
 
 export const MIN_PASSWORD_LENGTH = 12
@@ -22,7 +22,7 @@ export interface OwnerSite {
   comments?: boolean
 }
 
-export type OwnerPath = '/pups/apps' | '/pups/homepage' | '/pups/comment-settings' | '/pups/password' | ''
+export type OwnerPath = '/pups/apps' | '/pups/homepage' | '/pups/feed-settings' | '/pups/comment-settings' | '/pups/password' | ''
 
 export function ownerNav(site: OwnerSite, current: OwnerPath) {
   const item = (href: string, label: string) =>
@@ -31,6 +31,7 @@ export function ownerNav(site: OwnerSite, current: OwnerPath) {
 <ul>
 ${item('/pups/apps', 'Apps')}
 ${item('/pups/homepage', 'Homepage')}
+${item('/pups/feed-settings', 'Feeds')}
 ${site.comments ? item('/pups/comment-settings', 'Comments') : ''}
 ${item('/pups/password', 'Password')}
 ${site.subdomainMode ? '<li><form method="post" action="/pups/logout"><button type="submit">Log out</button></form></li>' : ''}
@@ -260,6 +261,67 @@ ${site.subdomainMode ? `<section aria-labelledby="sessions-heading">
 ${o.usedBytes == undefined ? '' : `<p>Storage used: ${(o.usedBytes / 1048576).toFixed(1)} MiB${o.maxBytes ? ` of ${(o.maxBytes / 1048576).toFixed(0)} MiB` : ''}.</p>`}`,
   { site: site.ownerHost, nav: ownerNav(site, '/pups/apps') })
 }
+
+// --- Feeds -----------------------------------------------------------------------------
+
+/** The WebSub hub's settings and subscriptions (pups-feeds' websub.ts), on the feeds page. */
+export interface WebSubView {
+  enabled: boolean
+  /** Numbers, or what a refused form said. */
+  max: number | string
+  /** The trusted domains, one per line. */
+  domains: string
+  /** Subscriptions that haven't expired, and how many of them are on trusted domains. */
+  total: number
+  trusted: number
+  maxLimit: number
+  maxPerHost: number
+}
+
+/** The WebSub section, inside the form of the feeds page; the same as pups-php's websubSection(). */
+export function websubSection(o: WebSubView): string {
+  const count = o.total == 1 ? '1 subscription' : `${o.total.toLocaleString('en-US')} subscriptions`
+  return `<section aria-labelledby="websub-heading">
+<h2 id="websub-heading">Real-time updates (WebSub)</h2>
+<p>Feed readers usually check your feeds every hour or so. With WebSub, they can subscribe to your feeds instead: this server tells them
+as soon as an app has posted, and they fetch the feed right away. Only your feeds take part, not their archives or comment feeds.</p>
+<p>${count} now${o.total ? `, ${o.trusted.toLocaleString('en-US')} of them from trusted feed readers` : ''}.</p>
+<label><input type="checkbox" name="websub_enabled" value="1"${o.enabled ? ' checked' : ''}> Tell subscribed feed readers about new posts</label>
+<label>At most this many subscriptions
+<input type="number" name="websub_max" min="0" max="${o.maxLimit}" step="1" value="${h(String(o.max))}">
+<small>Each subscription means one request to a feed reader for every post. Once the limit is reached, further feed readers are turned away, and check your feeds as before.</small></label>
+<label>Trusted feed readers
+<textarea name="websub_trusted" rows="7" spellcheck="false" autocapitalize="off">${h(o.domains)}</textarea>
+<small>Domains, one per line. Subscriptions from these domains and their subdomains are always accepted, also beyond the limit, at most ${o.maxPerHost} per feed and host.
+The domain can't be faked: a subscription only counts once the feed reader has confirmed it at its own address.</small></label>
+</section>`
+}
+
+export interface FeedsPage {
+  websub: WebSubView
+  confirm: ConfirmOptions
+  message?: string
+  error?: string
+}
+
+/** /pups/feed-settings before the owner confirmed (same-domain mode without a page session). */
+export const feedsUnlockPage = (site: OwnerSite, confirm: ConfirmOptions, error?: string) => page('Feeds', `<h1>Feeds</h1>
+<p>Confirm that you are the owner of <strong>${h(site.ownerHost)}</strong> to change the settings of your feeds.</p>
+${alert(error)}
+<form method="post" data-session>
+${confirmFields(confirm)}
+<p><button type="submit" name="show" value="1">Continue</button></p>
+</form>`, { site: site.ownerHost, nav: ownerNav(site, '/pups/feed-settings'), status: error ? 401 : 200 })
+
+/** /pups/feed-settings: real-time updates (WebSub). */
+export const feedsPage = (site: OwnerSite, o: FeedsPage) => page('Feeds', `<h1>Feeds</h1>
+${status(o.message)}
+${alert(o.error)}
+<form method="post" data-session>
+${websubSection(o.websub)}
+${confirmFields({ legend: 'Confirm changes', ...o.confirm })}
+<p><button type="submit" name="save_websub" value="1">Save</button> <button type="submit" name="show" value="1" data-view>Reload</button></p>
+</form>`, { site: site.ownerHost, nav: ownerNav(site, '/pups/feed-settings'), status: o.error ? 400 : 200 })
 
 // --- Comments --------------------------------------------------------------------------
 

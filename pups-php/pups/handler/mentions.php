@@ -454,6 +454,46 @@ function attribution(array $post, array $feed, string $sourceUrl): array
 
 // --- Comments (RFC-4) ------------------------------------------------------------------------
 
+/**
+ * Removes a published comment and the replies to it from the comment feeds (unpublishComment())
+ * and from the inbox (those that auto-moderation published), and queues their mentions again, so
+ * that receivers drop them. Returns what was removed.
+ */
+function withdrawComment(Ctx $ctx, string $target, string $id): array
+{
+    $answered = commentThread($ctx, $target)['parent'] ?? null;
+    $removed = unpublishComment($ctx, $target, $id);
+    $ids = array_map(fn($r) => itemId($r['item']), $removed);
+    try {
+        modifyInbox($ctx, function (array &$items) use ($ids) {
+            $before = count($items);
+            $items = array_values(array_filter($items, fn($i) => !in_array($i['id'] ?? null, $ids, true) || ($i['_inbox']['type'] ?? null) === 'submission'));
+            return count($items) < $before;
+        });
+    } catch (ForeignInbox) {
+    }
+    $changes = [];
+    foreach ($removed as $i => ['item' => $item, 'address' => $address]) {
+        $parent = $i ? null : $answered;
+        foreach ($i ? $removed : [] as $p)
+            if (sameRef($p['address'], is_string($item->_source->inReplyTo ?? null) ? $item->_source->inReplyTo : null))
+                $parent = $p['item'];
+        $changes[] = ['address' => $address, 'before' => $item, 'answered' => $parent];
+    }
+    queueMentions($ctx, $changes);
+    return $removed;
+}
+
+/** Puts a comment that auto-moderation published into the inbox. It is published already, so a full inbox only skips it. */
+function notifyPublished(Ctx $ctx, array $item): void
+{
+    try {
+        putInboxItem($ctx, $item);
+    } catch (InboxFull | ForeignInbox $e) {
+        Log::event('comment.not-notified', ['id' => $item['id'], 'reason' => $e->getMessage()]);
+    }
+}
+
 function processComment(Ctx $ctx, array $job)
 {
     ['source' => $source, 'target' => $target, 'id' => $id] = $job;
@@ -480,18 +520,8 @@ function processComment(Ctx $ctx, array $job)
     if ($gone) {
         if (($existing || $published) && $policy['allowDelete']) {
             removeInboxItem($ctx, $id);
-            $answered = $published ? commentThread($ctx, $target['ref'])['parent'] ?? null : null;
-            $removed = unpublishComment($ctx, $target['ref'], $id);
-            // The mentions of the comment and of every reply removed with it are sent again, so that receivers drop them.
-            $changes = [];
-            foreach ($removed as $i => ['item' => $item, 'address' => $address]) {
-                $parent = $i ? null : $answered;
-                foreach ($i ? $removed : [] as $p)
-                    if (sameRef($p['address'], is_string($item->_source->inReplyTo ?? null) ? $item->_source->inReplyTo : null))
-                        $parent = $p['item'];
-                $changes[] = ['address' => $address, 'before' => $item, 'answered' => $parent];
-            }
-            queueMentions($ctx, $changes);
+            if ($published)
+                withdrawComment($ctx, $target['ref'], $id);
             writeStatus($ctx, $id, ['status' => 'deleted']);
             Log::event('comment.deleted', ['source' => $source]);
             return;
@@ -552,32 +582,39 @@ function processComment(Ctx $ctx, array $job)
         return;
     }
     // Published without review: the owner's own comment, one that auto-moderation finds acceptable, or a change of notifyReplies.
+    // Returns the comment's address once it is published.
     $publishNow = function (string $why, array $extra = []) use ($ctx, $id, $item, $published, $date, $approve, $source, $target, $fail) {
         removeInboxItem($ctx, $id);
         $pubDate = $published->date_published ?? $date;
         if (!$approve) {
             writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $pubDate]);
             Log::event("comment.$why", ['source' => $source, 'target' => $target['ref'], 'published' => false] + $extra);
-            return;
+            return null;
         }
         try {
             $url = publishComment($ctx, $item, $after);
         } catch (HttpError $e) {
-            return $fail($e->error === 'conflict' ? 'target-gone' : $e->error, $e->getMessage());
+            $fail($e->error === 'conflict' ? 'target-gone' : $e->error, $e->getMessage());
+            return null;
         }
         if ($why !== 'notify-replies')
             queueMentions($ctx, [['address' => $url, 'before' => $published, 'after' => $after, 'answered' => commentThread($ctx, $target['ref'])['parent'] ?? null]]);
         writeStatus($ctx, $id, ['status' => 'success', 'pubDate' => $pubDate, 'pubUrl' => $url]);
         Log::event("comment.$why", ['source' => $source, 'target' => $target['ref'], 'published' => true, 'url' => $url] + $extra);
+        return $url;
     };
     // A change of notifyReplies alone needs neither approval nor allowEdit (RFC-4 "Edits and deletes"), and changes no mentions.
-    if ($published && isSameComment($item, $published, true))
-        return $publishNow('notify-replies');
+    if ($published && isSameComment($item, $published, true)) {
+        $publishNow('notify-replies');
+        return;
+    }
     if ($published && !$policy['allowEdit'])
         return $editNotAllowed();
     // The owner's own comment needs no approval: it is published at once, and never goes into the inbox.
-    if (isOwnerUrl($ctx, $source) && isOwnerUrl($ctx, $found['feed']['url']))
-        return $publishNow('own');
+    if (isOwnerUrl($ctx, $source) && isOwnerUrl($ctx, $found['feed']['url'])) {
+        $publishNow('own');
+        return;
+    }
     if ($approve && moderationActive($settings = moderationSettings($ctx))) {
         preg_match_all('/(?:href|src)="([^"]+)"/', $content['html'], $links);
         $parent = commentThread($ctx, $target['ref'])['post'] ?? null;
@@ -586,8 +623,13 @@ function processComment(Ctx $ctx, array $job)
             'url' => $post['url'], 'links' => array_values(array_unique(array_map('html_entity_decode', $links[1]))),
             'postTitle' => is_string($parent->title ?? null) ? $parent->title : null, 'postUrl' => is_string($parent->url ?? null) ? $parent->url : null,
         ]);
-        if (moderationApproves($settings, $rating))
-            return $publishNow('auto-approved', ['safe' => $rating['safe']]);
+        if (moderationApproves($settings, $rating)) {
+            $url = $publishNow('auto-approved', ['safe' => $rating['safe']]);
+            // The owner sees it in the inbox, where they can reject it, unless they turned that off.
+            if ($url !== null && $settings['notify'])
+                notifyPublished($ctx, publishedItem($ctx, $item, $url, $rating));
+            return;
+        }
         if ($rating !== null)
             $item = withModerationNote($item, $rating);
     }

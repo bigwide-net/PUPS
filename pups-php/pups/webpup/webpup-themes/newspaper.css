@@ -106,3 +106,8 @@
 .wp-pager-link {
   border-radius: 0;
 }
+@media (max-width: 600px) {
+  .wp-name {
+    font-size: 32px;
+  }
+}

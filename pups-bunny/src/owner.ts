@@ -11,6 +11,8 @@ import { modifyHostMeta, onGrantRevoked, readHostMeta, setPostUrlTemplate } from
 import { readForm } from './http'
 import { permissionList } from './oauth'
 import { receiver } from './receiver'
+import { saveWebsub, websubView } from './websub'
+import { webSubSettingsFromForm } from 'pups-feeds'
 import { appdataPrefix } from './paths'
 import { type Env, type Settings, store } from './settings'
 import type { Passkey } from './state'
@@ -115,7 +117,7 @@ async function credentialForm(token: string, s: Settings, env: Env, error?: stri
 
 // --- Login (auth subdomain mode only) --------------------------------------------------------
 
-const RETURN_PATHS = ['/pups/apps', '/pups/homepage', '/pups/comment-settings', '/pups/password']
+const RETURN_PATHS = ['/pups/apps', '/pups/homepage', '/pups/feed-settings', '/pups/comment-settings', '/pups/password']
 const safeReturn = (r: unknown) =>
   typeof r == 'string' && r.length <= 2048 && (r.startsWith('/oauth/authorize?') || RETURN_PATHS.includes(r)) &&
     !r.includes('\\') && !/\s/.test(r) && !hasUnsafeChars(r) ? r : '/pups/apps'
@@ -267,6 +269,27 @@ export async function commentSettings(req: Request, s: Settings, env: Env): Prom
   if (!form.has('save_moderation')) return session.reply(page())
   const saved = await saveModeration(r.moderation!, form, s.allowHttp)
   return session.reply(page('error' in saved ? { error: saved.error, form } : { message: saved.message }))
+}
+
+// --- Feeds ---------------------------------------------------------------------------
+
+/** /pups/feed-settings: the WebSub hub. */
+export async function feedSettings(req: Request, s: Settings, env: Env): Promise<Response> {
+  const stop = await guard(req, s, env, '/pups/feed-settings')
+  if (stop) return stop
+  const page = async (o: { message?: string; error?: string; form?: FormData } = {}) =>
+    ui.feedsPage(s, { websub: await websubView(env, o.form), confirm: await confirmOptions(s, env), ...o })
+  const session = await ownerSession(req, s, env)
+  if (req.method == 'GET') return session.reply(session.active ? page() : ui.feedsUnlockPage(s, await confirmOptions(s, env)))
+  const form = await readForm(req)
+  if (session.active && !changes(form, ['save_websub'])) return session.reply(page())
+  const err = await session.confirm(form)
+  if (err) return session.reply(session.active ? page({ error: err }) : ui.feedsUnlockPage(s, await confirmOptions(s, env), err))
+  if (!form.has('save_websub')) return session.reply(page())
+  const settings = webSubSettingsFromForm(name => form.get(name)?.toString())
+  if (typeof settings == 'string') return session.reply(page({ error: settings, form }))
+  await saveWebsub(settings, s, env)
+  return session.reply(page({ message: settings.enabled ? 'Saved. Subscribed feed readers learn about new posts right away.' : 'Saved. WebSub is off: feed readers check your feeds as usual.' }))
 }
 
 // --- Password --------------------------------------------------------------------------

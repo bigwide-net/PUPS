@@ -2,8 +2,9 @@ import { alert, escapeHtml as h, page, status } from './html'
 import { visible } from './sanitize'
 
 /**
- * Pages of the built-in receiver (pups-inbox): the confirmation pages that the Dismiss and Publish Comment links of an inbox
- * item open (RFC-8 fallback, RFC-9), the inbox section and auto-moderation (owner.ts puts them on its pages).
+ * Pages of the built-in receiver (pups-inbox): the confirmation pages that the Dismiss, Publish Comment and Reject Comment
+ * links of an inbox item open (RFC-8 fallback, RFC-9), the inbox section and auto-moderation (owner.ts puts them on its
+ * pages).
  */
 
 export const INBOX_PATH = '/pups/private/inbox.json'
@@ -18,15 +19,16 @@ export interface DismissItem {
   title?: string
   /** Plain text. */
   excerpt: string
-  /** What the button does: Dismiss (the default), or Publish Comment. */
-  action?: 'dismiss' | 'approve'
+  /** What the button does: Dismiss (the default), Publish Comment, or Reject Comment (of a comment that auto-moderation published). */
+  action?: 'dismiss' | 'approve' | 'reject'
 }
 
-/** The page with the Dismiss or Publish Comment button. Following the link alone does nothing. */
+/** The page with the Dismiss, Publish Comment or Reject Comment button. Following the link alone does nothing. */
 export function dismissConfirmPage(site: string, i: DismissItem): Response {
-  const [verb, question] = i.action == 'approve' ? ['Publish Comment', `Publish this ${i.what}?`] : ['Dismiss', `Dismiss this ${i.what}?`]
+  const [verb, question] = i.action == 'approve' ? ['Publish Comment', `Publish this ${i.what}?`]
+    : i.action == 'reject' ? ['Reject Comment', `Reject this ${i.what}?`] : ['Dismiss', `Dismiss this ${i.what}?`]
   return page(question, `<h1>${h(question)}</h1>
-<p>${i.author ? `From <strong>${h(visible(i.author))}</strong>${i.account ? ` (${h(visible(i.account))})` : ''}, ` : ''}source <code>${h(visible(i.source))}</code></p>
+${i.action == 'reject' ? `<p>Auto-moderation published it. Rejecting removes it, and the replies to it, from your site, and tells its author that you rejected it.</p>\n` : ''}<p>${i.author ? `From <strong>${h(visible(i.author))}</strong>${i.account ? ` (${h(visible(i.account))})` : ''}, ` : ''}source <code>${h(visible(i.source))}</code></p>
 ${i.title ? `<p><strong>${h(visible(i.title))}</strong></p>` : ''}
 <blockquote>${h(i.excerpt)}</blockquote>
 <form method="post">
@@ -41,6 +43,10 @@ export const dismissedPage = (site: string, message: string, title = 'Dismissed'
 /** After Publish Comment: the comment is published at `url`. */
 export const approvedPage = (site: string, url: string) =>
   page('Comment published', `<h1>Comment published</h1>\n${status('The comment is published.')}\n<p><a href="${h(url)}">${h(visible(url))}</a></p>`, { site })
+
+/** After Reject Comment; `removed` says whether the comment was still published. */
+export const rejectedPage = (site: string, removed: boolean) =>
+  page('Comment rejected', `<h1>Comment rejected</h1>\n${status(removed ? 'The comment was removed from your site.' : 'The comment was not published anymore.')}`, { site })
 
 /** What the receiver has put into the inbox. */
 export interface InboxSummary {
@@ -71,6 +77,8 @@ export interface ModerationView {
   criteriaChars: number
   dailyTokens: number | string
   maxDailyTokens: number
+  /** Whether the comments that auto-moderation publishes go into the inbox. */
+  notify: boolean
   /** Tokens used today (UTC). */
   usedToday: number
 }
@@ -81,9 +89,10 @@ export function moderationSection(o: ModerationView): string {
   return `<section aria-labelledby="moderation-heading">
 <h2 id="moderation-heading">Auto-moderation</h2>
 <p>Comments wait in your inbox until you publish them. With auto-moderation, a language model rates each comment first, and publishes those that are likely acceptable at once.
-You find all others in your inbox as before, with the rating. The model checks for spam, scams, illegal and adult content, abuse and personal data, and for your own criteria.
+You find all others in your inbox as before, with the rating, and, unless you turn it off, the published ones too, where you can reject them. The model checks for spam, scams, illegal and adult content, abuse and personal data, and for your own criteria.
 The comments are sent to the API below, which usually charges for it. If it can't be reached, the comments go into your inbox.</p>
 <label><input type="checkbox" name="moderation_enabled" value="1"${o.enabled ? ' checked' : ''}> Moderate comments automatically</label>
+<label><input type="checkbox" name="moderation_notify" value="1"${o.notify ? ' checked' : ''}> Show the comments it publishes in my inbox, so that I can reject them</label>
 <label>API key
 <input type="password" name="moderation_key" autocomplete="off" spellcheck="false" placeholder="${h(key)}">
 <small>Create a new key for this domain only, with a low spending limit (on OpenRouter: a credit limit for the key). It is stored on this server; should it ever leak, it can't cost you much, and you can revoke it without affecting anything else.</small></label>

@@ -23,6 +23,8 @@ export interface Env {
 }
 
 export const SPEC_VERSION = '0.1'
+/** The configuration document's `implementation` (RFC-6); the version is package.json's (a test checks it). */
+export const IMPLEMENTATION = { name: 'pups-cloudflare', version: '0.1.0' }
 /** Link relation of the configuration document in host-meta.json (placeholder, see RFC-6). */
 export const PUPS_REL = 'https://bigwide.net/ns/personal-storage'
 /** Ownership marker property on links that PUPS added for an app. */

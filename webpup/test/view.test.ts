@@ -58,6 +58,19 @@ describe('view', () => {
         expect(result.feed?.name).toBeUndefined();
     });
 
+    it('follows the sites on Following with the follow dialog, and offers the OPML', () => {
+        const following = [{name: 'Alice', handle: '@alice.example', host: 'alice.example', feedUrl: 'https://alice.example/feed.xml', siteUrl: 'https://alice.example/'},
+            {name: 'Dave', handle: '@dave.example', host: 'dave.example', siteUrl: 'https://dave.example/'}];
+        const {app} = render(site({following}), {page: 'following'});
+        const buttons = app.querySelectorAll<HTMLElement>('.wp-follow-row [data-follow-open]');
+        expect(buttons).toHaveLength(1);
+        expect(JSON.parse(buttons[0].dataset.follow!)).toEqual({title: 'Alice', url: 'https://alice.example/feed.xml', meta: '@alice.example', site: 'alice.example'});
+        expect(app.querySelector('.wp-follow-row a[href="https://alice.example/feed.xml"]')).toBeNull();
+        const opml = app.querySelector<HTMLAnchorElement>('.wp-opml')!;
+        expect(opml.getAttribute('href')).toBe(`${O}/.well-known/following.opml`);
+        expect(opml.getAttribute('download')).toBe('following.opml');
+    });
+
     it('shows embeds by default, behind a consent overlay with "consent", and not at all with "off"', () => {
         expect(render(site(), {page: 'feed'}).app.querySelector('iframe')?.getAttribute('src')).toBe('https://www.youtube.com/embed/abc');
         const consent = render(site({config: {embeds: 'consent', themeSelector: false}}), {page: 'feed'}).app;

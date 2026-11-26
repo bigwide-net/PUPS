@@ -1,15 +1,17 @@
-import { approvedPage, dismissConfirmPage, dismissedPage, errorPage, type InboxSummary, sanitizeText } from 'pups-ui'
+import { approvedPage, dismissConfirmPage, dismissedPage, errorPage, type InboxSummary, rejectedPage, sanitizeText } from 'pups-ui'
 import { commentItem, refusal } from './comments'
 import { visibleText } from './content'
 import { readLimited } from './feeds'
-import { findInboxItem, ForeignInbox, inboxItems, isApprovable, isInboxKey, MAX_INBOX_ITEMS, MAX_ITEMS_PER_HOST, removeInboxItem } from './inbox'
-import { answer, formFields, jsonResponse, type Receiver, ReceiverError, writeStatus } from './receiver'
+import {
+  FALLBACK, findInboxItem, ForeignInbox, type InboxAction, inboxItems, isApprovable, isInboxKey, isRejectable, MAX_INBOX_ITEMS, MAX_ITEMS_PER_HOST, removeInboxItem,
+} from './inbox'
+import { answer, formFields, jsonResponse, type Receiver, ReceiverError, withdrawComment, writeStatus } from './receiver'
 import { queueMentions } from './sender'
 
 /**
- * Dismissing and approving inbox items: the RFC-9 actions that readers send (POST /pups/inbox/action, with
- * `do=approve` for Approve), and, for readers without actions, the pages that the fallback links open
- * (/pups/inbox/dismiss, /pups/inbox/approve), where the owner confirms. All are authorized by the inbox's capability
+ * Dismissing, approving and rejecting inbox items: the RFC-9 actions that readers send (POST /pups/inbox/action, with
+ * `do=approve` for Approve, `do=reject` for Reject), and, for readers without actions, the pages that the fallback
+ * links open (/pups/inbox/dismiss, /pups/inbox/approve, /pups/inbox/reject), where the owner confirms. All are authorized by the inbox's capability
  * key, which only apps that can read the private inbox know.
  */
 
@@ -53,6 +55,22 @@ export async function approveItem(r: Receiver, id: string, via: string): Promise
   return url
 }
 
+/**
+ * Removes a comment that auto-moderation published, and the replies to it, from the comment feeds, removes it from the
+ * inbox, and tells its author on the status page (RFC-4 `moderation-rejected`). Returns whether the comment was still
+ * published. Throws ReceiverError 404 if the item isn't in the inbox, 409 if it can't be rejected.
+ */
+export async function rejectItem(r: Receiver, id: string, via: string): Promise<boolean> {
+  const item = await findInboxItem(r, id)
+  if (!item) throw new ReceiverError(404, 'not_found', 'The comment is not in your inbox anymore.')
+  if (!isRejectable(item) || !r.commentFeeds) throw new ReceiverError(409, 'conflict', "This item can't be rejected.")
+  const removed = await withdrawComment(r, item._inbox.target, id)
+  await removeInboxItem(r, id)
+  await writeStatus(r, id, { status: 'failure', code: 'moderation-rejected', text: 'The owner removed the comment.' })
+  r.log('inbox.rejected', { id, removed: removed.length, via })
+  return removed.length > 0
+}
+
 /** POST /pups/inbox/action?id=…&key=… (RFC-9 "Performing an action"). */
 export function inboxActionEndpoint(req: Request, r: Receiver): Promise<Response> {
   return answer(async () => {
@@ -72,6 +90,10 @@ export function inboxActionEndpoint(req: Request, r: Receiver): Promise<Response
         const url = await approveItem(r, id, 'action')
         return jsonResponse({ message: 'Published', actions: [{ type: 'display', text: 'Comment published.', url }] }, 200, { 'Cache-Control': 'no-store' })
       }
+      if (q.get('do') == 'reject') {
+        await rejectItem(r, id, 'action')
+        return jsonResponse({ message: 'Rejected', actions: [{ type: 'display', text: 'Comment rejected and removed.' }] }, 200, { 'Cache-Control': 'no-store' })
+      }
       // Idempotent: dismissing a dismissed item dismisses it.
       await dismissItem(r, id, 'action')
     } catch (e) {
@@ -84,10 +106,10 @@ export function inboxActionEndpoint(req: Request, r: Receiver): Promise<Response
 }
 
 /**
- * GET shows the item and a button, POST dismisses or approves it (RFC-9: a link never acts by itself). `site` is the
- * owner's host.
+ * GET shows the item and a button, POST dismisses, approves or rejects it (RFC-9: a link never acts by itself). `site`
+ * is the owner's host.
  */
-export async function dismissPage(req: Request, r: Receiver, site: string, action: 'dismiss' | 'approve' = 'dismiss'): Promise<Response> {
+export async function dismissPage(req: Request, r: Receiver, site: string, action: InboxAction = 'dismiss'): Promise<Response> {
   let params: URLSearchParams
   try {
     params = await formFields(req, 256)
@@ -107,6 +129,14 @@ export async function dismissPage(req: Request, r: Receiver, site: string, actio
         throw e
       }
     }
+    if (req.method == 'POST' && action == 'reject') {
+      try {
+        return rejectedPage(site, await rejectItem(r, id, 'page'))
+      } catch (e) {
+        if (e instanceof ReceiverError) return errorPage('Not rejected', e.message, e.status)
+        throw e
+      }
+    }
     if (req.method == 'POST') {
       const removed = await dismissItem(r, id, 'page')
       return dismissedPage(site, removed ? 'The item was removed from your inbox.' : 'The item was not in your inbox anymore.')
@@ -115,15 +145,16 @@ export async function dismissPage(req: Request, r: Receiver, site: string, actio
     const item = await findInboxItem(r, id)
     if (!item) return dismissedPage(site, 'The item is not in your inbox anymore.', 'Not in your inbox')
     if (action == 'approve' && !isApprovable(item)) return errorPage('Not published', "This item can't be approved.", 409)
+    if (action == 'reject' && !isRejectable(item)) return errorPage('Not rejected', "This item can't be rejected.", 409)
     const type = item._inbox?.type
     return dismissConfirmPage(site, {
       id, key: key!, action,
-      what: type == 'submission' ? 'comment' : type == 'reply' ? 'reply' : 'mention',
+      what: type == 'submission' || isRejectable(item) ? 'comment' : type == 'reply' ? 'reply' : 'mention',
       author: typeof item.authors?.[0]?.name == 'string' ? item.authors[0].name : undefined,
       account: typeof item._source?.accounts?.socialspec == 'string' ? item._source.accounts.socialspec : undefined,
       source: typeof item._inbox?.source == 'string' ? item._inbox.source : '',
       title: typeof item.title == 'string' ? item.title : undefined,
-      excerpt: sanitizeText(visibleText(String(item.content_html ?? '').replace(/<p class="without-extension-actions">[\s\S]*?<\/p>/g, '')), 300) ?? '',
+      excerpt: sanitizeText(visibleText(String(item.content_html ?? '').replace(FALLBACK, '')), 300) ?? '',
     })
   } catch (e) {
     if (e instanceof ForeignInbox) return errorPage('Inbox not available', e.message, 409)

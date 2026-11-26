@@ -53,16 +53,19 @@ test('auto-moderation: off by default; the owner enables it with an API key, whi
     contains(saveModeration($t, ['moderation_key' => 'k', 'moderation_criteria' => str_repeat('x', 2001)])->text, 'at most 2000 characters');
     ok(!is_file($t->dataDir . '/moderation.json'), 'nothing saved');
 
-    $res = saveModeration($t, ['moderation_enabled' => '1', 'moderation_key' => 'sk-or-v1-secret1234', 'moderation_threshold' => '85', 'moderation_criteria' => 'No cats.']);
-    contains($res->text, 'Auto-moderation is on: comments rated at least 85 % likely acceptable are published at once.');
+    contains($page->text, 'name="moderation_notify" value="1" checked');
+    $res = saveModeration($t, ['moderation_enabled' => '1', 'moderation_notify' => '1', 'moderation_key' => 'sk-or-v1-secret1234', 'moderation_threshold' => '85', 'moderation_criteria' => 'No cats.']);
+    contains($res->text, 'Auto-moderation is on: comments rated at least 85 % likely acceptable are published at once, and shown in your inbox.');
     ok(!str_contains($res->text, 'secret1234') && str_contains($res->text, 'ending in …1234'), 'only the end of the key');
     contains($res->text, '>No cats.</textarea>');
     eq(fileperms($t->dataDir . '/moderation.json') & 0777, 0600);
     eq(json_decode(file_get_contents($t->dataDir . '/moderation.json'), true)['apiKey'], 'sk-or-v1-secret1234');
 
     // Saved again without a key: the stored one stays; forgotten, it is gone, and moderation can't be on.
-    saveModeration($t, ['moderation_enabled' => '1', 'moderation_threshold' => '90']);
-    eq(\Pups\moderationSettings($t->ctx)['apiKey'], 'sk-or-v1-secret1234');
+    $res = saveModeration($t, ['moderation_enabled' => '1', 'moderation_threshold' => '90']);
+    contains($res->text, 'are published at once.</p>');
+    ok(!str_contains($res->text, 'name="moderation_notify" value="1" checked'), 'an unchecked box turns the notifications off');
+    eq([\Pups\moderationSettings($t->ctx)['apiKey'], \Pups\moderationSettings($t->ctx)['notify']], ['sk-or-v1-secret1234', false]);
     contains(saveModeration($t, ['moderation_forget_key' => '1'])->text, 'Auto-moderation is off.');
     eq(\Pups\moderationSettings($t->ctx)['apiKey'], null);
     ok(!str_contains(file_get_contents($t->dataDir . '/moderation.json'), 'secret'), 'gone from the file');
@@ -110,6 +113,75 @@ test('auto-moderation: comments rated likely acceptable are published at once, o
     $calls = moderator($t, ['safe' => 0.85, 'reason' => 'Fine.']);
     eq($t->get(comment($t, 'c-19', '<p>Nice one.</p>'))->json()['status'], 'success');
     eq([$calls[0]['url'], $calls[0]['body']['model'], isset($calls[0]['body']['reasoning'])], ['https://api.openai.com/v1/chat/completions', 'gpt-5-nano', false]);
+});
+
+test('auto-moderation: the comments it publishes are in the inbox, where the owner can reject or dismiss them', function () {
+    [$t, $tok] = commentSetup();
+    postTo($t, $tok, ['id' => 'p-12', 'title' => 'Is RSS the better social network?', 'content_text' => 'I think so.']);
+    saveModeration($t, ['moderation_enabled' => '1', 'moderation_notify' => '1', 'moderation_key' => 'sk-test']);
+    moderator($t, ['safe' => 0.97, 'reason' => 'A genuine remark.']);
+    $comments = fn() => itemIds(stored($t, '/feed/comments/0.json'));
+
+    // Published, and in the inbox as a reply: nothing to decide, but it can be rejected.
+    $s = $t->get(comment($t))->json();
+    eq([$s['status'], $comments()], ['success', [$s['guid']]]);
+    $feed = inbox($t);
+    eq($feed['_inbox']['categories'], ['mentions', 'moderation']);
+    eq([$feed['_actions']['templates']['reject']['label'], $feed['_actions']['templates']['reject']['confirm']],
+        ['Reject Comment', 'Remove this comment from your site? Its author is told that you rejected it.']);
+    contains($feed['_actions']['templates']['reject']['action'], '/pups/inbox/action?do=reject&id={id}&key=');
+    $item = $feed['items'][0];
+    eq([$item['id'], $item['_inbox']['type'], $item['_inbox']['target'], $item['_pups']], [$s['guid'], 'reply', ORIGIN . '/feed.json#p-12', [
+        'published' => $s['pubUrl'], 'moderation' => ['safe' => 0.97, 'categories' => [], 'reason' => 'A genuine remark.']]]);
+    eq($item['_actions']['actions'], [
+        ['type' => 'display', 'text' => 'Comment from @bob.example.', 'url' => 'https://bob.example/comments.json#c-17', 'group' => 'origin'],
+        ['type' => 'display', 'text' => 'Published by auto-moderation: 97 % likely acceptable. A genuine remark.', 'url' => $s['pubUrl'], 'group' => 'origin'],
+        ['template' => 'reject', 'group' => 'decide'], ['template' => 'dismiss', 'group' => 'decide'],
+    ]);
+    ok(str_starts_with($item['content_html'], '<p>Agreed, but discovery is <strong>hard</strong>.</p><p class="without-extension-actions">'), 'the comment, then the fallback');
+    ok(!str_contains($item['content_html'], 'Publish Comment'), 'nothing to publish');
+    contains($item['content_html'], '>Reject Comment</a>');
+
+    // Dismiss only removes it from the inbox.
+    inboxAction($t, $item['id'], 'dismiss');
+    eq([inbox($t)['items'], $comments(), $t->get("/pups/comments/status/{$s['guid']}")->json()['status']], [[], [$s['guid']], 'success']);
+    eq(inboxAction($t, $item['id'], 'reject')->status, 404);
+
+    // Reject removes it from the site, with the replies to it, from the inbox too, and tells the author.
+    $s2 = $t->get(comment($t, 'c-18', '<p>Me too.</p>'))->json();
+    replyTo($t, 'carol.example', $s2['pubUrl']);
+    eq(array_map(fn($i) => $i['_inbox']['type'], inbox($t)['items']), ['reply', 'reply']);
+    $res = inboxAction($t, $s2['guid'], 'reject');
+    eq([$res->status, $res->json()], [200, ['message' => 'Rejected', 'actions' => [['type' => 'display', 'text' => 'Comment rejected and removed.']]]]);
+    eq([$comments(), inbox($t)['items']], [[$s['guid']], []]);
+    eq(array_intersect_key($t->get("/pups/comments/status/{$s2['guid']}")->json(), ['status' => 0, 'code' => 0]), ['status' => 'failure', 'code' => 'moderation-rejected']);
+
+    // On the fallback page, after a confirmation.
+    $s3 = $t->get(comment($t, 'c-19', '<p>Nice one.</p>'))->json();
+    preg_match('/href="([^"]+)">Reject Comment</', inbox($t)['items'][0]['content_html'], $m);
+    $page = $t->get(substr(html_entity_decode($m[1]), strlen(ORIGIN)));
+    contains($page->text, 'Reject this comment?');
+    contains($page->text, 'Auto-moderation published it.');
+    eq($comments(), [$s3['guid'], $s['guid']], 'the link alone rejects nothing');
+    contains($t->post('/pups/inbox/reject', ['id' => hidden($page->text, 'id'), 'key' => hidden($page->text, 'key')])->text, 'The comment was removed from your site.');
+    eq($comments(), [$s['guid']]);
+
+    // Comments waiting for approval can't be rejected, published ones can't be approved.
+    moderator($t, ['safe' => 0.4]);
+    $s4 = $t->get(comment($t, 'c-20', '<p>Hmm.</p>'))->json();
+    eq([inboxAction($t, $s4['guid'], 'reject')->status, $s4['status']], [409, 'pending']);
+    moderator($t, ['safe' => 0.99]);
+    $s5 = $t->get(comment($t, 'c-21', '<p>Great.</p>'))->json();
+    eq(inboxAction($t, $s5['guid'], 'approve')->status, 409);
+
+    // Turned off: published, not in the inbox.
+    saveModeration($t, ['moderation_enabled' => '1']);
+    $s6 = $t->get(comment($t, 'c-22', '<p>Fine.</p>'))->json();
+    $ids = array_column(inbox($t)['items'], 'id');
+    sort($ids);
+    $expected = [$s4['guid'], $s5['guid']];
+    sort($expected);
+    eq([$s6['status'], $ids], ['success', $expected]);
 });
 
 test('auto-moderation: when the model fails, the comment waits in the inbox; nothing is asked when nothing is published', function () {

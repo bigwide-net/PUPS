@@ -4,8 +4,10 @@ import { filesEndpoint, isPrivateRaw, postEndpoint, serve } from './files'
 import { ensureMentionLink, hostMetaEndpoint, serveHostMeta } from './hostmeta'
 import { cors, HttpError, htmlErrors, json, methodNotAllowed } from './http'
 import { authorize, configDocument, oauthMetadata, revoke, token } from './oauth'
-import { apps, commentSettings, homepage, homepageState, login, logout, password, setup, start } from './owner'
+import { apps, commentSettings, feedSettings, homepage, homepageState, login, logout, password, setup, start } from './owner'
 import { receiver, work } from './receiver'
+import { hubEndpoint } from './websub'
+import { HUB_PATH } from 'pups-feeds'
 import { covers } from './paths'
 import { CONFIG_PATH, type Env, type Settings, settings, STORAGE_PREFIX } from './settings'
 
@@ -39,6 +41,7 @@ function authRoutes(req: Request, path: string, s: Settings, env: Env): Promise<
     case '/pups/login': return htmlErrors(() => login(req, s, env))
     case '/pups/logout': return htmlErrors(() => logout(req, s, env))
     case '/pups/apps': return htmlErrors(() => apps(req, s, env))
+    case '/pups/feed-settings': return htmlErrors(() => feedSettings(req, s, env))
     case '/pups/comment-settings': return s.comments ? htmlErrors(() => commentSettings(req, s, env)) : undefined
     case '/pups/password': return htmlErrors(() => password(req, s, env))
     // /pups/assets/* (stylesheet and script) are static assets from public/.
@@ -62,7 +65,7 @@ function receiverRoutes(req: Request, path: string, s: Settings, env: Env, ctx: 
   if (path == '/pups/mention' && s.mentions) return queued(mentionEndpoint)
   if (path == '/pups/comments' && s.comments) return queued(commentEndpoint)
   if (status) return cors(req, async () => await commentStatusEndpoint(req, status[1], await receiver(s, env)) ?? notFound())
-  // Publishing a comment queues the mentions it sends.
+  // Publishing or rejecting a comment queues the mentions it sends.
   const approving = async (r: Receiver, res: Response) => {
     if (req.method == 'POST') ctx.waitUntil(work(r))
     return res
@@ -73,6 +76,7 @@ function receiverRoutes(req: Request, path: string, s: Settings, env: Env, ctx: 
   })
   if (path == '/pups/inbox/dismiss') return receiver(s, env).then(r => dismissPage(req, r, s.ownerHost))
   if (path == '/pups/inbox/approve') return receiver(s, env).then(async r => approving(r, await dismissPage(req, r, s.ownerHost, 'approve')))
+  if (path == '/pups/inbox/reject') return receiver(s, env).then(async r => approving(r, await dismissPage(req, r, s.ownerHost, 'reject')))
 }
 
 /** The homepage: webpup while it is installed, else / forwards to the owner pages. An existing website behind this server keeps /. */
@@ -96,6 +100,8 @@ function ownerRoutes(req: Request, url: URL, s: Settings, env: Env, ctx: Executi
     case CONFIG_PATH: return getJson(req, () => configDocument(s))
     case '/pups/host-meta': return cors(req, () => hostMetaEndpoint(req, s, env))
     case '/pups/post': if (s.postFallback) return cors(req, () => postEndpoint(req, s, env))
+      break
+    case HUB_PATH: return hubEndpoint(req, s, env, ctx)
   }
   const received = receiverRoutes(req, path, s, env, ctx)
   if (received) return received

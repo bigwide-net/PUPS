@@ -1,3 +1,5 @@
+import { isFeedPath } from 'pups-feeds'
+import { feedLinks } from './websub'
 import { feedOf, isKeptPut, postItemEndpoint, putKept, refuseKeptFileWrite, withFeedLock } from './feeds'
 import { checkUploadType, checkUtf8, fileType, servedType } from './filetypes'
 import { header, HttpError, LIMITS, methodNotAllowed, readLimited, readQuery } from './http'
@@ -236,6 +238,9 @@ async function serveFile(req: Request, path: string | undefined, s: Settings, en
   const headers = new Headers(fileHeaders(servedType(type), fresh))
   headers.set('ETag', file.etag)
   if (file.lastModified && !isNaN(+file.lastModified)) headers.set('Last-Modified', file.lastModified.toUTCString())
+  // WebSub discovery for the feed files of kept feeds.
+  const links = isFeedPath(path, s.wellKnown) ? await feedLinks(path, new TextDecoder().decode(file.bytes), s, env) : undefined
+  if (links) headers.set('Link', links)
 
   const ifNoneMatch = req.headers.get('if-none-match'), ifMatch = req.headers.get('if-match')
   if (ifMatch && !etagMatches(ifMatch, file.etag)) return new Response(null, { status: 412, headers })

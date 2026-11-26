@@ -8,8 +8,12 @@ in the visitor's browser, without any server code:
   **Follow** button and an email button (from `contact.vcf`);
 - **Posts**: every post of `/feed.json`, rendered like Downread's reader (images, audio and video,
   embeds), with archive pages for feeds that have archives ([RFC-7](https://github.com/bigwide-net/RFCs/blob/main/RFC-7-Feed-Publishing-with-PUPS.md));
+- **comments** on posts that have a comment feed ([RFC-1](https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md)
+  `_source.comments`, which PUPS writes for the comments the owner approved): "3 comments" opens them
+  below the post, and on the post's own page they are open; replies open under their comment;
 - one tab per further feed registered in `host-meta.json` (`/feed/<name>.json`);
-- **Following**, **About** and **Contact** from the [SocialSpec](https://socialspec.org) files;
+- **Following**, **About** and **Contact** from the [SocialSpec](https://socialspec.org) files; on Following, each
+  site with a feed has a Follow button that opens the follow dialog, and the list downloads as OPML;
 - **pages**: Markdown files registered in `host-meta.json`, as a tab of their own or on a **Pages** tab;
 - a **footer** from a Markdown file, on every page;
 - optionally a **theme selector** with ten themes to try.
@@ -246,6 +250,7 @@ TypeScript in `src/`, bundled with esbuild:
 - `data.ts`: loading `host-meta.json`, the SocialSpec files, the feeds and archives, the config.
 - `jsonfeed.ts`: JSON Feed items (with `_source`, `_image`) as posts of postviewer.
 - `view.ts`: header, tabs, About/Following/Contact; `posts.ts`: the feed and archive pages.
+- `comments.ts`: the comments of a post and the replies to them, from their comment feeds.
 - `follow.ts`: the follow dialog's markup and the Follow button.
 - `themes.ts`: the theme color, and the theme selector.
 
@@ -257,5 +262,4 @@ missing.
 
 ## Not done yet
 
-- Comments of feeds with RFC-4 submissions (postviewer can render them).
 - Search engines see the page only after running the script; `index.html` has no content of its own.

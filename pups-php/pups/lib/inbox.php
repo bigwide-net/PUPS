@@ -8,7 +8,9 @@ namespace Pups;
  * as `pups`, under the storage lock. Every item has a Dismiss action (RFC-9) with a
  * capability URL, and a link to a confirmation page for readers without actions (RFC-8).
  * Comments on feeds that republish them (RFC-4 `republish: "full"` or `"summary"`) also have an
- * Approve action, which publishes them in the post's comment feed (comments.php).
+ * Approve action, which publishes them in the post's comment feed (comments.php). Comments that
+ * auto-moderation published (moderation.php) are replies with a Reject action instead, which
+ * removes them again.
  */
 
 const INBOX_WRITER = 'pups';
@@ -25,6 +27,10 @@ const MAX_INBOX_ITEMS = 100;
 /** At most this many items from one source host, so that no site can fill the inbox. */
 const MAX_ITEMS_PER_HOST = 10;
 const EXCERPT_CHARS = 500;
+/** What readers ask before they send Reject Comment (RFC-9 `confirm`). */
+const REJECT_CONFIRM = 'Remove this comment from your site? Its author is told that you rejected it.';
+/** The links and notes that inboxItem() adds for readers without actions. */
+const FALLBACK = '#<p class="without-extension-actions">.*?</p>#s';
 
 /** The inbox is written by another system, or isn't an inbox (RFC-12 "One writer"). */
 final class ForeignInbox extends \Exception
@@ -155,10 +161,12 @@ function newInbox(Ctx $ctx): array
         'version' => 'https://jsonfeed.org/version/1.1',
         'title' => 'Inbox',
         'home_page_url' => "$c->base/pups/apps",
+        // Comments that auto-moderation published are replies, in `mentions`.
         '_inbox' => ['about' => INBOX_ABOUT, 'writer' => INBOX_WRITER,
-            'categories' => array_keys(array_filter(['mentions' => $c->mentions, 'moderation' => $c->comments]))],
+            'categories' => array_keys(array_filter(['mentions' => $c->mentions || $c->comments, 'moderation' => $c->comments]))],
         '_actions' => ['about' => ACTIONS_ABOUT, 'templates' => [
             'approve' => ['type' => 'button', 'label' => 'Publish Comment', 'style' => 'major', 'action' => "$c->base/pups/inbox/action?do=approve&id={id}&key=" . inboxKey($ctx)],
+            'reject' => ['type' => 'button', 'label' => 'Reject Comment', 'confirm' => REJECT_CONFIRM, 'action' => "$c->base/pups/inbox/action?do=reject&id={id}&key=" . inboxKey($ctx)],
             'dismiss' => ['type' => 'button', 'label' => 'Dismiss', 'action' => "$c->base/pups/inbox/action?id={id}&key=" . inboxKey($ctx)],
         ]],
         'items' => [],
@@ -176,19 +184,36 @@ function isInboxKey(Ctx $ctx, ?string $key): bool
     return is_string($key) && hash_equals(inboxKey($ctx), $key);
 }
 
-/** The page where readers without actions dismiss or approve an item (RFC-8 fallback). */
+/** The page where readers without actions dismiss, approve or reject an item (RFC-8 fallback). */
 function dismissPageUrl(Ctx $ctx, string $id, string $do = 'dismiss'): string
 {
     return $ctx->config->base . "/pups/inbox/$do?id=" . rawurlencode($id) . '&key=' . inboxKey($ctx);
 }
 
+/** A link of the fallback for readers without actions (RFC-8), to the page where the owner confirms `do`. */
+function fallbackLink(Ctx $ctx, string $id, string $do, string $label): string
+{
+    return '<p class="without-extension-actions"><a href="' . h(dismissPageUrl($ctx, $id, $do)) . "\">$label</a></p>";
+}
+
+function hasAction(array $item, string $template): bool
+{
+    foreach ($item['_actions']['actions'] ?? [] as $a)
+        if (($a['template'] ?? null) === $template)
+            return true;
+    return false;
+}
+
 /** Whether an inbox item has the Approve action: a comment that the owner can publish. */
 function isApprovable(array $item): bool
 {
-    foreach ($item['_actions']['actions'] ?? [] as $a)
-        if (($a['template'] ?? null) === 'approve')
-            return true;
-    return false;
+    return hasAction($item, 'approve');
+}
+
+/** Whether an inbox item has the Reject action: a comment that auto-moderation published. */
+function isRejectable(array $item): bool
+{
+    return hasAction($item, 'reject');
 }
 
 /** Newest first; mentions older than 30 days are dropped. */
@@ -233,7 +258,7 @@ function inboxItem(Ctx $ctx, string $id, string $type, string $source, string $t
     $approve = $publish !== null;
     $url = $post['url'] ?? null;
     $origin = originText($type, $source, $account, $edit, $type === 'submission' && isCommentRef($ctx, $target));
-    $link = fn(string $do, string $label) => '<p class="without-extension-actions"><a href="' . h(dismissPageUrl($ctx, $id, $do)) . "\">$label</a></p>";
+    $link = fn(string $do, string $label) => fallbackLink($ctx, $id, $do, $label);
     $from = '<p class="without-extension-actions"><a href="' . h($source) . '">' . h($origin) . '</a></p>';
     $fallback = $from . ($approve ? $link('approve', 'Publish Comment') : '') . $link('dismiss', 'Dismiss');
     $origin = ['type' => 'display', 'text' => $origin, 'url' => $source, 'group' => 'origin'];
@@ -260,6 +285,27 @@ function withModerationNote(array $item, array $rating): array
     $item['_pups']['moderation'] = $rating;
     array_splice($item['_actions']['actions'], 1, 0, [['type' => 'display', 'text' => $note, 'group' => 'origin']]);
     $item['content_html'] .= '<p class="without-extension-actions"><small>' . h($note) . '</small></p>';
+    return $item;
+}
+
+/**
+ * The inbox item for a comment that auto-moderation published at `url`, from its item as a
+ * submission: a reply (RFC-12), which needs no decision, with the rating and a link to the
+ * comment, Reject Comment and Dismiss.
+ */
+function publishedItem(Ctx $ctx, array $item, string $url, array $rating): array
+{
+    $note = moderationNote($rating, 'Published by auto-moderation');
+    $origin = $item['_actions']['actions'][0];
+    unset($item['_pups']['republish']);
+    $item['content_html'] = preg_replace(FALLBACK, '', $item['content_html'])
+        . '<p class="without-extension-actions"><a href="' . h($origin['url']) . '">' . h($origin['text']) . '</a></p>'
+        . '<p class="without-extension-actions"><small><a href="' . h($url) . '">' . h($note) . '</a></small></p>'
+        . fallbackLink($ctx, $item['id'], 'reject', 'Reject Comment') . fallbackLink($ctx, $item['id'], 'dismiss', 'Dismiss');
+    $item['_inbox']['type'] = 'reply';
+    $item['_pups'] = ['published' => $url, 'moderation' => $rating] + ($item['_pups'] ?? []);
+    $item['_actions'] = ['about' => ACTIONS_ABOUT, 'actions' => [$origin, ['type' => 'display', 'text' => $note, 'url' => $url, 'group' => 'origin'],
+        ['template' => 'reject', 'group' => 'decide'], ['template' => 'dismiss', 'group' => 'decide']]];
     return $item;
 }
 

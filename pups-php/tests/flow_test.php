@@ -17,6 +17,7 @@ test('discovery: links host-meta.json to the configuration document, with CORS',
         'storage_base' => ORIGIN . '/', 'public_base' => ORIGIN . '/', 'spec_version' => '0.1', 'max_upload_bytes' => 26214400,
         'host_meta_endpoint' => ORIGIN . '/pups/host-meta'] as $k => $v)
         eq($doc[$k], $v, $k);
+    eq($doc['implementation'], ['name' => 'pups-php', 'version' => \Pups\VERSION]);
     ok(!isset($doc['post_endpoint']), 'no post_endpoint');
     $feed = ['https://bigwide.net/ns/feed'];
     eq($doc['well_known_paths'], [

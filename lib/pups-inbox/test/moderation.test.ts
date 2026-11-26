@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { moderationFromForm, moderationSettings, type ModerationStore, moderationView, parseModeration, saveModeration } from '../src'
+import { dismissPage, moderationFromForm, moderationSettings, type ModerationStore, moderationView, parseModeration, saveModeration } from '../src'
 import { inbox, ORIGIN } from './helpers'
 import { setupComments } from './comments-setup'
 
@@ -35,7 +35,7 @@ describe('auto-moderation', () => {
   it('settings: off by default, checked, the key kept and forgotten', async () => {
     const m = memoryStore({ safe: 1 })
     expect(moderationSettings(await m.load())).toEqual({
-      enabled: false, endpoint: 'https://openrouter.ai/api/v1', model: 'openai/gpt-5-nano', threshold: 90, criteria: '', dailyTokens: 500,
+      enabled: false, endpoint: 'https://openrouter.ai/api/v1', model: 'openai/gpt-5-nano', threshold: 90, criteria: '', dailyTokens: 500, notify: true,
     })
     const off = moderationSettings(undefined)
     expect(moderationFromForm(formOf({ moderation_enabled: '1' }), off)).toEqual({ error: 'Auto-moderation needs an API key.' })
@@ -44,13 +44,17 @@ describe('auto-moderation', () => {
     expect(moderationFromForm(formOf({ moderation_key: 'k', moderation_endpoint: 'ftp://x.example' }), off)).toMatchObject({ error: expect.stringContaining('https URL') })
     expect(moderationFromForm(formOf({ moderation_key: 'k', moderation_criteria: 'x'.repeat(2001) }), off)).toMatchObject({ error: expect.stringContaining('2000 characters') })
 
-    expect(await saveModeration(m, formOf({ moderation_enabled: '1', moderation_key: 'sk-or-v1-secret1234', moderation_threshold: '85', moderation_criteria: 'No cats.' })))
-      .toEqual({ message: 'Auto-moderation is on: comments rated at least 85 % likely acceptable are published at once.' })
+    expect(await saveModeration(m, formOf({
+      moderation_enabled: '1', moderation_notify: '1', moderation_key: 'sk-or-v1-secret1234', moderation_threshold: '85', moderation_criteria: 'No cats.',
+    }))).toEqual({ message: 'Auto-moderation is on: comments rated at least 85 % likely acceptable are published at once, and shown in your inbox.' })
     const view = await moderationView(m, Date.now())
-    expect(view).toMatchObject({ enabled: true, keyEnding: '1234', threshold: 85, criteria: 'No cats.', dailyTokens: 500, usedToday: 0 })
+    expect(view).toMatchObject({ enabled: true, notify: true, keyEnding: '1234', threshold: 85, criteria: 'No cats.', dailyTokens: 500, usedToday: 0 })
     expect(JSON.stringify(view)).not.toContain('secret')
-    await saveModeration(m, formOf({ moderation_enabled: '1' }))
-    expect(moderationSettings(await m.load()).apiKey).toBe('sk-or-v1-secret1234')
+    // An unchecked box turns the notifications off.
+    expect(await saveModeration(m, formOf({ moderation_enabled: '1' })))
+      .toEqual({ message: 'Auto-moderation is on: comments rated at least 90 % likely acceptable are published at once.' })
+    expect(moderationSettings(await m.load())).toMatchObject({ apiKey: 'sk-or-v1-secret1234', notify: false })
+    expect((await moderationView(m, Date.now(), formOf({ moderation_notify: '1' }))).notify).toBe(true)
     expect(await saveModeration(m, formOf({ moderation_forget_key: '1' }))).toEqual({ message: 'Auto-moderation is off.' })
     expect(moderationSettings(await m.load()).apiKey).toBeUndefined()
   })
@@ -94,6 +98,80 @@ describe('auto-moderation', () => {
     await saveModeration(m, formOf({ moderation_enabled: '1', moderation_threshold: '80' }))
     m.answer = { safe: 0.85 }
     expect((await status(await comment('c-19', '<p>Nice one.</p>'))).status).toBe('success')
+  })
+
+  it('shows the comments it publishes in the inbox, where the owner can reject or dismiss them', async () => {
+    const t = await setupComments()
+    const { r, files, app, stored, status, comment, replyTo, action } = t
+    await app.post({ id: 'p-12', title: 'Is RSS the better social network?', content_text: 'I think so.' })
+    const m = r.moderation = memoryStore({ safe: 0.97, reason: 'A genuine remark.' })
+    await saveModeration(m, formOf({ moderation_enabled: '1', moderation_notify: '1', moderation_key: 'sk-test' }))
+    const comments = () => stored('/feed/comments/0.json').items.map((i: any) => i.id)
+
+    // Published, and in the inbox as a reply: nothing to decide, but it can be rejected.
+    const s = await status(await comment())
+    expect([s.status, comments()]).toEqual(['success', [s.guid]])
+    const feed = inbox(files)
+    expect(feed._inbox.categories).toEqual(['mentions', 'moderation'])
+    expect(feed._actions.templates.reject).toEqual({
+      type: 'button', label: 'Reject Comment', confirm: 'Remove this comment from your site? Its author is told that you rejected it.',
+      action: expect.stringMatching(/\/pups\/inbox\/action\?do=reject&id=\{id\}&key=/),
+    })
+    const [item] = feed.items
+    expect([item.id, item._inbox.type, item._inbox.target, item._pups]).toEqual([s.guid, 'reply', `${ORIGIN}/feed.json#p-12`, {
+      published: s.pubUrl, moderation: { safe: 0.97, categories: [], reason: 'A genuine remark.' },
+    }])
+    expect(item._actions.actions).toEqual([
+      { type: 'display', text: 'Comment from @bob.example.', url: 'https://bob.example/comments.json#c-17', group: 'origin' },
+      { type: 'display', text: 'Published by auto-moderation: 97 % likely acceptable. A genuine remark.', url: s.pubUrl, group: 'origin' },
+      { template: 'reject', group: 'decide' }, { template: 'dismiss', group: 'decide' },
+    ])
+    expect(item.content_html).toMatch(/^<p>Agreed, but discovery is <strong>hard<\/strong>.<\/p><p class="without-extension-actions">/)
+    expect(item.content_html).not.toContain('Publish Comment')
+    expect(item.content_html).toContain('>Reject Comment</a>')
+
+    // Dismiss only removes it from the inbox.
+    await action(item.id, 'dismiss')
+    expect([inbox(files).items, comments(), (await status(`${ORIGIN}/pups/comments/status/${s.guid}`)).status]).toEqual([[], [s.guid], 'success'])
+    expect((await action(item.id, 'reject')).status).toBe(404)
+
+    // Reject removes it from the site, with the replies to it, and tells the author.
+    const s2 = await status(await comment('c-18', '<p>Me too.</p>'))
+    await replyTo('carol.example', s2.pubUrl)
+    expect(inbox(files).items.map((i: any) => i._inbox.type)).toEqual(['reply', 'reply'])
+    const res = await action(s2.guid, 'reject')
+    expect([res.status, await res.json()]).toEqual([200, { message: 'Rejected', actions: [{ type: 'display', text: 'Comment rejected and removed.' }] }])
+    expect(comments()).toEqual([s.guid])
+    expect(files.has('/feed/comments/0/1.json') && stored('/feed/comments/0/1.json').items).toBeFalsy()
+    expect(await status(`${ORIGIN}/pups/comments/status/${s2.guid}`)).toMatchObject({ status: 'failure', code: 'moderation-rejected' })
+    // Carol's reply went with it, from the inbox too.
+    expect(inbox(files).items).toEqual([])
+
+    // On the fallback page, after a confirmation.
+    const s3 = await status(await comment('c-19', '<p>Nice one.</p>'))
+    const link = /href="([^"]+)">Reject Comment</.exec(inbox(files).items.find((i: any) => i.id == s3.guid).content_html)![1]!.replace(/&amp;/g, '&')
+    const html = await (await dismissPage(new Request(link), r, 'alice.pups.test', 'reject')).text()
+    expect(html).toContain('Reject this comment?')
+    expect(comments()).toContain(s3.guid)
+    const hidden = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)![1]!
+    const done = await dismissPage(new Request(`${ORIGIN}/pups/inbox/reject`, {
+      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ id: hidden('id'), key: hidden('key') }),
+    }), r, 'alice.pups.test', 'reject')
+    expect(await done.text()).toContain('The comment was removed from your site.')
+    expect(comments()).toEqual([s.guid])
+
+    // Comments waiting for approval can't be rejected, published ones can't be approved.
+    m.answer = { safe: 0.4 }
+    const s4 = await status(await comment('c-20', '<p>Hmm.</p>'))
+    expect([(await action(s4.guid, 'reject')).status, s4.status]).toEqual([409, 'pending'])
+    m.answer = { safe: 0.99 }
+    const s5 = await status(await comment('c-21', '<p>Great.</p>'))
+    expect((await action(s5.guid, 'approve')).status).toBe(409)
+
+    // Turned off: published, not in the inbox.
+    await saveModeration(m, formOf({ moderation_enabled: '1' }))
+    const s6 = await status(await comment('c-22', '<p>Fine.</p>'))
+    expect([s6.status, inbox(files).items.map((i: any) => i.id).toSorted()]).toEqual(['success', [s4.guid, s5.guid].toSorted()])
   })
 
   it('failures, the daily token limit, and feeds that publish nothing leave the comment for the owner', async () => {

@@ -7,8 +7,9 @@ import { createPostParts } from '@lib/postviewer/src/post-card';
 import type { EmbedService } from '@lib/postviewer/src/types';
 import { icon } from '@lib/socialspec/src/icons';
 import type { ContactEntry } from '@lib/socialspec/src/vcard';
+import { postComments } from './comments';
 import { findItem, loadArchive, type Config, type Site, type SiteFeed } from './data';
-import { attachmentDetails, embedScripts, fileName, itemAttachments, itemId, itemIndex, itemTags, toPost, type JsonFeed, type JsonFeedItem } from './jsonfeed';
+import { attachmentDetails, embedScripts, fileName, itemAttachments, itemComments, itemId, itemIndex, itemTags, toPost, type JsonFeed, type JsonFeedItem } from './jsonfeed';
 import { href, isSitePath, type Route } from './router';
 
 /** How many archives "Older posts" looks through for the first post the feed file doesn't have. */
@@ -112,7 +113,8 @@ function addAttachments(parts: HTMLElement[], item: JsonFeedItem, imageUrl: stri
     parts.splice(body >= 0 ? body + 1 : parts.length, 0, list);
 }
 
-function postCard(item: JsonFeedItem, index: number, feed: SiteFeed, page: Route, ctx: PostContext): HTMLElement {
+/** A post as a card. Its comments, if any, are open on the post's own page (`page.page == 'post'`), else closed. */
+function postCard(item: JsonFeedItem, feed: SiteFeed, page: Route, ctx: PostContext): HTMLElement {
     const post = toPost(item, ctx.site.origin + '/');
     const id = itemId(item);
     const parts = createPostParts(post, {feedName: feedTitle(feed), feedHref: href(feedRoute(feed)), consent: ctx.consent});
@@ -130,11 +132,17 @@ function postCard(item: JsonFeedItem, index: number, feed: SiteFeed, page: Route
     // An item's url on this site is the post's page (post URL template): Link already goes there.
     if (post.link && !isOwnPage(post.link, ctx.site))
         addHtml(actions, 'a', {class: 'wp-post-action', href: post.link, target: '_blank', rel: 'noopener'}, [icon('external', 15), 'Open']);
+    const commentsRef = itemComments(item, ctx.site.origin + '/');
+    const comments = commentsRef && postComments(commentsRef.feedUrl, commentsRef.count, page.page == 'post');
+    if (comments)
+        actions.appendChild(comments.button);
     if (ctx.email?.href)
         addHtml(actions, 'a', {class: 'wp-post-action wp-post-reply', href: replyHref(ctx.email, post.title, new URL(permalink ?? href(page), location.href).href),
             title: `Reply by email to ${ctx.email.value}`}, [icon('reply', 15), 'Reply']);
     if (actions.childElementCount)
         parts.push(actions);
+    if (comments)
+        parts.push(comments.section);
 
     const card = newHtml('article', {class: 'postCard', id}, parts);
     if (ctx.site.config.embeds == 'off')
@@ -144,7 +152,7 @@ function postCard(item: JsonFeedItem, index: number, feed: SiteFeed, page: Route
 
 function postList(items: JsonFeedItem[], feed: SiteFeed, page: Route, ctx: PostContext): HTMLElement {
     const list = newHtml('ol', {class: 'wp-posts'});
-    items.forEach((item, i) => list.appendChild(postCard(item, i, feed, page, ctx)));
+    items.forEach(item => list.appendChild(postCard(item, feed, page, ctx)));
     return list;
 }
 

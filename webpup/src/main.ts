@@ -9,7 +9,7 @@ import { installKeys } from './keys';
 import { createConsent, hydrateEmbeds, type PostContext } from './posts';
 import { detectUrlStyle, startRouter, type Route } from './router';
 import { applyThemeColor, hasTheme, themeSelector } from './themes';
-import { renderPage, siteSummary } from './view';
+import { renderPage, siteName, siteSummary } from './view';
 
 function setMeta(name: string, content: string | undefined): void {
     let meta = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
@@ -55,7 +55,9 @@ async function start(): Promise<void> {
     applySite(site);
     const selector = site.config.themeSelector ? await themeSelector(site) : undefined;
     initFollow();
-    document.body.appendChild(followDialog());
+    // The dialog also follows the sites on Following: closing it goes back to this site, not to theirs.
+    const dialog = document.body.appendChild(followDialog());
+    dialog.dataset.back = `Back to ${siteName(site)}`;
     installKeys();
 
     const email = preferredEmail(site.contact);

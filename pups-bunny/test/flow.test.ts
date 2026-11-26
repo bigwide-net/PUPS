@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { HOST_META_KEY } from '../src/hostmeta'
 import { handle } from '../src/index'
+import pkg from '../package.json'
 import { originPages, storage } from './fakes'
 import {
   approve, authorizeUrl, bearer, call, cimdFetches, connect, env, exchange, form, mockClientFetch, ORIGIN, PASSWORD, pkce, put,
@@ -40,6 +41,8 @@ describe('discovery', () => {
       scopes_supported: ['identify', 'write:/appdata/'], spec_version: '0.1', host_meta_endpoint: `${ORIGIN}/pups/host-meta`,
       max_upload_bytes: 1048576,
     })
+    // The version is package.json's.
+    expect(c.implementation).toEqual({ name: 'pups-bunny', version: pkg.version })
     expect(c.well_known_paths.map((e: any) => e.path)).toContain('/.well-known/about.md')
   })
 
