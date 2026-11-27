@@ -20,16 +20,26 @@ export interface WellKnownView {
 
 /** A scope that covers paths: a write scope, or a read scope for a private path. */
 export type PathScopeView = { kind: 'write' | 'read'; prefix: string; wellKnown?: WellKnownView }
-/** A parsed scope. Without `wellKnown`, a path scope is the app's own directory. */
-export type ScopeView = { kind: 'identify' } | PathScopeView
+/**
+ * A parsed scope. Without `wellKnown`, a path scope is the app's own directory. `identity-tokens` lets the app act as the
+ * owner on other sites (RFC-10).
+ */
+export type ScopeView = { kind: 'identify' } | { kind: 'identity-tokens' } | PathScopeView
 
 const FEED_PATHS = ['/feed.json', '/feed/', '/.well-known/following.opml']
 /** The groups with path scopes, in the order of the consent screen. */
 const PATH_GROUPS = ['appdata', 'feeds', 'profile', 'private'] as const
 
-/** The consent screen's group of a scope (RFC-6 "Consent"). */
-export const scopeGroup = (sc: ScopeView) => sc.kind == 'identify' ? 'identity' : !sc.wellKnown ? 'appdata'
+/** The consent screen's group of a scope (RFC-6 "Consent", RFC-10 "Scope and consent"). */
+export const scopeGroup = (sc: ScopeView) => sc.kind == 'identify' ? 'identity' : sc.kind == 'identity-tokens' ? 'actAs' : !sc.wellKnown ? 'appdata'
   : isPrivate(sc.wellKnown.path) ? 'private' : FEED_PATHS.includes(sc.wellKnown.path) ? 'feeds' : 'profile'
+
+/** The group of `identity-tokens`, after the path groups, with what it means in its details. */
+const actAsLabel = (ownerHost: string) => t('group.actAs', { me: `<strong>${h(ownerHost)}</strong>` })
+const actAsDetails = () => `<details>
+<summary>${t('details.summary')}</summary>
+<p>${t('details.actAs')}</p>
+</details>`
 
 /** What a scope covers, for the details of its group. In /pups/private/, also what the app may do there. */
 function scopeItem(sc: PathScopeView): string {
@@ -82,6 +92,10 @@ export function permissionGroups(scopes: Map<string, ScopeView>, ownerHost: stri
 <label><input type="checkbox" name="scope" value="${h(groups.get(g)!.map(([str]) => str).join(' '))}" checked> <span>${groupLabel(g, scopesOf(groups.get(g)!))}</span></label>
 ${groupDetails(g, scopesOf(groups.get(g)!))}
 </div>`),
+    ...groups.has('actAs') ? [`<div>
+<label><input type="checkbox" name="scope" value="identity-tokens" checked> <span>${actAsLabel(ownerHost)}</span></label>
+${actAsDetails()}
+</div>`] : [],
   ].join('\n')
 }
 
@@ -95,6 +109,7 @@ export function permissionList(scopes: [string, ScopeView | undefined][], ownerH
 ${[
     ...groups.has('identity') ? [`<li>${t('group.identity', { me: `<strong>${h(ownerHost)}</strong>` })}</li>`] : [],
     ...pathGroups(groups).map(g => `<li>${groupLabel(g, scopesOf(groups.get(g)!))}\n${groupDetails(g, scopesOf(groups.get(g)!))}</li>`),
+    ...groups.has('actAs') ? [`<li>${actAsLabel(ownerHost)}\n${actAsDetails()}</li>`] : [],
     ...scopes.filter(([, sc]) => !sc).map(([str]) => `<li><code>${h(visible(str))}</code></li>`),
   ].join('\n')}
 </ul>`

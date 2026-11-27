@@ -2,7 +2,7 @@
 
 A small **Personal Upload Server** ([RFC-6](https://github.com/bigwide-net/RFCs/blob/main/RFC-6-Personal-Upload-Server.md), `spec_version` 0.1) in TypeScript and Express, for testing apps and clients locally. It stores uploads as plain files and all other data in one JSON file. There is no database.
 
-It speaks the same protocol as the real implementations (Cloudflare Worker, PHP drop-in): discovery, OAuth 2.1 with PKCE and Client ID Metadata Documents, the upload API with ETags, `host-meta.json` editing, and an apps page where the owner sees which apps have access and can revoke them. It is built to be simple, not to face the internet: see [Differences from the RFC](#differences-from-the-rfc).
+It speaks the same protocol as the real implementations (Cloudflare Worker, PHP drop-in): discovery, OAuth 2.1 with PKCE and Client ID Metadata Documents, the upload API with ETags, `host-meta.json` editing, identity tokens ([RFC-10](https://github.com/bigwide-net/RFCs/blob/main/RFC-10-Identity-Tokens.md), the issuing side), and an apps page where the owner sees which apps have access and can revoke them. It is built to be simple, not to face the internet: see [Differences from the RFC](#differences-from-the-rfc).
 
 ## Quick start (macOS)
 
@@ -78,12 +78,13 @@ Without `PUPS_TLS_CERT` and `PUPS_TLS_KEY`, the server speaks plain HTTP, e.g. w
 | URL | What |
 | --- | --- |
 | `/` | Start page with links. |
-| `/pups/apps` | **Connected apps**: every grant with the app's domain, its self-declared name, the permissions, when it was approved and last used. Select apps to revoke them, optionally deleting their `/appdata/<app>/` folders. Viewing and revoking each need the password. |
+| `/pups/apps` | **Connected apps**: every grant with the app's domain, its self-declared name, the permissions, when it was approved and last used, and where it acted as you with identity tokens in the last 30 days. Select apps to revoke them, optionally deleting their `/appdata/<app>/` folders. Once there is a signing key, it shows the key with a button that replaces it. Viewing, revoking and replacing the key each need the password. |
 | `/.well-known/host-meta.json` | Discovery. If no stored file exists, it is generated with the PUPS link. |
 | `/personal-storage.json` | The configuration document. |
 | `/.well-known/oauth-authorization-server` | RFC 8414 metadata. |
 | `/oauth/authorize` | Authorization and consent screen. |
-| `/oauth/token`, `/oauth/revoke` | Token and revocation endpoints. |
+| `/oauth/token`, `/oauth/revoke` | Token and revocation endpoints. The token endpoint also exchanges an access token with the `identity-tokens` scope for an identity token (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, RFC-10), valid for 60 seconds, or with `scope=read` a read token for fetching personal feeds, valid for 24 hours: at most 60 per grant and minute, each logged for 30 days. |
+| `/pups/jwks.json` | `jwks_uri`: the public key that checks identity tokens, with CORS and `Cache-Control: public, max-age=600`. The key is made on first use and kept in `state.json`. |
 | `/<path>` | Upload API (`PUT`, `DELETE`) and public reads (`GET`, `HEAD`) at the domain root, e.g. `/appdata/app.example/feed.json` and `/.well-known/about.md`. A read with `Authorization: Bearer` and any valid token, whatever its scopes, is a fresh read: `Cache-Control: private, no-store` instead of `no-cache`, and `401` for an invalid token. Private files (below) need a token whose scope covers them. |
 | `/pups/host-meta` | `host_meta_endpoint`: apps add links and set properties. |
 | `/pups/post` | `post_endpoint`, only with `PUPS_POST_FALLBACK=true`. |
@@ -92,7 +93,7 @@ Without `PUPS_TLS_CERT` and `PUPS_TLS_KEY`, the server speaks plain HTTP, e.g. w
 
 **Private areas.** Files in an app's `/appdata/<app>/private/` and in declared paths inside `/pups/private/` are never served publicly. A read needs `Authorization: Bearer` with a token whose scope covers the path: `write:/appdata/<app>/` for the app's own private folder, and `write:` or `read:` for a declared path in `/pups/private/` (`read:` scopes exist only for these and can't write). The server checks the token before it looks for the file: no token → `401` with `WWW-Authenticate: Bearer`, an invalid one → `401`, a token without a covering scope → `403`, and only then a missing file → `404`. Every response for a private path, errors included, carries `Cache-Control: no-store` (`private, no-store` for the file itself) and `Vary: Authorization`. Private files can't be linked or used as URL properties in `host-meta.json` (`403`), and the log records no public URL for them. They are not encrypted: whoever can read the data directory can read them.
 
-The consent screen shows the app's domain and logo, asks whether you meant to log in with the app, shows a "new app" notice and a notice for loopback redirects, and groups the permissions into identity, app data, feeds, profile and non-public content ("Read non-public content" if the request only reads it), each with a checkbox and collapsed details. Approving always needs the password, because the server never sets a cookie (see below).
+The consent screen shows the app's domain and logo, asks whether you meant to log in with the app, shows a "new app" notice and a notice for loopback redirects, and groups the permissions into identity, app data, feeds, profile, non-public content ("Read non-public content" if the request only reads it) and acting as you on other sites (`identity-tokens`), each with a checkbox and collapsed details. Approving always needs the password, because the server never sets a cookie (see below).
 
 ### Data
 
@@ -100,7 +101,7 @@ Everything is in `PUPS_DATA_DIR` (default `./data`):
 
 ```
 data/
-  state.json                      grants, hashed tokens and codes, approved apps, signing key
+  state.json                      grants, hashed tokens and codes, approved apps, form secret, identity token key and log
   files/                          uploads; https://<host>/x is files/x
     appdata/app.example/…         each app's own folder
     .well-known/about.md          declared well-known files
@@ -110,17 +111,18 @@ data/
     .well-known/host-meta.json    host-meta.json, if an app or you created it
 ```
 
-You may edit files by hand, including `host-meta.json`; PUPS reads them fresh on every request. To start over, stop the server and delete `data/`. `state.json` contains no usable tokens, only SHA-256 hashes. Restarts keep all grants and tokens.
+You may edit files by hand, including `host-meta.json`; PUPS reads them fresh on every request. To start over, stop the server and delete `data/`. `state.json` contains no usable tokens, only SHA-256 hashes, but it does hold the private key that signs identity tokens: keep it private. The button on the apps page replaces it. Restarts keep all grants and tokens.
 
 ### Log
 
 The server is a prototype, so it logs everything it does to stdout, one line per entry:
 
 - every request: method, URL, status, duration, sizes, user agent, and why it failed;
-- every password check, with the action (`approve app`, `view apps page`, `remove app`, `remove link`, `remove property`), success or failure, and blocked attempts;
+- every password check, with the action (`approve app`, `view apps page`, `remove app`, `remove link`, `remove property`, `replace signing key`), success or failure, and blocked attempts;
 - client metadata fetches, with the document;
 - authorization requests, approvals (requested and granted scope), denials and rejections;
 - code exchanges, refreshes (including grace-period retries and reuse that revoked a grant) and revocations;
+- issued and refused identity tokens, with the app, grant and audience;
 - every created, replaced and deleted file, with the app, path, size, type, preconditions and ETags;
 - `host-meta.json` requests and writes, and grants, links and properties removed on the apps page.
 
@@ -217,7 +219,7 @@ If the owner's website already serves `/feed.json` or `/feed/` (WordPress, for e
 
 The server implements the protocol as an app sees it. As a test server, it simplifies the owner side:
 
-- **Same-domain mode only, password only.** There are no passkeys, no auth subdomain and no sessions, not even the page session RFC-6 allows (owner.js asks for one, and gets none). The server never sets a cookie. Every owner action (approving an app, viewing the apps page, removing an app, a link or a property) needs the password in the same request, which also covers step-up confirmation. Failed attempts are rate-limited: after 5 in 15 minutes, one per minute.
+- **Same-domain mode only, password only.** There are no passkeys, no auth subdomain and no sessions, not even the page session RFC-6 allows (owner.js asks for one, and gets none). The server never sets a cookie. Every owner action (approving an app, viewing the apps page, removing an app, a link or a property, replacing the signing key) needs the password in the same request, which also covers step-up confirmation. Failed attempts are rate-limited: after 5 in 15 minutes, one per minute.
 - **No setup page.** The password comes from `PUPS_PASSWORD` instead of a first-run setup with a bootstrap secret.
 - **No storage quota and no write rate limit.** The server doesn't record which grant wrote which file. Revocation can delete an app's whole `/appdata/<app>/` folder instead.
 - **No consent shortcut.** The consent screen is always shown, even if an existing grant already covers the request.
@@ -234,7 +236,7 @@ Layout:
 | `server.ts` | Entry point: reads the configuration, starts the server. |
 | `controller.ts` | `createApp()` (the Express app) and `startServer()` (HTTP/HTTPS, loopback filter). |
 | `handler/discovery.ts` | `host-meta.json`, configuration document, RFC 8414 metadata, start page. |
-| `handler/oauth.ts` | Authorization endpoint with consent screen, token and revocation endpoints. |
+| `handler/oauth.ts` | Authorization endpoint with consent screen, token (including the RFC-10 token exchange) and revocation endpoints, JWK Set. |
 | `handler/files.ts` | Upload API, POST fallback, public and fresh reads with the sandbox headers. |
 | `handler/hostmeta.ts` | `host_meta_endpoint` and the cleanup after revocation. |
 | `handler/admin.ts` | The apps page: grants, and the links and properties of `host-meta.json`. |

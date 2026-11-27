@@ -1,5 +1,6 @@
 import { alert, confirmFields, type ConfirmOptions, escapeHtml as h, jsonScript, page, status, time } from './html'
 import { type HomepageKind, homepageSummary } from './homepage'
+import type { IdentityUse } from './identity-tokens'
 import { inboxSection, type InboxSummary, moderationSection, type ModerationView } from './inbox'
 import { sanitizeText, visible } from './sanitize'
 import { t } from './texts'
@@ -160,6 +161,8 @@ export interface AppRow {
   lastUsedAt: number | null
   /** Whether the app can have files in its own directory, which the owner may delete with it. */
   hasFiles: boolean
+  /** Where the app acted as the owner with identity tokens (RFC-10), in the last 30 days. */
+  identityUses?: IdentityUse[]
 }
 
 export interface LinkRow {
@@ -182,15 +185,27 @@ export interface AppsPage {
   confirm: ConfirmOptions
   /** What the built-in receiver has put into the inbox, if it is on; the apps page shows the mentions. */
   inbox?: InboxSummary
+  /** The key that signs identity tokens (RFC-10), if the server issues them and has made one. */
+  signingKey?: { kid: string; createdAt: number }
   message?: string
   error?: string
 }
+
+const times = (n: number) => n == 1 ? 'once' : `${n} times`
+/** How many of the tokens were read tokens, for reading personal feeds. */
+const readsNote = (u: IdentityUse) => !u.reads ? '' : u.reads < u.count ? ` (${times(u.reads)} for reading)` : u.count == 1 ? ', for reading' : ', all for reading'
+
+/** Where an app acted as the owner, under its permissions. */
+const identityUsesList = (uses?: IdentityUse[]) => uses?.length ? `<p>Acted as you on other sites in the last 30 days:</p>
+<ul>
+${uses.map(u => `<li><code>${h(visible(new URL(u.audience).host))}</code>: ${times(u.count)}${readsNote(u)}, last ${time(u.last)}</li>`).join('\n')}
+</ul>` : ''
 
 function appRow(a: AppRow): string {
   const name = sanitizeText(a.clientName, 100)
   return `<tr>
 <th scope="row">${h(a.clientHost)}${name ? `<br><small>“<bdi>${h(name)}</bdi>” (self-declared)</small>` : ''}</th>
-<td>${a.permissions}</td>
+<td>${a.permissions}${identityUsesList(a.identityUses)}</td>
 <td>${time(a.createdAt)}</td>
 <td>${time(a.lastUsedAt)}</td>
 <td>
@@ -199,6 +214,14 @@ ${a.hasFiles ? `<button type="submit" name="revoke_delete" value="${h(a.id)}">Re
 </td>
 </tr>`
 }
+
+/** The key that signs identity tokens, and the button that replaces it if it may have leaked (RFC-10 "Keys"). */
+const signingKeySection = (k: { kid: string; createdAt: number }) => `<section aria-labelledby="signing-key-heading">
+<h2 id="signing-key-heading">Signing key</h2>
+<p>Apps that may act as you on other sites get signed proofs from this server. Other sites check them with the key <code>${h(k.kid)}</code>, made ${time(k.createdAt)}.</p>
+<p>If you think the key has leaked, replace it. Proofs signed with the old key stop working at once; sites learn the new one within an hour.</p>
+<p><button type="submit" name="replace_signing_key" value="1">Replace the signing key</button></p>
+</section>`
 
 export function appsPage(site: OwnerSite, o: AppsPage): Response {
   const appsTable = o.apps.length ? `<table>
@@ -253,6 +276,7 @@ ${linksTable}
 ${propsTable}
 </section>
 ${o.inbox?.mentionsOn ? inboxSection({ ...o.inbox, commentsOn: false }) : ''}
+${o.signingKey ? signingKeySection(o.signingKey) : ''}
 ${site.subdomainMode ? `<section aria-labelledby="sessions-heading">
 <h2 id="sessions-heading">Sessions</h2>
 <p><button type="submit" name="signout_all" value="1">Log out everywhere</button></p>

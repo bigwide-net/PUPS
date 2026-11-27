@@ -18,11 +18,16 @@ const FEED_PATHS = ['/feed.json', '/feed/', '/.well-known/following.opml'];
 /** The groups with path scopes, in the order of the consent screen. Their names are in texts.json (group.*). */
 const PATH_GROUPS = ['appdata', 'feeds', 'profile', 'private'];
 
-/** The consent screen's group of a scope (RFC-6 "Consent"): identity, appdata, feeds, profile or private. */
+/**
+ * The consent screen's group of a scope (RFC-6 "Consent", RFC-10 "Scope and consent"): identity, appdata, feeds, profile,
+ * private or actAs.
+ */
 function scopeGroup(array $sc): string
 {
     if ($sc['kind'] === 'identify')
         return 'identity';
+    if ($sc['kind'] === IDENTITY_SCOPE)
+        return 'actAs';
     if (!$sc['wellKnown'])
         return 'appdata';
     if (isPrivate($sc['wellKnown']['path']))
@@ -73,6 +78,17 @@ function groupDetails(array $scopes): string
         . '</details>';
 }
 
+/** The group of `identity-tokens`, after the path groups (RFC-10): its name, and what it means in its details. */
+function actAsText(Config $c): string
+{
+    return t('group.actAs', ['me' => '<strong>' . h($c->host) . '</strong>']);
+}
+
+function actAsDetails(): string
+{
+    return "<details>\n<summary>" . t('details.summary') . "</summary>\n<p>" . t('details.actAs') . "</p>\n</details>";
+}
+
 /**
  * The permissions of the consent screen: identity, then one checkbox per group, which grants
  * all of the group's scopes. The paths, rels and properties are in a collapsed details element.
@@ -86,6 +102,9 @@ function permissionGroups(array $scopes, Config $c): string
         if (isset($groups[$group]))
             $out .= "\n<div>\n" . '<label><input type="checkbox" name="scope" value="' . h(implode(' ', array_keys($groups[$group]))) . '" checked> <span>'
                 . groupText($group, $groups[$group]) . "</span></label>\n" . groupDetails($groups[$group]) . "\n</div>";
+    if (isset($groups['actAs']))
+        $out .= "\n<div>\n" . '<label><input type="checkbox" name="scope" value="' . IDENTITY_SCOPE . '" checked> <span>' . actAsText($c) . "</span></label>\n"
+            . actAsDetails() . "\n</div>";
     return $out;
 }
 
@@ -105,6 +124,8 @@ function permissionList(string $scope, string $clientHost, Config $c): string
     foreach (PATH_GROUPS as $group)
         if (isset($groups[$group]))
             $items[] = '<li>' . groupText($group, $groups[$group]) . "\n" . groupDetails($groups[$group]) . '</li>';
+    if (isset($groups['actAs']))
+        $items[] = '<li>' . actAsText($c) . "\n" . actAsDetails() . '</li>';
     return "<ul>\n" . implode("\n", [...$items, ...$unknown]) . "\n</ul>";
 }
 
@@ -243,7 +264,7 @@ function tokenForm(Request $req): array
     return $req->form();
 }
 
-/** POST /oauth/token: code exchange and refresh (RFC-6 "Tokens"). */
+/** POST /oauth/token: code exchange and refresh (RFC-6 "Tokens"), and token exchange for identity tokens (RFC-10). */
 function token(Request $req, Ctx $ctx): Response
 {
     $f = tokenForm($req);
@@ -298,9 +319,52 @@ function token(Request $req, Ctx $ctx): Response
             Log::event($r['graceRetry'] ? 'token.refreshed-grace-retry' : 'token.refreshed', ['clientId' => $clientId, 'grant' => $r['grant']['id'],
                 'old' => fp($refresh), 'access' => fp($r['tokens']['access']), 'refresh' => fp($r['tokens']['refresh'])]);
             return $send($r['tokens'], $r['grant']['scope']);
+        case TOKEN_EXCHANGE:
+            if ($c->identityTokens)
+                return identityToken($f, $clientId, $ctx);
+            // Without the openssl extension, the server has no such grant type.
         default:
-            return oauthError('unsupported_grant_type', 'grant_type must be authorization_code or refresh_token');
+            return oauthError('unsupported_grant_type', 'grant_type must be authorization_code' . ($c->identityTokens ? ', refresh_token or ' . TOKEN_EXCHANGE : ' or refresh_token'));
     }
+}
+
+// --- Identity tokens (RFC-10) ----------------------------------------------------------------------
+
+/**
+ * A token exchange (RFC 8693, RFC-10 "Token exchange"): the app's access token, of a grant with `identity-tokens`, for a
+ * signed token that says that the owner acts, through the app, at `audience`. Every token is logged (identity.php).
+ */
+function identityToken(array $f, string $clientId, Ctx $ctx): Response
+{
+    $c = $ctx->config;
+    $x = exchangeRequest($f);
+    if (isset($x['error']))
+        return oauthError($x['error'], $x['description']);
+    // Looked up like at the upload API: an unexpired access token of an active grant.
+    $grant = $ctx->state->authenticate($x['subjectToken'])['grant'] ?? null;
+    if (!$grant || $grant['clientId'] !== $clientId)
+        return oauthError('invalid_grant', 'subject_token is not a valid access token of this app');
+    if (!in_array(IDENTITY_SCOPE, explode(' ', $grant['scope']), true))
+        return oauthError('invalid_scope', 'The grant has no ' . IDENTITY_SCOPE . ' scope');
+    if (!logIdentityToken($ctx, $grant, $x['audience'], $x['read'])) {
+        Log::event('identity.rate-limited', ['clientId' => $clientId, 'grant' => $grant['id'], 'audience' => $x['audience']]);
+        return oauthError('slow_down', 'Too many identity tokens; try again in a minute', 429)->set(['Retry-After' => '60']);
+    }
+    $token = signIdentityToken(signingKey($ctx), ['iss' => $c->issuer, 'sub' => $c->me, 'aud' => $x['audience'], 'client_id' => $clientId], $ctx->now(), $x['read']);
+    Log::event('identity.issued', ['clientId' => $clientId, 'grant' => $grant['id'], 'audience' => $x['audience'], 'read' => $x['read']]);
+    return json(['access_token' => $token, 'issued_token_type' => JWT_TOKEN_TYPE, 'token_type' => 'Bearer']
+        + ($x['read'] ? ['expires_in' => READ_TOKEN_TTL, 'scope' => 'read'] : ['expires_in' => IDENTITY_TOKEN_TTL]), 200, NO_STORE);
+}
+
+/** GET /pups/jwks.json: the public key, for the servers that check identity tokens. Public, with CORS (handle()). */
+function jwksEndpoint(Request $req, Ctx $ctx): Response
+{
+    if (!$ctx->config->identityTokens)
+        throw new HttpError(404, 'not_found', 'Not found');
+    if ($req->method !== 'GET' && $req->method !== 'HEAD')
+        throw methodNotAllowed('GET, HEAD, OPTIONS');
+    return new Response(200, ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'public, max-age=' . JWKS_MAX_AGE,
+        'X-Content-Type-Options' => 'nosniff'], json_encode(jwkSet(signingKey($ctx)), JSON_FLAGS));
 }
 
 /** POST /oauth/revoke (RFC 7009). */

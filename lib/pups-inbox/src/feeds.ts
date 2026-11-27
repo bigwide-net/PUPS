@@ -257,6 +257,9 @@ export function parseFeed(body: string): Omit<Feed, 'url'> | undefined {
 const str = (v: unknown) => typeof v == 'string' ? v : undefined
 const obj = (v: unknown): Record<string, any> | undefined => v && typeof v == 'object' && !Array.isArray(v) ? v as Record<string, any> : undefined
 
+/** What an RFC-1 `_source.inReplyTo` answers: the string, or the `value` of the object form (with `feedUrl` and `feedTitle`). */
+export const replyRef = (v: unknown) => str(v) ?? str(obj(v)?.value)
+
 function jsonFeed(j: Record<string, any>): Omit<Feed, 'url'> {
   const firstName = (authors: unknown) => Array.isArray(authors) ? str(obj(authors[0])?.name) : undefined
   const feedAuthor = firstName(j.authors) ?? str(obj(j.author)?.name)
@@ -268,7 +271,7 @@ function jsonFeed(j: Record<string, any>): Omit<Feed, 'url'> {
     items.push({
       id: String(id), url: str(it.url), title: str(it.title), html: str(it.content_html), text: str(it.content_text), markdown: str(src.markdown),
       author: firstName(it.authors) ?? str(obj(it.author)?.name) ?? feedAuthor,
-      account: str(obj(src.accounts)?.socialspec), inReplyTo: str(src.inReplyTo), date: isoDate(str(it.date_published)),
+      account: str(obj(src.accounts)?.socialspec), inReplyTo: replyRef(src.inReplyTo), date: isoDate(str(it.date_published)),
       allowComments: obj(it._commenting)?.allowComments !== false, ...obj(it._commenting)?.notifyReplies === false && { notifyReplies: false }, links: [],
     })
   }

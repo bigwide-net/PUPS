@@ -1,6 +1,6 @@
 import { isCleanUrlString } from 'pups-ui'
 import { accountHost, handles, handleText } from './content'
-import { FEED_TIMEOUT_MS, fetchDoc, FetchError, splitRef, urlHost } from './feeds'
+import { FEED_TIMEOUT_MS, fetchDoc, FetchError, replyRef, splitRef, urlHost } from './feeds'
 import { type Job, MENTION_REL, type Receiver, refId } from './receiver'
 
 /**
@@ -35,7 +35,7 @@ const str = (v: unknown) => typeof v == 'string' ? v : undefined
 export function notified(r: Receiver, comment: Item, answered: Item | undefined): [string, string][] {
   const skip = new Set([r.ownerHost, accountHost(comment._source?.accounts?.socialspec)])
   const out = new Map<string, string>()
-  const inReplyTo = str(comment._source?.inReplyTo)
+  const inReplyTo = replyRef(comment._source?.inReplyTo)
   const author = accountHost(answered?._source?.accounts?.socialspec)
   if (inReplyTo && splitRef(inReplyTo)[1] != undefined && author && !skip.has(author) && answered!._commenting?.notifyReplies !== false)
     out.set(author, inReplyTo)

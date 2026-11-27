@@ -1,4 +1,7 @@
 import { type Job, STATUS_KEEP_MS, type Status } from 'pups-inbox'
+import {
+  IDENTITY_LOG_MS, IDENTITY_TOKENS_PER_MINUTE, type IdentityLogEntry, type IdentityUse, identityUses, newSigningKey, type SigningKey,
+} from 'pups-ui'
 import { hashToken, randomToken } from './crypto'
 import type { Files } from './storage'
 
@@ -13,11 +16,13 @@ import type { Files } from './storage'
  *
  * Files:
  *   _pups/secret.json            HMAC key for signed form fields and challenges
+ *   _pups/signing-key.json       the RSA key pair that signs identity tokens (RFC-10)
  *   _pups/owner.json             password hash and passkeys
  *   _pups/login.json             recent failed logins
  *   _pups/storage.json           bytes used by uploads (approximate)
  *   _pups/grants/<id>.json       a grant with its token hashes and refresh state
  *   _pups/usage/<id>.json        when a grant was last used; written separately so it never overwrites a refresh
+ *   _pups/identity/<id>.json     the identity tokens issued for a grant (RFC-10 "Log"), kept after revocation
  *   _pups/codes/<hash>.json      authorization codes
  *   _pups/nonces/<nonce>.json    used single-use nonces (approvals, setup, passkey challenges)
  *   _pups/sessions/<hash>.json   owner sessions (auth subdomain mode)
@@ -47,6 +52,8 @@ const LOGIN_FREE_FAILURES = 5
 const OLD_REFRESH_KEPT = 50
 /** lastUsedAt is written at most this often per grant and instance. */
 const USAGE_WRITE_INTERVAL = 5 * 60_000
+/** Logged identity tokens kept per grant, the newest; far more than an app needs in 30 days at human pace. */
+const IDENTITY_LOG_MAX = 10_000
 /** Opportunistic cleanup deletes at most this many files per run (subrequest budget). */
 const CLEANUP_MAX_DELETES = 10
 
@@ -186,6 +193,61 @@ export class Store {
     if (!s) await this.files.putJson(file, { key: s = randomToken(32) })
     secrets.set(this.files, s)
     return s
+  }
+
+  // --- Identity tokens (RFC-10) -----------------------------------------------------
+
+  private signingKeyKey = `${STATE_PREFIX}signing-key.json`
+  private identityKey = (grantId: string) => this.key('identity', grantId)
+
+  /** The first use of this instance that is making the signing key, which parallel first uses wait for. */
+  private makingKey?: Promise<SigningKey>
+
+  private storedSigningKey = async () => await this.files.getJson<SigningKey>(this.signingKeyKey) ?? undefined
+
+  /**
+   * The key that signs identity tokens. Like the secret, it is never served. Made on first use (`replace`: a new one in
+   * place of it, at once). A new key is stored only if there is none, and the stored one, reread after the write, is
+   * used: two instances that make the first key in the same instant both end up with the one written last, unless
+   * one signs before the other writes (see README, "Consistency").
+   */
+  async signingKey(replace = false): Promise<SigningKey> {
+    if (!replace) {
+      const old = await this.storedSigningKey()
+      if (old) return old
+      if (this.makingKey) return this.makingKey
+    }
+    const making = this.makingKey = (async () => {
+      const key = await newSigningKey()
+      await this.files.putJson(this.signingKeyKey, key)
+      return await this.storedSigningKey() ?? key
+    })()
+    try {
+      return await making
+    } finally {
+      if (this.makingKey == making) this.makingKey = undefined
+    }
+  }
+
+  private identityLog = async (grantId: string) =>
+    (await this.files.getJson<{ log: IdentityLogEntry[] }>(this.identityKey(grantId)))?.log ?? []
+
+  /**
+   * Logs an identity token for the grant, for the audience. False, and nothing logged, if the grant had
+   * IDENTITY_TOKENS_PER_MINUTE tokens in the last minute. A read-modify-write, so parallel requests can lose entries.
+   */
+  async logIdentityToken(grant: Grant, audience: string, read = false): Promise<boolean> {
+    const now = Date.now()
+    const log = (await this.identityLog(grant.id)).filter(e => e.at > now - IDENTITY_LOG_MS)
+    if (log.filter(e => e.at > now - 60_000).length >= IDENTITY_TOKENS_PER_MINUTE) return false
+    await this.files.putJson(this.identityKey(grant.id), { log: [...log, { at: now, clientId: grant.clientId, audience, ...read && { read } }].slice(-IDENTITY_LOG_MAX) })
+    return true
+  }
+
+  /** Where the grant's app acted as the owner, per audience, the latest first. */
+  async identityUses(grant: Grant): Promise<IdentityUse[]> {
+    const now = Date.now()
+    return identityUses((await this.identityLog(grant.id)).filter(e => e.at > now - IDENTITY_LOG_MS), grant.clientId)
   }
 
   // --- Owner -----------------------------------------------------------------------
@@ -498,11 +560,11 @@ export class Store {
 
   // --- Cleanup ---------------------------------------------------------------------
 
-  /** Deletes expired codes, nonces, sessions and cached client documents, by their age. */
+  /** Deletes expired codes, nonces, sessions, cached client documents and identity logs, by their age. */
   async cleanup(now = Date.now()) {
     let budget = CLEANUP_MAX_DELETES
     for (const [dir, maxAge] of [['codes', 24 * 3600_000], ['nonces', 24 * 3600_000], ['clients', 24 * 3600_000], ['sessions', SESSION_TTL],
-      ['mentions/status', STATUS_KEEP_MS]] as const) {
+      ['mentions/status', STATUS_KEEP_MS], ['identity', IDENTITY_LOG_MS]] as const) {
       for (const e of await this.files.list(`${STATE_PREFIX}${dir}/`)) {
         if (!budget) return
         if (e.isDirectory || !e.lastModified || e.lastModified > now - maxAge) continue

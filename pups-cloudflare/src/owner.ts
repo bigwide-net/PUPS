@@ -8,7 +8,7 @@ import {
 import { hashPassword, hashToken, randomToken, sign, timingSafeEqual, verify } from './crypto'
 import { modifyHostMeta, onGrantRevoked, readHostMeta, setPostUrlTemplate } from './hostmeta'
 import { readForm } from './http'
-import { permissionList } from './oauth'
+import { permissionList, signingKey } from './oauth'
 import { receiver } from './receiver'
 import { saveWebsub, websubView } from './websub'
 import { webSubSettingsFromForm } from 'pups-feeds'
@@ -102,6 +102,8 @@ export async function setup(req: Request, s: Settings, env: Env, recover = false
     return ui.recoveredPage(s, s.issuer)
   }
   if (!await db.createOwner(password ? await hashPassword(password) : null, passkey)) return notFound()
+  // The key that signs identity tokens (RFC-10) is made during setup, before any app can ask for one.
+  await signingKey(env)
   return setupCompletePage(s, { configUrl: s.configUrl, issuer: s.issuer, hasPasskey: !!passkey, homepage: await homepageKind(s, env) })
 }
 
@@ -176,7 +178,8 @@ export async function apps(req: Request, s: Settings, env: Env): Promise<Respons
   if (req.method == 'GET') return session.reply(session.active ? appsPage(s, env) : unlockPage(s, env))
 
   const form = await readForm(req)
-  if (session.active && !changes(form, ['revoke', 'revoke_delete', 'remove_link', 'remove_property', 'signout_all'])) return session.reply(appsPage(s, env))
+  if (session.active && !changes(form, ['revoke', 'revoke_delete', 'remove_link', 'remove_property', 'signout_all', 'replace_signing_key']))
+    return session.reply(appsPage(s, env))
   const err = await session.confirm(form)
   if (err) return session.reply(session.active ? appsPage(s, env, { error: err }) : unlockPage(s, env, err))
 
@@ -214,6 +217,8 @@ export async function apps(req: Request, s: Settings, env: Env): Promise<Respons
       return true
     }, false)
     message = 'The property was removed.'
+  } else if (form.has('replace_signing_key')) {
+    message = `The signing key was replaced; the new one is ${(await signingKey(env, true)).kid}.`
   } else if (form.has('signout_all') && s.subdomainMode) {
     await db.deleteAllSessions()
     return seeOther('/pups/login', { 'set-cookie': await endSession(req, env) })
@@ -241,13 +246,15 @@ const unlockPage = async (s: Settings, env: Env, error?: string) => ui.unlockPag
 
 async function appsPage(s: Settings, env: Env, o: { message?: string; error?: string } = {}) {
   const db = store(env)
-  const [grants, used, hostMeta, confirm, inbox] = await Promise.all([db.activeGrants(), db.storageUsed(), readHostMeta(s, env), confirmOptions(s, env),
-    receiver(s, env).then(inboxSummary)])
+  const [grants, used, hostMeta, confirm, inbox, key] = await Promise.all([db.activeGrants(), db.storageUsed(), readHostMeta(s, env), confirmOptions(s, env),
+    receiver(s, env).then(inboxSummary), signingKey(env)])
   return ui.appsPage(s, {
-    apps: grants.map(g => ({
+    apps: await Promise.all(grants.map(async g => ({
       ...g, permissions: permissionList(g.scope, g.clientHost, s),
       hasFiles: g.scope.split(' ').includes(`write:${appdataPrefix(g.clientHost)}`),
-    })),
+      identityUses: await db.identityUses(g.id),
+    }))),
+    signingKey: { kid: key.kid, createdAt: key.createdAt },
     links: (hostMeta.doc.links ?? []).map(l => ({ rel: String(l.rel), href: String(l.href ?? '') })),
     properties: Object.entries(hostMeta.doc.properties ?? {}).map(([k, v]) => [k, String(v)]),
     hostMetaError: hostMeta.error, hostMetaStored: hostMeta.stored, usedBytes: used, maxBytes: s.maxStorageBytes,

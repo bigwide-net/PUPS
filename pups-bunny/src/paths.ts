@@ -1,4 +1,4 @@
-import { hasUnsafeChars, isPrivate } from 'pups-ui'
+import { hasUnsafeChars, IDENTITY_SCOPE, isPrivate } from 'pups-ui'
 import type { Settings, WellKnownEntry } from './settings'
 
 export const MAX_PATH_BYTES = 512
@@ -36,7 +36,7 @@ export function parsePath(raw: string, s: Settings): { path: string } | { error:
   return { path }
 }
 
-export type Scope = { kind: 'identify' }
+export type Scope = { kind: 'identify' } | { kind: 'identity-tokens' }
   | { kind: 'write'; prefix: string; wellKnown?: WellKnownEntry }
   | { kind: 'read'; prefix: string; wellKnown: WellKnownEntry }
 
@@ -50,11 +50,12 @@ export const appdataPrefix = (clientHost: string) => `/appdata/${clientHost}/`
 
 /**
  * Parses one scope string for a client. Returns undefined if the scope is invalid: only
- * `identify`, the app's own directory, declared well-known paths and, with `read:`, declared
- * private paths in /pups/private/ exist.
+ * `identify`, `identity-tokens` (RFC-10), the app's own directory, declared well-known paths
+ * and, with `read:`, declared private paths in /pups/private/ exist.
  */
 export function parseScope(scope: string, clientHost: string, s: Settings): Scope | undefined {
   if (scope == 'identify') return { kind: 'identify' }
+  if (scope == IDENTITY_SCOPE) return { kind: 'identity-tokens' }
   const m = SCOPE_SYNTAX.exec(scope)
   if (!m) return
   let prefix: string
@@ -104,9 +105,12 @@ export const readPrefixes = (scope: string) => prefixes(scope, 'read:')
 export const canReadPrivate = (scope: string, path: string) =>
   [...writePrefixes(scope), ...readPrefixes(scope)].some(prefix => covers(prefix, path))
 
-/** Does a scope need step-up confirmation? Everything but `identify` and the app's own directory does. */
+/**
+ * Does a scope need step-up confirmation? Everything but `identify` and the app's own directory does, `identity-tokens`
+ * always, so that its consent screen is never skipped (RFC-10 "Scope and consent").
+ */
 export const needsStepUp = (scope: Scope, clientHost: string) =>
-  scope.kind != 'identify' && scope.prefix != appdataPrefix(clientHost)
+  scope.kind == 'identity-tokens' || scope.kind != 'identify' && scope.prefix != appdataPrefix(clientHost)
 
 /**
  * Can a path hold an uploaded file? Only the app directories and declared well-known

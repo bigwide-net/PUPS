@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { IDENTITY_LOG_MS, IDENTITY_TOKENS_PER_MINUTE, IdentityLogEntry, IdentityUse, identityUses, SigningKey } from 'pups-ui';
 import { hashToken, randomToken } from './crypto';
 
 /**
@@ -72,6 +73,10 @@ interface StateData {
     approvedClients: Record<string, number>;
     /** Single-use nonces of consent forms → expiry. */
     usedNonces: Record<string, number>;
+    /** The key that signs identity tokens (RFC-10), made on first use. Only this file has it, never the storage. */
+    signingKey?: SigningKey;
+    /** The identity tokens of the last IDENTITY_LOG_MS (RFC-10 "Log"), oldest first. */
+    identityLog: (IdentityLogEntry & { grantId: string })[];
 }
 
 export interface Tokens {
@@ -94,7 +99,7 @@ export class State {
         this.file = file;
         this.now = now;
         const empty: StateData = {
-            secret: randomToken(), grants: {}, codes: {}, accessTokens: {}, refreshTokens: {}, approvedClients: {}, usedNonces: {},
+            secret: randomToken(), grants: {}, codes: {}, accessTokens: {}, refreshTokens: {}, approvedClients: {}, usedNonces: {}, identityLog: [],
         };
         this.data = fs.existsSync(file) ? { ...empty, ...JSON.parse(fs.readFileSync(file, 'utf8')) } : empty;
         this.save();
@@ -112,6 +117,7 @@ export class State {
         prune(this.data.accessTokens, t => t.expiresAt < now || !this.data.grants[t.grantId]);
         prune(this.data.refreshTokens, t => t.expiresAt < now || !this.data.grants[t.grantId]);
         prune(this.data.usedNonces, exp => exp < now);
+        this.data.identityLog = this.data.identityLog.filter(e => e.at > now - IDENTITY_LOG_MS);
         fs.mkdirSync(path.dirname(this.file), { recursive: true });
         const tmp = `${this.file}.${randomToken(6)}.tmp`;
         fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
@@ -295,5 +301,40 @@ export class State {
         if (save)
             this.save();
         return grant;
+    }
+
+    // --- Identity tokens (RFC-10) ------------------------------------------------------
+
+    /** The key that signs identity tokens, if there is one. */
+    get signingKey(): SigningKey | undefined {
+        return this.data.signingKey;
+    }
+
+    /** Stores `key` unless there is a key already (`replace`: in place of it). Returns the key that is now in use. */
+    setSigningKey(key: SigningKey, replace = false): SigningKey {
+        if (this.data.signingKey && !replace)
+            return this.data.signingKey;
+        this.data.signingKey = key;
+        this.save();
+        return key;
+    }
+
+    /**
+     * Logs an identity token of the grant for the audience. False, and nothing logged, if the grant had
+     * IDENTITY_TOKENS_PER_MINUTE tokens in the last minute.
+     */
+    logIdentityToken(grant: Grant, audience: string, read = false): boolean {
+        const now = this.now();
+        if (this.data.identityLog.filter(e => e.grantId == grant.id && e.at > now - 60_000).length >= IDENTITY_TOKENS_PER_MINUTE)
+            return false;
+        this.data.identityLog.push({ at: now, grantId: grant.id, clientId: grant.clientId, audience, ...read && { read } });
+        this.save();
+        return true;
+    }
+
+    /** Where the grant's app acted as the owner, per audience, the latest first. */
+    identityUses(grant: Grant): IdentityUse[] {
+        const since = this.now() - IDENTITY_LOG_MS;
+        return identityUses(this.data.identityLog.filter(e => e.grantId == grant.id && e.at > since), grant.clientId);
     }
 }

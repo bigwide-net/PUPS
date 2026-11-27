@@ -1,4 +1,5 @@
 import { archivesOf, archiveUrl, feedNameOf, findItem, loadSite, type SiteFeed } from '../src/data';
+import { feedTitle } from '../src/posts';
 
 const O = 'https://tim.example';
 const feed = (title: string, extra = {}) => JSON.stringify({version: 'https://jsonfeed.org/version/1.1', title, items: [{id: '1', content_text: 'x'}], ...extra});
@@ -104,6 +105,32 @@ describe('loadSite', () => {
         expect(site.about?.summary).toBe('Hi there');
         expect(site.following).toBeUndefined();
         expect(site.config).toEqual({embeds: 'consent', themeSelector: false});
+    });
+
+    it('leaves out feeds that need an identity token (RFC-10), and shows optional ones', async () => {
+        const access = (href: string, level: string) => ({rel: 'https://bigwide.net/ns/feed', href, properties: {'https://bigwide.net/ns/access': level}});
+        mockFetch({
+            '/.well-known/host-meta.json': JSON.stringify({links: [
+                access(`${O}/feed.json`, 'restricted'), access(`${O}/feed/queue.json`, 'personal'), access(`${O}/feed/poll.json`, 'optional'),
+                access(`${O}/feed/odd.json`, 'friends-only'), access(`${O}/feed/photos.json`, 'public'),
+            ]}),
+            '/feed.json': feed('Notes'), '/feed/queue.json': feed('Queue'), '/feed/poll.json': feed('Poll'),
+            '/feed/odd.json': feed('Odd'), '/feed/photos.json': feed('Photos'),
+        });
+        expect((await loadSite(O)).feeds.map(f => f.json.title)).toEqual(['Poll', 'Photos']);
+    });
+
+    it('takes the feeds\' titles from their links, in the site\'s language, else the feed\'s own', async () => {
+        const link = (href: string, titles?: Record<string, string>) => ({rel: 'https://bigwide.net/ns/feed', href, titles});
+        mockFetch({
+            '/.well-known/host-meta.json': JSON.stringify({
+                links: [link(`${O}/feed.json`, {default: 'Notes from Tim'}), link(`${O}/feed/photos.json`, {default: 'Photos', de: 'Fotos'}), link(`${O}/feed/links.json`)],
+                properties: {'https://bigwide.net/ns/language': 'de'},
+            }),
+            '/feed.json': feed('Notes'), '/feed/photos.json': feed('Pictures'), '/feed/links.json': feed('Links'),
+        });
+        const feeds = (await loadSite(O)).feeds;
+        expect(feeds.map(f => [f.title, feedTitle(f)])).toEqual([['Notes from Tim', 'Notes from Tim'], ['Fotos', 'Fotos'], [undefined, 'Links']]);
     });
 
     it('works without host-meta.json and config: /feed.json only, embeds on', async () => {

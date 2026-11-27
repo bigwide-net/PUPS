@@ -144,6 +144,20 @@ function newCommentFeed(host: FeedHost, t: Thread): JsonObject {
   }
 }
 
+/**
+ * Turns the target in a comment's `_source.inReplyTo` into RFC-1's object form, with the feed that holds what it answers
+ * (the target without its `#id`) and a title, which a reader shows as "In reply to …": for a comment on a post, the
+ * title of the post's feed; for a reply, the title of the comment it answers, if it has one, else none, so that the
+ * reader names it.
+ */
+function setInReplyTo(comment: JsonObject, t: Thread) {
+  const source = comment._source
+  if (!isObject(source) || typeof source.inReplyTo != 'string') return
+  const named = t.depth > 1 ? t.parent.title : t.feed.doc.title
+  const title = typeof named == 'string' && named ? named : undefined
+  source.inReplyTo = { value: source.inReplyTo, feedUrl: splitRef(source.inReplyTo)[0], ...title != undefined && { feedTitle: title } }
+}
+
 /** The counts of a comment feed for `_source.comments` (RFC-1): its items, and with all replies to them, as far as the items say. */
 export function commentCounts(doc: JsonObject | undefined): [number, number] {
   const items = doc?.items as JsonObject[] ?? []
@@ -199,6 +213,7 @@ export async function publishComment(host: FeedHost, t: Thread, build: (republis
   const level = last(t.levels)
   const doc = level.doc ??= newCommentFeed(host, t)
   const comment = build(republish)
+  setInReplyTo(comment, t)
   const open = t.depth < maxDepth ? { count: 0, total: 0 } : undefined
   const items = doc.items as JsonObject[]
   const id = itemId(comment)!

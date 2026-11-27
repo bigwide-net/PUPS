@@ -11,7 +11,8 @@ in the visitor's browser, without any server code:
 - **comments** on posts that have a comment feed ([RFC-1](https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md)
   `_source.comments`, which PUPS writes for the comments the owner approved): "3 comments" opens them
   below the post, and on the post's own page they are open; replies open under their comment;
-- one tab per further feed registered in `host-meta.json` (`/feed/<name>.json`);
+- one tab per further feed registered in `host-meta.json` (`/feed/<name>.json`), named by the link's
+  `titles` (in the site's language, else `default`), else by the feed's own title;
 - **Following**, **About** and **Contact** from the [SocialSpec](https://socialspec.org) files; on Following, each
   site with a feed has a Follow button that opens the follow dialog, and the list downloads as OPML;
 - **pages**: Markdown files registered in `host-meta.json`, as a tab of their own or on a **Pages** tab;
@@ -115,7 +116,9 @@ scrolled to the top of the window and marked. After the last post, the page scro
 All from the site's own origin, in parallel:
 
 - `/.well-known/host-meta.json`: the feeds (links with `rel` `https://bigwide.net/ns/feed` to
-  `/feed/<name>.json` on this site; others, like feeds on other domains or RSS feeds, are ignored)
+  `/feed/<name>.json` on this site; others, like feeds on other domains or RSS feeds, are ignored,
+  and so are feeds that visitors can't read: links with the [RFC-10](https://github.com/bigwide-net/RFCs/blob/main/RFC-10-Identity-Tokens.md#announcing-a-feed)
+  property `https://bigwide.net/ns/access` set to `restricted`, `personal` or an unknown value)
   and the [site properties](https://github.com/bigwide-net/RFCs/blob/main/RFC-6-Personal-Upload-Server.md#site-properties):
 
   | Property | Used for |

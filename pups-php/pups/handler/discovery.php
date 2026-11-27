@@ -33,7 +33,9 @@ function configDocument(Config $c): array
         ...endpoints($c),
         'storage_base' => $c->storageBase,
         'public_base' => $c->publicBase,
-        'scopes_supported' => ['identify', 'write:/appdata/'],
+        'scopes_supported' => ['identify', 'write:/appdata/', ...($c->identityTokens ? [IDENTITY_SCOPE] : [])],
+        // The keys that check identity tokens (RFC-10).
+        ...($c->identityTokens ? ['jwks_uri' => $c->base . JWKS_PATH] : []),
         // Private paths have nothing but `path`.
         'well_known_paths' => array_map(fn($e) => array_filter([
             'path' => $e['path'], 'url' => $e['url'], 'rels' => $e['rels'] ?: null, 'properties' => $e['properties'] ?: null,
@@ -62,13 +64,14 @@ function oauthMetadata(Config $c): array
         ...endpoints($c),
         'response_types_supported' => ['code'],
         'response_modes_supported' => ['query'],
-        'grant_types_supported' => ['authorization_code', 'refresh_token'],
+        'grant_types_supported' => ['authorization_code', 'refresh_token', ...($c->identityTokens ? [TOKEN_EXCHANGE] : [])],
+        ...($c->identityTokens ? ['jwks_uri' => $c->base . JWKS_PATH] : []),
         'code_challenge_methods_supported' => ['S256'],
         'token_endpoint_auth_methods_supported' => ['none'],
         'revocation_endpoint_auth_methods_supported' => ['none'],
         'authorization_response_iss_parameter_supported' => true,
         'client_id_metadata_document_supported' => true,
-        'scopes_supported' => ['identify', 'write:/appdata/', ...array_map(fn($e) => "write:$e[path]", $c->wellKnown),
+        'scopes_supported' => ['identify', 'write:/appdata/', ...($c->identityTokens ? [IDENTITY_SCOPE] : []), ...array_map(fn($e) => "write:$e[path]", $c->wellKnown),
             ...array_map(fn($e) => "read:$e[path]", array_values(array_filter($c->wellKnown, fn($e) => isPrivate($e['path']))))],
         'service_documentation' => $c->configUrl,
     ];

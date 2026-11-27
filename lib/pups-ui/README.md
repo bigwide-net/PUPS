@@ -25,6 +25,7 @@ The functions are pure: a server passes in plain data (its settings, the parsed 
 
 - `src/html.ts`: the page frame with its security headers, messages, and `confirmFields()`: how a form is confirmed. With a passkey, nothing visible (`owner.js` asks for it; the servers don't accept the password then); without one, `owner.js` asks for the password in a dialog, and only pages without script (`noscript`) or the login page have a password field.
 - `src/scopes.ts`: `isPrivate()`, the consent groups of the scopes and their wording.
+- `src/identity-tokens.ts`: identity tokens (RFC-10): the scope, the checks of a token exchange request, the signing key, the JWK Set and the signed token, with Web Crypto only; each server keeps the key and the log.
 - `src/consent.ts`: the consent screen.
 - `src/owner.ts`: setup, login, the apps page, the feeds page and the password page.
 - `src/inbox.ts`: the inbox and auto-moderation sections of the apps and comments pages, and the pages that dismiss, publish or reject an inbox item.

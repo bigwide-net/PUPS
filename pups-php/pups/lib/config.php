@@ -77,6 +77,11 @@ final class Config
     public ?string $extraCa;
     /** WebAuthn relying party ID: the owner's host without port. */
     public string $rpId;
+    /**
+     * Whether the server issues identity tokens (RFC-10, identity.php). Not a setting: only with the openssl extension,
+     * which makes the signing key and signs with it. Tests turn it off.
+     */
+    public bool $identityTokens;
 
     /** Builds the configuration. Throws \InvalidArgumentException on errors. */
     public static function fromArray(array $c, array $detected = [], string $detectedBasePath = ''): self
@@ -136,6 +141,7 @@ final class Config
         if ($ca !== null && (!is_string($ca) || !is_file($ca)))
             throw new \InvalidArgumentException("'extra_ca' must be the path of a PEM file");
         $x->extraCa = $ca;
+        $x->identityTokens = function_exists('openssl_pkey_new');
         return $x;
     }
 

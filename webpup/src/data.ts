@@ -14,6 +14,9 @@ export const FEED_REL = 'https://bigwide.net/ns/feed';
  *  is neither a tab nor on the Pages tab. */
 export const PAGES_REL = 'https://bigwide.net/ns/webpup-pages';
 export const HIDDEN_PROP = 'https://bigwide.net/ns/webpup-hidden';
+/** The link property of RFC-10 that marks a feed that needs an identity token: "restricted",
+ *  "personal" or "optional". Visitors can read only public and optional feeds. */
+export const ACCESS_PROP = 'https://bigwide.net/ns/access';
 const NS = 'https://bigwide.net/ns/';
 
 /** The host-meta.json properties webpup uses (RFC-6, The list of well-known paths). */
@@ -63,6 +66,8 @@ export interface SiteFeed {
     name?: string;
     url: string;
     json: JsonFeed;
+    /** The title of its link in host-meta.json (RFC-7, Registering feeds), if it has one. */
+    title?: string;
     /** From _archive (RFC-13): the archive URL template with `{number}`, the newest's number, and the archive size. */
     archives?: {template: string, newest: number, size: number};
 }
@@ -189,6 +194,13 @@ interface HostMeta {
     properties?: Record<string, unknown>;
 }
 
+/** Whether a visitor's browser can read the feed of a link: not for RFC-10's restricted and
+ *  personal feeds, nor for access levels webpup doesn't know. */
+function isPublicFeed(link: HostMetaLink): boolean {
+    const access = link.properties && typeof link.properties == 'object' ? link.properties[ACCESS_PROP] : undefined;
+    return access == undefined || access == 'public' || access == 'optional';
+}
+
 /** An http(s) URL of this site, without its #fragment; undefined for anything else. */
 function ownUrl(url: string | undefined, origin: string): string | undefined {
     const u = httpUrl(url, origin);
@@ -233,14 +245,17 @@ const nameOfPage = (url: string) =>
     decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '').replace(/\.(md|markdown|txt)$/i, '')
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64).replace(/-+$/, '') || 'page';
 
-/** The page's title: the link's `titles` (RFC 6415; the page's language, else "default", else
- *  any), else its first heading, else its name. */
-function titleOfPage(link: HostMetaLink, markdown: string, name: string, language?: string): string {
+/** A link's title from its `titles` (RFC 7033): in the site's language, else "default", else any. */
+function titleOfLink(link: HostMetaLink, language?: string): string | undefined {
     const titles = link.titles && typeof link.titles == 'object' ? link.titles : {};
     const pick = (k: string | undefined) => k && typeof titles[k] == 'string' ? (titles[k] as string).trim() : '';
+    return pick(language) || pick('default') || Object.values(titles).find((t): t is string => typeof t == 'string' && !!t.trim())?.trim() || undefined;
+}
+
+/** The page's title: the link's title, else its first heading, else its name. */
+function titleOfPage(link: HostMetaLink, markdown: string, name: string, language?: string): string {
     const heading = /^#{1,6}[ \t]+(.+?)[ \t#]*$/m.exec(markdown)?.[1];
-    return pick(language) || pick('default') || Object.values(titles).find((t): t is string => typeof t == 'string' && !!t.trim())?.trim()
-        || heading?.replace(/[*_`]/g, '').trim() || name.replace(/-/g, ' ').replace(/^./, c => c.toUpperCase());
+    return titleOfLink(link, language) || heading?.replace(/[*_`]/g, '').trim() || name.replace(/-/g, ' ').replace(/^./, c => c.toUpperCase());
 }
 
 const MD_ACCEPT = 'text/markdown, text/plain;q=0.9';
@@ -294,13 +309,26 @@ export async function loadSite(origin = location.origin): Promise<Site> {
     const footerLoading = props.footer ? getText(props.footer, MD_ACCEPT) : Promise.resolve(undefined);
 
     // The main feed is at /feed.json, registered or not (RFC-7, Reading); the named feeds come
-    // from host-meta.json.
+    // from host-meta.json, with the titles of their links. Feeds that need an identity token
+    // (RFC-10) are left out.
     const names = new Set<string>();
+    const titles = new Map<string, string>();
+    let mainPublic = true;
     for (const link of Array.isArray(hostMeta?.links) ? hostMeta!.links : [])
         if (link?.rel == FEED_REL && typeof link.href == 'string') {
             const name = feedNameOf(link.href, origin);
+            if (name == undefined)
+                continue;
+            if (!isPublicFeed(link)) {
+                if (name == '')
+                    mainPublic = false;
+                continue;
+            }
             if (name)
                 names.add(name);
+            const title = titleOfLink(link, props.language);
+            if (title && !titles.has(name))
+                titles.set(name, title);
         }
     const named = await Promise.all([...names].map(async name => {
         const url = `${origin}/feed/${name}.json`;
@@ -310,10 +338,10 @@ export async function loadSite(origin = location.origin): Promise<Site> {
             console.warn(`webpup: ${url} is not a JSON Feed`);
         return json && {name, url, json};
     }));
-    const main = mainText ? parseJsonFeed(mainText) : undefined;
+    const main = mainText && mainPublic ? parseJsonFeed(mainText) : undefined;
     const feeds = [main && {url: `${origin}/feed.json`, json: main}, ...named]
         .filter((f): f is Omit<SiteFeed, 'archives'> => !!f)
-        .map(f => ({...f, archives: archivesOf(f.json, origin)}));
+        .map(f => ({...f, ...titles.has(f.name ?? '') && {title: titles.get(f.name ?? '')}, archives: archivesOf(f.json, origin)}));
 
     const about = aboutText != undefined ? parseAbout(aboutText) : undefined;
     const [pages, footerText] = await Promise.all([pagesLoading, footerLoading]);

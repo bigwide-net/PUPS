@@ -1,12 +1,13 @@
 import { decodeHTMLStrict as decodeHTML } from 'entities'
 import MarkdownIt from 'markdown-it'
-import { wellFormed } from './content'
+import { isActionsFallback, wellFormed } from './content'
 
 /**
  * Comment HTML and Comment Markdown (RFC-5): the content of a comment, checked against the features of the feed's
  * policy and normalized. Markdown (preferred) is rendered with markdown-it (CommonMark with tables and strikethrough,
  * raw HTML as text), plain text becomes paragraphs; the HTML is then checked with a strict tokenizer. A comment that
- * breaks a rule is rejected with the first problem, never repaired; only unknown attributes are removed. pups-php's
+ * breaks a rule is rejected with the first problem, never repaired; only unknown attributes, and the fallback links to
+ * actions of the system it comes from (RFC-9, `without-extension-actions`), are removed. pups-php's
  * commenthtml.php is a port.
  */
 
@@ -115,6 +116,24 @@ function tokenize(html: string): Token[] {
   return tokens
 }
 
+/** Leaves out RFC-9's action fallbacks (see isActionsFallback()) with all they contain. */
+function withoutActions(tokens: Token[]): Token[] {
+  const out: Token[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!
+    if (t.type != 'open' || VOID.has(t.name) || !isActionsFallback(t.attrs.class)) {
+      out.push(t)
+      continue
+    }
+    for (let depth = 1; depth && ++i < tokens.length;) {
+      const u = tokens[i]!
+      if (u.type == 'open' && !VOID.has(u.name)) depth++
+      else if (u.type == 'close') depth--
+    }
+  }
+  return out
+}
+
 /** Checks the tokens against the features and the structure rules, and keeps only the known attributes. */
 function validate(tokens: Token[], features: Features): Token[] {
   const out: Token[] = []
@@ -220,7 +239,7 @@ export function commentContent(c: CommentSource, policy: Features & { minLength:
   if ([...source].length > policy.maxLength)
     return { ok: false, code: 'too-long', text: `The comment is longer than ${policy.maxLength} characters.` }
   try {
-    const checked = validate(tokenize(markdown != undefined ? markdownHtml(markdown) : html ?? textCommentHtml(source)), policy)
+    const checked = validate(withoutActions(tokenize(markdown != undefined ? markdownHtml(markdown) : html ?? textCommentHtml(source))), policy)
     const tokens = policy.urlAutoLinking ? autoLink(checked) : checked
     const length = [...visible(tokens)].length
     if (!length && !tokens.some(t => t.type == 'open' && t.name == 'img')) return { ok: false, code: 'empty-content', text: 'The comment is empty.' }

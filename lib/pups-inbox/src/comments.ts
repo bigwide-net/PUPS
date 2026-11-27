@@ -1,5 +1,6 @@
 import { sanitizeText } from 'pups-ui'
 import { visibleText } from './content'
+import { replyRef } from './feeds'
 import { type InboxItem, SOURCE_ABOUT } from './inbox'
 
 /**
@@ -96,6 +97,8 @@ export function isSameComment(item: InboxItem, published: Record<string, any>, e
     if (!exceptNotify && _commenting != undefined) rest._commenting = _commenting
     if (rest._source) {
       delete rest._source.comments
+      // The server adds the feed and its title to the target when it publishes (pups-feeds' publishComment()).
+      if (rest._source.inReplyTo != undefined) rest._source.inReplyTo = replyRef(rest._source.inReplyTo)
       if (Object.keys(rest._source).every(k => k == 'about')) delete rest._source
     }
     return canonical(rest)

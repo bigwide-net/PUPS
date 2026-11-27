@@ -36,10 +36,11 @@ Bunny Storage has no transactions or conditional writes. Every check-and-set (si
 | Two apps post to the same kept feed in the same instant, on different instances | Both read the same archive; the second write drops the first post from it, and both posts can get the same index. Within one instance, posts take their turn. |
 | The receiver writes the inbox while a reader dismisses an item | The same: the inbox is reread just before the write. One of the two changes can get lost; a lost mention comes back with the next webmention. |
 | The same webmention checked by two instances | Both put the same item; the second write replaces the first. |
+| Two instances make the first signing key for identity tokens in the same instant | Both write a key and then use the stored one, so the last written wins; a token that one signed before the other wrote doesn't verify. Within one instance, parallel first uses wait for the same key. |
 
 Requests that don't race behave exactly like the Cloudflare version.
 
-The **write rate limit** is counted per script instance, and the **storage quota** counter is updated with a read-modify-write, so both are approximate.
+The **write rate limit** is counted per script instance, and the **storage quota** counter and the **log of identity tokens** (with its rate limit) are updated with a read-modify-write, so all three are approximate.
 
 ### Fresh reads
 
@@ -130,12 +131,13 @@ On the page *Homepage* (`/pups/homepage`) you can make **webpup** the homepage o
 ## Security notes
 
 - **SSRF.** Edge Scripts can't restrict `fetch()` to public addresses (Cloudflare's `global_fetch_strictly_public`). Before fetching a client metadata document or a post for the receiver, the script resolves its host over DNS-over-HTTPS and refuses private, loopback, link-local and other special-purpose addresses. The gap: `fetch()` resolves the name again, so DNS rebinding can still reach a private address. If Bunny's network turns out to block private addresses itself, set `DOH_URL=off`.
+- **Identity tokens** ([RFC-10](https://github.com/bigwide-net/RFCs/blob/main/RFC-10-Identity-Tokens.md)): an app with the scope `identity-tokens` (its own consent group, always with step-up confirmation) trades its access token at `/oauth/token` (RFC 8693 token exchange, `audience` = one https origin) for a JWT signed with RS256, valid for 60 seconds, that says that the owner acts at that origin through the app. With `scope=read` the app gets a **read token** instead, for fetching personal feeds: the same JWT with `"scope": "read"`, valid for 24 hours, with `scope` in the answer; any other `scope` gets `invalid_scope`. The script makes an RSA key of 2048 bits on first use and keeps it in `_pups/signing-key.json`; `/pups/jwks.json` on the auth host publishes its public half (`jwks_uri`, cacheable for 10 minutes). Each grant may get 60 tokens a minute; every token is logged for 30 days in `_pups/identity/<grant>.json` (at most the newest 10,000 per grant), and the apps page shows for each app where it acted as you, with a button that replaces the key if it may have leaked. The upload API never accepts identity tokens.
 - **The storage zone password** gives full access to all files and to the state, including the password hash and the signing key. It lives only in the script's secrets.
 - **Files are buffered.** Serving a file reads all of it to compute its ETag, and range requests are cut from the buffer. With uploads capped at 25 MB, this stays well below the 128 MB memory limit, but large files written to the zone by other means would be slow to serve.
 
 ## Limits
 
-- **50 subrequests per request.** Every storage access is one. Most requests need 3 to 10. The apps page needs about 10 plus one per app, so it works for about 40 apps. Checking a webmention takes about a dozen, which is why a request checks at most two. Posting to a kept feed takes about a dozen too; a `PUT` of a feed file that changes many old posts needs one more per archive it touches.
+- **50 subrequests per request.** Every storage access is one. Most requests need 3 to 10. The apps page needs about 10 plus one per app, and one more per app with `identity-tokens`, so it works for about 40 apps (20 that all have it). Checking a webmention takes about a dozen, which is why a request checks at most two. Posting to a kept feed takes about a dozen too; a `PUT` of a feed file that changes many old posts needs one more per archive it touches.
 - **Work after the response.** Whether `waitUntil()` work has its own limits is not documented ([Open questions](#open-questions)). Webmentions that weren't checked stay in the queue for the next one. WebSub pings that a run didn't send wait for the next change of the feed, if the script's call of itself fails.
 - **WebSub.** The callback's host is checked for private addresses when the subscription is verified, not before every ping: that would take two more subrequests per subscriber. Two instances that change a feed's subscriptions in the same instant can lose one of the changes.
 - **One owner per script and storage zone**, as in RFC-6.

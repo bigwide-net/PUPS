@@ -6,18 +6,22 @@ import { field, LIMITS } from '../lib/http';
 import { log } from '../lib/log';
 import { appdataPrefix } from '../lib/paths';
 import { modifyHostMeta, onGrantRevoked, ownerHostMeta } from './hostmeta';
-import { permissionList } from './oauth';
+import { permissionList, signingKey } from './oauth';
 
 
-/** The apps page: the grants, and the links and properties of host-meta.json, each with a button that removes it. */
+/**
+ * The apps page: the grants, where they acted as the owner (RFC-10), the key that signs identity tokens once there is
+ * one, and the links and properties of host-meta.json, each with a button that removes it.
+ */
 function listPage(res: express.Response, ctx: Ctx, o: { message?: string; error?: string } = {}) {
-    const { config } = ctx;
-    const hostMeta = ownerHostMeta(ctx);
+    const { config, state } = ctx;
+    const hostMeta = ownerHostMeta(ctx), key = state.signingKey;
     return send(res, appsPage(ownerSite(config), {
-        apps: ctx.state.activeGrants().map(g => ({
+        apps: state.activeGrants().map(g => ({
             ...g, lastUsedAt: g.lastUsedAt ?? null, permissions: permissionList(g.scope, g.clientHost, config),
-            hasFiles: g.scope.split(' ').includes(`write:${appdataPrefix(g.clientHost)}`),
+            hasFiles: g.scope.split(' ').includes(`write:${appdataPrefix(g.clientHost)}`), identityUses: state.identityUses(g),
         })),
+        signingKey: key && { kid: key.kid, createdAt: key.createdAt },
         links: (hostMeta.doc.links ?? []).map(l => ({ rel: String(l.rel), href: String(l.href ?? '') })),
         properties: Object.entries(hostMeta.doc.properties ?? {}).map(([k, v]) => [k, String(v)]),
         hostMetaError: hostMeta.error, hostMetaStored: hostMeta.stored, confirm: PASSWORD_ONLY, ...o,
@@ -45,10 +49,11 @@ export function adminRoutes(ctx: Ctx): express.Router {
     const router = express.Router();
     const site = ownerSite(ctx.config);
     router.get('/pups/apps', htmlErrors((_req, res) => send(res, unlockPage(site, PASSWORD_ONLY))));
-    router.post('/pups/apps', express.urlencoded({ extended: false, limit: '64kb' }), htmlErrors((req, res) => {
+    router.post('/pups/apps', express.urlencoded({ extended: false, limit: '64kb' }), htmlErrors(async (req, res) => {
         const f = (name: string, max?: number) => field(req.body, name, max);
         const grant = f('revoke') ?? f('revoke_delete'), link = f('remove_link', LIMITS.url * 2), property = f('remove_property', LIMITS.url);
-        const action = grant ? 'remove app' : link ? 'remove link' : property ? 'remove property' : 'view apps page';
+        const replaceKey = !!f('replace_signing_key');
+        const action = grant ? 'remove app' : link ? 'remove link' : property ? 'remove property' : replaceKey ? 'replace signing key' : 'view apps page';
         const err = ctx.owner.check(f('password', LIMITS.password), action);
         if (err)
             return send(res, unlockPage(site, PASSWORD_ONLY, action == 'view apps page' ? err : `${err} Nothing was changed.`));
@@ -79,6 +84,12 @@ export function adminRoutes(ctx: Ctx): express.Router {
             }, false);
             log('host-meta.property-removed-by-owner', { property });
             return listPage(res, ctx, { message: 'The property was removed.' });
+        }
+        // If the key may have leaked (RFC-10 "Keys"): tokens signed with the old one stop working at once.
+        if (replaceKey) {
+            const { kid } = await signingKey(ctx, true);
+            log('identity.signing-key-replaced-by-owner', { kid });
+            return listPage(res, ctx, { message: `The signing key was replaced; the new one is ${kid}.` });
         }
         return listPage(res, ctx);
     }));

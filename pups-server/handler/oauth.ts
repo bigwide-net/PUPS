@@ -1,10 +1,13 @@
 import express from 'express';
 import * as ui from 'pups-ui';
+import {
+    exchangeRequest, exchangeResponse, IDENTITY_SCOPE, JWKS_MAX_AGE, JWKS_PATH, jwkSet, newSigningKey, SigningKey, signIdentityToken, TOKEN_EXCHANGE,
+} from 'pups-ui';
 import { Client, ClientError, redirectUriAllowed } from '../lib/cimd';
 import { Ctx } from '../lib/context';
 import { randomToken, s256, sign, verify } from '../lib/crypto';
 import { htmlErrors, PASSWORD_ONLY, send, sendErrorPage } from '../lib/html';
-import { field, fields, HttpError, LIMITS, query } from '../lib/http';
+import { field, fields, HttpError, LIMITS, methodNotAllowed, query } from '../lib/http';
 import { parseScope, parseScopes, Scope } from '../lib/paths';
 import { fp, log } from '../lib/log';
 import { ACCESS_TTL, Tokens } from '../lib/state';
@@ -81,7 +84,7 @@ async function authorize(req: express.Request, res: express.Response, ctx: Ctx) 
         return fail('invalid_request', 'Invalid code_challenge');
     const scopes = parseScopes(scope ?? '', client.clientHost, config);
     if (!scopes)
-        return fail('invalid_scope', "Only identify, the app's own directory, declared well-known paths and read scopes for declared private paths can be requested");
+        return fail('invalid_scope', "Only identify, identity-tokens, the app's own directory, declared well-known paths and read scopes for declared private paths can be requested");
 
     log('authorize.request', { clientId, clientHost: client.clientHost, clientName: client.name, redirectUri, scope, state });
     consentPage(res, {
@@ -132,7 +135,7 @@ function requireForm(req: express.Request) {
         throw new HttpError(400, 'invalid_request', 'The body must be application/x-www-form-urlencoded');
 }
 
-/** POST /oauth/token: code exchange and refresh (RFC-6 "Tokens"). */
+/** POST /oauth/token: code exchange, refresh (RFC-6 "Tokens") and token exchange (RFC-10). */
 function token(req: express.Request, res: express.Response, ctx: Ctx) {
     requireForm(req);
     const { config, state } = ctx;
@@ -185,9 +188,51 @@ function token(req: express.Request, res: express.Response, ctx: Ctx) {
             });
             return send(r.tokens, r.grant.scope);
         }
+        case TOKEN_EXCHANGE:
+            return identityToken(req, res, clientId, ctx);
         default:
-            return oauthError(res, 'unsupported_grant_type', 'grant_type must be authorization_code or refresh_token');
+            return oauthError(res, 'unsupported_grant_type', `grant_type must be authorization_code, refresh_token or ${TOKEN_EXCHANGE}`);
     }
+}
+
+// --- Identity tokens (RFC-10) ----------------------------------------------------------
+
+/**
+ * The key that signs identity tokens; made on first use (`replace`: a new one in place of it). Concurrent
+ * first uses may each make a key, but only the first one stored is used.
+ */
+export const signingKey = async (ctx: Ctx, replace = false): Promise<SigningKey> =>
+    !replace && ctx.state.signingKey || ctx.state.setSigningKey(await newSigningKey(), replace);
+
+/** The parsed form as URLSearchParams, for the checks of pups-ui. */
+const searchParams = (body: Record<string, string | string[]>) =>
+    new URLSearchParams(Object.entries(body).flatMap(([k, v]) => [v].flat().map(x => [k, x])));
+
+/**
+ * A token exchange (RFC 8693, RFC-10 "Token exchange"): the app's access token, of a grant with `identity-tokens`,
+ * for a signed token that says that the owner acts, through the app, at `audience`.
+ */
+async function identityToken(req: express.Request, res: express.Response, clientId: string, ctx: Ctx) {
+    const { config, state } = ctx;
+    field(req.body, 'subject_token', LIMITS.token);
+    fields(req.body, 'audience', LIMITS.url);
+    const x = exchangeRequest(searchParams(req.body));
+    if ('error' in x)
+        return oauthError(res, x.error, x.description);
+    const grant = state.authenticate(x.subjectToken);
+    const reject = (error: string, description: string, status = 400, headers = {}) => {
+        log('token.identity-rejected', { clientId, grant: grant?.id, audience: x.audience, error });
+        return oauthError(res.set(headers), error, description, status);
+    };
+    if (grant?.clientId != clientId)
+        return reject('invalid_grant', 'subject_token is not a valid access token of this app');
+    if (!grant.scope.split(' ').includes(IDENTITY_SCOPE))
+        return reject('invalid_scope', `The grant has no ${IDENTITY_SCOPE} scope`);
+    if (!state.logIdentityToken(grant, x.audience, x.read))
+        return reject('slow_down', 'Too many identity tokens; try again in a minute', 429, { 'Retry-After': '60' });
+    const token = await signIdentityToken(await signingKey(ctx), { iss: config.issuer, sub: config.me, aud: x.audience, client_id: clientId }, x.read);
+    log('token.identity-issued', { clientId, grant: grant.id, audience: x.audience, subject: fp(x.subjectToken) });
+    res.set(noStore).json(exchangeResponse(token, x.read));
 }
 
 /** POST /oauth/revoke (RFC 7009). */
@@ -212,5 +257,12 @@ export function oauthRoutes(ctx: Ctx): express.Router {
     router.post('/oauth/authorize', form, htmlErrors((req, res) => decide(req, res, ctx)));
     router.post('/oauth/token', form, (req, res) => token(req, res, ctx));
     router.post('/oauth/revoke', form, (req, res) => revoke(req, res, ctx));
+    // The public key, for the sites that check identity tokens; CORS comes from corsMiddleware.
+    router.get(JWKS_PATH, async (_req, res) => res
+        .set({ 'Cache-Control': `public, max-age=${JWKS_MAX_AGE}`, 'X-Content-Type-Options': 'nosniff' })
+        .json(jwkSet([await signingKey(ctx)])));
+    router.all(JWKS_PATH, () => {
+        throw methodNotAllowed('GET, HEAD, OPTIONS');
+    });
     return router;
 }

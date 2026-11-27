@@ -1,6 +1,8 @@
 import { commentUrl, mentionUrl } from 'pups-inbox'
 import * as ui from 'pups-ui'
-import { errorPage } from 'pups-ui'
+import {
+  errorPage, exchangeRequest, exchangeResponse, IDENTITY_SCOPE, JWKS_PATH, jwksResponse, signIdentityToken, TOKEN_EXCHANGE,
+} from 'pups-ui'
 import { passkeyGetOptions, session, verifyCredential } from './auth'
 import { type Client, ClientError, loadClient, redirectUriAllowed } from './cimd'
 import { hashToken, randomToken, s256, sign, verify } from './crypto'
@@ -25,7 +27,9 @@ export const configDocument = (s: Settings) => ({
   ...endpoints(s),
   storage_base: s.storageBase,
   public_base: s.publicBase,
-  scopes_supported: ['identify', 'write:/appdata/'],
+  scopes_supported: ['identify', 'write:/appdata/', IDENTITY_SCOPE],
+  // The keys that check identity tokens (RFC-10).
+  jwks_uri: `${s.issuer}${JWKS_PATH}`,
   well_known_paths: s.wellKnown.map(e => ({
     path: e.path,
     ...e.url && { url: e.url },
@@ -53,13 +57,14 @@ export const oauthMetadata = (s: Settings) => ({
   ...endpoints(s),
   response_types_supported: ['code'],
   response_modes_supported: ['query'],
-  grant_types_supported: ['authorization_code', 'refresh_token'],
+  grant_types_supported: ['authorization_code', 'refresh_token', TOKEN_EXCHANGE],
+  jwks_uri: `${s.issuer}${JWKS_PATH}`,
   code_challenge_methods_supported: ['S256'],
   token_endpoint_auth_methods_supported: ['none'],
   revocation_endpoint_auth_methods_supported: ['none'],
   authorization_response_iss_parameter_supported: true,
   client_id_metadata_document_supported: true,
-  scopes_supported: ['identify', 'write:/appdata/', ...s.wellKnown.map(e => `write:${e.path}`),
+  scopes_supported: ['identify', 'write:/appdata/', IDENTITY_SCOPE, ...s.wellKnown.map(e => `write:${e.path}`),
     ...s.wellKnown.filter(e => isPrivate(e.path)).map(e => `read:${e.path}`)],
   service_documentation: `${s.ownerOrigin}${CONFIG_PATH}`,
 })
@@ -121,7 +126,7 @@ export async function authorize(req: Request, s: Settings, env: Env): Promise<Re
   const scope = q.get('scope') ?? ''
   const scopes = parseScopes(scope, client.clientHost, s)
   if (!scopes) return fail('invalid_scope',
-    "Only identify, the app's own directory, declared well-known paths and read scopes for declared private paths can be requested")
+    "Only identify, identity-tokens, the app's own directory, declared well-known paths and read scopes for declared private paths can be requested")
 
   const sid = await session(req, s, env)
   if (s.subdomainMode && !sid) return loginPage(s, env, url.pathname + url.search)
@@ -249,9 +254,36 @@ export async function token(req: Request, s: Settings, env: Env): Promise<Respon
         return oauthError('invalid_scope', "The scope can't grow through a refresh")
       return tokenResponse(r.tokens, r.grant.scope, s)
     }
+    case TOKEN_EXCHANGE:
+      return identityToken(form, clientId, s, env)
     default:
-      return oauthError('unsupported_grant_type', 'grant_type must be authorization_code or refresh_token')
+      return oauthError('unsupported_grant_type', `grant_type must be authorization_code, refresh_token or ${TOKEN_EXCHANGE}`)
   }
+}
+
+// --- Identity tokens (RFC-10) ----------------------------------------------------------
+
+/** The key that signs identity tokens; made on first use (`replace`: a new one in place of it). */
+export const signingKey = (env: Env, replace = false) => store(env).signingKey(replace)
+
+/** GET /pups/jwks.json: the public key, for servers that check identity tokens. */
+export const jwks = async (req: Request, env: Env) => jwksResponse(req.method, req.method == 'OPTIONS' ? [] : [await signingKey(env)])
+
+/**
+ * A token exchange (RFC 8693, RFC-10 "Token exchange"): the app's access token, of a grant with `identity-tokens`, for a
+ * signed token that says that the owner acts, through the app, at `audience`.
+ */
+async function identityToken(form: FormData, clientId: string, s: Settings, env: Env): Promise<Response> {
+  const x = exchangeRequest(form)
+  if ('error' in x) return oauthError(x.error, x.description)
+  const db = store(env)
+  const auth = await db.authenticate(x.subjectToken)
+  if (!auth || auth.grant.clientId != clientId) return oauthError('invalid_grant', 'subject_token is not a valid access token of this app')
+  if (!auth.grant.scope.split(' ').includes(IDENTITY_SCOPE)) return oauthError('invalid_scope', `The grant has no ${IDENTITY_SCOPE} scope`)
+  if (!await db.logIdentityToken(auth.grant, x.audience, x.read))
+    return json({ error: 'slow_down', error_description: 'Too many identity tokens; try again in a minute' }, 429, { ...noStore, 'retry-after': '60' })
+  const token = await signIdentityToken(await signingKey(env), { iss: s.issuer, sub: s.me, aud: x.audience, client_id: clientId }, x.read)
+  return json(exchangeResponse(token, x.read), 200, noStore)
 }
 
 // --- Revocation endpoint (RFC 7009) ----------------------------------------------------

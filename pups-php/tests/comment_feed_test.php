@@ -104,8 +104,8 @@ test('comment feeds: Publish Comment publishes the comment, counts it, and tells
     eq([$feed['title'], $feed['feed_url'], $feed['home_page_url']], ['Comments on “Is RSS the better social network?”', ORIGIN . '/feed/comments/0.json', ORIGIN . '/']);
     eq($feed['items'], [['id' => $item['id'], 'url' => 'https://bob.example/c/c-17', 'content_html' => '<p>Agreed, but discovery is <strong>hard</strong>.</p>',
         'date_published' => $item['_inbox']['postDate'], 'authors' => [['name' => 'Bob']],
-        '_source' => ['about' => 'https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md', 'inReplyTo' => ORIGIN . '/feed.json#p-12',
-            'accounts' => ['socialspec' => '@bob.example'], 'comments' => ['count' => 0, 'total' => 0]]]], 'open for replies');
+        '_source' => ['about' => 'https://github.com/bigwide-net/RFCs/blob/main/RFC-1-Source-for-JSON-Feeds.md', 'inReplyTo' => ['value' => ORIGIN . '/feed.json#p-12',
+            'feedUrl' => ORIGIN . '/feed.json', 'feedTitle' => 'Notes'], 'accounts' => ['socialspec' => '@bob.example'], 'comments' => ['count' => 0, 'total' => 0]]]], 'open for replies');
     eq(post($t)['_source']['comments'], ['feedUrl' => ORIGIN . '/feed/comments/0.json', 'count' => 1, 'total' => 1]);
     ok(!isset(post($t)['date_modified']), 'a comment is no edit of the post');
     eq($t->put('/feed/comments/0.json', $tok, '{"items":[]}')->status, 403, 'only the server writes comment feeds');
@@ -169,7 +169,8 @@ test('comment feeds: replies to comments, as deep as the policy allows, counted 
     $feed = stored($t, "/feed/comments/0/$bob.json");
     eq([$feed['title'], $feed['feed_url'], $feed['home_page_url'], $feed['_pups']['inReplyTo']],
         ['Replies to a comment by Bob on “Is RSS the better social network?”', $bobs, 'https://bob.example/c/c-17', "$top#$bob"]);
-    eq([$feed['items'][0]['_source']['inReplyTo'], $feed['items'][0]['_source']['comments']], ["$top#$bob", ['count' => 0, 'total' => 0]]);
+    // The reply names the comment feed that holds Bob's comment, and no title, as Bob's comment has none.
+    eq([$feed['items'][0]['_source']['inReplyTo'], $feed['items'][0]['_source']['comments']], [['value' => "$top#$bob", 'feedUrl' => $top], ['count' => 0, 'total' => 0]]);
     eq(stored($t, '/feed/comments/0.json')['items'][0]['_source']['comments'], ['feedUrl' => $bobs, 'count' => 1, 'total' => 1]);
     eq(post($t)['_source']['comments'], ['feedUrl' => $top, 'count' => 1, 'total' => 2]);
 
@@ -208,6 +209,26 @@ test('comment feeds: replies to comments, as deep as the policy allows, counted 
     ok($t->ctx->files->stat("/feed/comments/0/$erin.json") !== null, 'a reply to Erin');
     postTo($t, $tok, ['id' => 'p-12', '_pups' => ['delete' => true]]);
     eq([$t->ctx->files->stat('/feed/comments/0.json'), $t->ctx->files->stat("/feed/comments/0/$erin.json")], [null, null]);
+});
+
+test('comment feeds: take inReplyTo in the object form, and name their own feed and title, or the answered comment\'s, in the comment they publish', function () {
+    [$t, $tok] = commentSetup(['title' => 'allowed']);
+    postTo($t, $tok, ['id' => 'p-12', 'content_text' => 'I think so.']);
+    $target = ORIGIN . '/feed.json#p-12';
+    serve($t, 'https://bob.example/comments.json', [['id' => 'c-17', 'title' => 'Agreed', 'authors' => [['name' => 'Bob']], 'content_html' => '<p>Agreed.</p>',
+        '_source' => ['accounts' => ['socialspec' => '@bob.example'], 'inReplyTo' => ['value' => $target, 'feedUrl' => ORIGIN . '/feed.json', 'feedTitle' => 'Not the title']]]]);
+    $res = webmention($t, COMMENTS, 'https://bob.example/comments.json#c-17', $target);
+    eq($res->status, 201, $res->text);
+    processQueue($t->ctx);
+    $item = inbox($t)['items'][0];
+    eq($item['_inbox']['target'], $target);
+    inboxAction($t, $item['id'], 'approve');
+    eq(stored($t, '/feed/comments/0.json')['items'][0]['_source']['inReplyTo'], ['value' => $target, 'feedUrl' => ORIGIN . '/feed.json', 'feedTitle' => 'Notes']);
+    // A reply to a comment with a title takes the comment's title.
+    $top = ORIGIN . '/feed/comments/0.json';
+    replyTo($t, 'carol.example', "$top#{$item['id']}");
+    inboxAction($t, inbox($t)['items'][0]['id'], 'approve');
+    eq(stored($t, "/feed/comments/0/{$item['id']}.json")['items'][0]['_source']['inReplyTo'], ['value' => "$top#{$item['id']}", 'feedUrl' => $top, 'feedTitle' => 'Agreed']);
 });
 
 test('comment feeds: the owner\'s own comments are published at once, never in the inbox', function () {

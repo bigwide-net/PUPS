@@ -75,7 +75,9 @@ function appsEndpoint(Request $req, Ctx $ctx): Response
     return htmlErrors($c, function () use ($req, $ctx, $c) {
         $form = $req->isForm() ? $req->form() : [];
         $revoke = field($form, 'revoke') ?? field($form, 'revoke_delete');
-        $action = $revoke !== null ? 'remove app' : (isset($form['remove_link']) ? 'remove link' : (isset($form['remove_property']) ? 'remove property' : 'view apps page'));
+        $replaceKey = $c->identityTokens && isset($form['replace_signing_key']);
+        $action = $revoke !== null ? 'remove app' : (isset($form['remove_link']) ? 'remove link' : (isset($form['remove_property']) ? 'remove property'
+            : ($replaceKey ? 'replace signing key' : 'view apps page')));
         $g = guardOwner($req, $ctx, 'Your apps', 'Confirm that you are the owner of <strong>' . h($c->host) . '</strong> to see the apps that can write to it.', '/pups/apps', $action,
             fn($err) => appsPage($ctx, null, $err));
         if ($g instanceof Response)
@@ -115,18 +117,39 @@ function appsEndpoint(Request $req, Ctx $ctx): Response
             }, false);
             Log::event('host-meta.property-removed-by-owner', ['property' => $prop]);
             $message = 'The property was removed.';
-        }
+        } elseif ($replaceKey)
+            $message = 'The signing key was replaced; the new one is ' . signingKey($ctx, true)['kid'] . '.';
         return appsPage($ctx, $message);
     });
 }
 
-function grantRow(array $g, Config $c): string
+/** Where an app acted as the owner with identity tokens (RFC-10), under its permissions. */
+function identityUsesList(array $uses): string
+{
+    // An audience is an origin, `https://` and the host.
+    return $uses ? "<p>Acted as you on other sites in the last 30 days:</p>\n<ul>\n" . implode("\n", array_map(fn($u) => '<li><code>'
+        . h(visible(substr($u['audience'], 8))) . '</code>: ' . times($u['count']) . readsNote($u) . ', last ' . timeHtml($u['last']) . '</li>', $uses))
+        . "\n</ul>" : '';
+}
+
+function times(int $n): string
+{
+    return $n === 1 ? 'once' : "$n times";
+}
+
+/** How many of the tokens were read tokens, for reading personal feeds. */
+function readsNote(array $u): string
+{
+    return !$u['reads'] ? '' : ($u['reads'] < $u['count'] ? ' (' . times($u['reads']) . ' for reading)' : ($u['count'] === 1 ? ', for reading' : ', all for reading'));
+}
+
+function grantRow(array $g, Config $c, array $identityLog): string
 {
     $name = sanitizeText($g['clientName'] ?? null, 100);
     $hasFiles = in_array('write:' . appdataPrefix($g['clientHost']), explode(' ', $g['scope']), true);
     return '<tr>
 <th scope="row">' . h($g['clientHost']) . ($name ? '<br><small>“<bdi>' . h($name) . '</bdi>” (self-declared)</small>' : '') . '<br><small><code>' . h(visible($g['clientId'])) . '</code></small></th>
-<td>' . permissionList($g['scope'], $g['clientHost'], $c) . '</td>
+<td>' . permissionList($g['scope'], $g['clientHost'], $c) . identityUsesList(identityUses($identityLog, $g['id'])) . '</td>
 <td>' . timeHtml($g['createdAt']) . '</td>
 <td>' . timeHtml($g['lastUsedAt']) . '</td>
 <td>
@@ -140,6 +163,7 @@ function appsPage(Ctx $ctx, ?string $message = null, ?string $error = null): Res
 {
     $c = $ctx->config;
     $grants = $ctx->state->activeGrants();
+    $identityLog = $c->identityTokens ? identityLog($ctx) : [];
     $hm = currentHostMeta($ctx);
     $links = is_array($hm['doc']->links ?? null) ? array_filter($hm['doc']->links, 'is_object') : [];
     $props = isset($hm['doc']->properties) && is_object($hm['doc']->properties) ? (array) $hm['doc']->properties : [];
@@ -148,7 +172,7 @@ function appsPage(Ctx $ctx, ?string $message = null, ?string $error = null): Res
     $appsTable = $grants ? '<table>
 <thead><tr><th scope="col">App</th><th scope="col">Permissions</th><th scope="col">Approved</th><th scope="col">Last used</th><th scope="col">Actions</th></tr></thead>
 <tbody>
-' . implode("\n", array_map(fn($g) => grantRow($g, $c), $grants)) . '
+' . implode("\n", array_map(fn($g) => grantRow($g, $c, $identityLog), $grants)) . '
 </tbody>
 </table>' : '<p>No app has access to your domain.</p>';
 
@@ -198,9 +222,21 @@ function appsPage(Ctx $ctx, ?string $message = null, ?string $error = null): Res
 ' . $propsTable . '
 </section>
 ' . inboxSection($ctx, $c->mentions, false) . '
+' . ($c->identityTokens ? signingKeySection(signingKey($ctx)) : '') . '
 </form>
 <p>Storage used: ' . sprintf('%.1f', $used / 1048576) . ' MiB' . ($c->maxStorageBytes ? ' of ' . sprintf('%.0f', $c->maxStorageBytes / 1048576) . ' MiB' : '') . '.</p>',
         ['nav' => nav($c, '/pups/apps')]);
+}
+
+/** The key that signs identity tokens, and the button that replaces it if it may have leaked (RFC-10 "Keys"). */
+function signingKeySection(array $key): string
+{
+    return '<section aria-labelledby="signing-key-heading">
+<h2 id="signing-key-heading">Signing key</h2>
+<p>Apps that may act as you on other sites get signed proofs from this server. Other sites check them with the key <code>' . h($key['kid']) . '</code>, made ' . timeHtml($key['createdAt']) . '.</p>
+<p>If you think the key has leaked, replace it. Proofs signed with the old key stop working at once; sites learn the new one within an hour.</p>
+<p><button type="submit" name="replace_signing_key" value="1">Replace the signing key</button></p>
+</section>';
 }
 
 /**

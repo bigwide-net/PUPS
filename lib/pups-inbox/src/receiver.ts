@@ -1,7 +1,7 @@
 import { isCleanUrlString, sanitizeText } from 'pups-ui'
 import { commentContent } from './comment-html'
 import { accountHost, handles, handleText, visibleText } from './content'
-import { type Feed, FetchError, type FeedSource, findItem, loadFeed, type Post, readLimited, resolveUrl, sameRef, splitRef, urlHost } from './feeds'
+import { type Feed, FetchError, type FeedSource, findItem, loadFeed, type Post, readLimited, replyRef, resolveUrl, sameRef, splitRef, urlHost } from './feeds'
 import { COMMENTING_ABOUT, commentItem, type CommentFeeds, isSameComment, PUBLISHING, refusal } from './comments'
 import { moderateComment, moderationActive, moderationApproves, moderationSettings, type ModerationStore } from './moderation'
 import {
@@ -501,7 +501,7 @@ export async function withdrawComment(r: Receiver, target: string, id: string) {
     if (!(e instanceof ForeignInbox)) throw e
   }
   await queueMentions(r, removed.map(({ item, address }, i) => ({
-    address, before: item, answered: i ? removed.find(p => sameRef(p.address, item._source?.inReplyTo))?.item : answered,
+    address, before: item, answered: i ? removed.find(p => sameRef(p.address, replyRef(item._source?.inReplyTo)))?.item : answered,
   })))
   return removed
 }

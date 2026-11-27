@@ -6,7 +6,8 @@ namespace Pups;
  * Comment HTML and Comment Markdown (RFC-5): the content of a comment, checked against the features of the feed's
  * policy and normalized. Markdown (preferred) is rendered by markdown.php, plain text becomes paragraphs; the HTML
  * is then checked with a strict tokenizer. A comment that breaks a rule is rejected with the first problem, never
- * repaired; only unknown attributes are removed. A port of pups-inbox's comment-html.ts; both run the cases in
+ * repaired; only unknown attributes, and the fallback links to actions of the system it comes from (RFC-9,
+ * `without-extension-actions`), are removed. A port of pups-inbox's comment-html.ts; both run the cases in
  * lib/pups-inbox/test/comment-html-cases.json.
  */
 
@@ -251,6 +252,27 @@ function commentSerialize(array $tokens): string
  * Returns ['html' => normalized HTML, 'markdown' => the Markdown it came from or null, 'length' => of the visible text],
  * or ['code', 'text'] of the first problem. The first form present counts: Markdown, HTML, text.
  */
+/** Leaves out RFC-9's action fallbacks (see isActionsFallback()) with all they contain. */
+function commentWithoutActions(array $tokens): array
+{
+    $out = [];
+    for ($i = 0; $i < count($tokens); $i++) {
+        $t = $tokens[$i];
+        if ($t[0] !== 'open' || in_array($t[1], COMMENT_VOID, true) || !isActionsFallback($t[2]['class'] ?? null)) {
+            $out[] = $t;
+            continue;
+        }
+        for ($depth = 1; $depth && ++$i < count($tokens);) {
+            $u = $tokens[$i];
+            if ($u[0] === 'open' && !in_array($u[1], COMMENT_VOID, true))
+                $depth++;
+            elseif ($u[0] === 'close')
+                $depth--;
+        }
+    }
+    return $out;
+}
+
 function commentContent(array $post, array $policy): array
 {
     $markdown = trim($post['markdown'] ?? '') !== '' ? $post['markdown'] : null;
@@ -261,7 +283,7 @@ function commentContent(array $post, array $policy): array
     if (mb_strlen(scrub($source)) > $policy['maxLength'])
         return ['code' => 'too-long', 'text' => "The comment is longer than {$policy['maxLength']} characters."];
     try {
-        $tokens = commentValidate(commentTokens($markdown !== null ? markdownHtml($markdown) : $html ?? textCommentHtml($source)), $policy);
+        $tokens = commentValidate(commentWithoutActions(commentTokens($markdown !== null ? markdownHtml($markdown) : $html ?? textCommentHtml($source))), $policy);
         if ($policy['urlAutoLinking'] ?? false)
             $tokens = commentAutoLink($tokens);
         $length = mb_strlen(commentVisibleText($tokens));

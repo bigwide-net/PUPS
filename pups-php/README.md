@@ -10,6 +10,7 @@ It implements the same protocol as the [Cloudflare Worker](../pups-cloudflare) a
 - OAuth 2.1 with PKCE and Client ID Metadata Documents;
 - the upload API with ETags, quota and rate limit, and the POST fallback for hosts that block `PUT` and `DELETE`;
 - `host-meta.json` editing;
+- identity tokens ([RFC-10](https://github.com/bigwide-net/RFCs/blob/main/RFC-10-Identity-Tokens.md)), with which apps act as you on other sites;
 - owner pages:
   - setup with a one-time secret;
   - passkeys and password;
@@ -119,7 +120,7 @@ The default host name is `alice-php.pups.test`, so that it doesn't collide with 
 | `/pups/` | Start page of the owner pages. |
 | `/pups/homepage` | **Homepage.** Install webpup, choose its theme and whether visitors see the theme browser, or remove it. |
 | `/pups/setup` | First-run setup with the setup secret: checks, then a passkey and/or a password. Gone after setup. |
-| `/pups/apps` | **Your apps.** Every grant: the app's domain, its self-declared name, the permissions, when it was approved and last used. **Remove** ends an app's access at once; **Remove and delete its files** also deletes its `/appdata/<app>/` folder. Also lists the links and properties in `host-meta.json`, each removable. With mentions on, it shows how many are in your inbox. |
+| `/pups/apps` | **Your apps.** Every grant: the app's domain, its self-declared name, the permissions, when it was approved and last used. **Remove** ends an app's access at once; **Remove and delete its files** also deletes its `/appdata/<app>/` folder. For apps with `identity-tokens`, the sites where they acted as you in the last 30 days. Also lists the links and properties in `host-meta.json`, each removable. With mentions on, it shows how many are in your inbox. The key that signs identity tokens, with a button that replaces it. |
 | `/pups/feed-settings` | **Feeds.** Real-time updates (WebSub): on or off, how many subscriptions, and the trusted feed readers. |
 | `/pups/comment-settings` | **Comments**, with comments on. How many comments wait in your inbox, and the settings of auto-moderation. |
 | `/pups/sign-in` | Add and remove passkeys; change or set the password. |
@@ -128,7 +129,8 @@ The default host name is `alice-php.pups.test`, so that it doesn't collide with 
 | `/personal-storage.json` | The configuration document. |
 | `/.well-known/oauth-authorization-server` | RFC 8414 metadata. |
 | `/oauth/authorize` | Authorization and consent screen. |
-| `/oauth/token`, `/oauth/revoke` | Token and revocation endpoints. |
+| `/oauth/token`, `/oauth/revoke` | Token and revocation endpoints. The token endpoint also exchanges access tokens for identity tokens (see [Identity tokens](#identity-tokens)). |
+| `/pups/jwks.json` | `jwks_uri`: the public key that checks identity tokens, a JWK Set. |
 | `/<path>` | Upload API (`PUT`, `DELETE`) and public reads (`GET`, `HEAD`, ranges, conditional requests) at the domain root, e.g. `/appdata/app.example/feed.json` and `/.well-known/about.md`. With an app's token, `GET` and `HEAD` are fresh reads. `POST` to a feed file adds, changes or deletes an item (see [Feeds](#feeds)). |
 | `/pups/host-meta` | `host_meta_endpoint`: apps add, change, remove and order links and set properties. |
 | `/pups/post` | `post_endpoint`, if `PUT`/`DELETE` are blocked or `post_fallback` is set. |
@@ -150,7 +152,9 @@ Everything is in `data_dir` (default `data/` next to `index.php`):
 
 ```
 data/
-  state.json                      your credentials, grants, hashed tokens and codes, rate limits, signing key
+  state.json                      your credentials, grants, hashed tokens and codes, rate limits
+  identity-key.json               the private key that signs identity tokens (mode 0600, never served)
+  identity-log.json               the identity tokens issued in the last 30 days: when, which app, for which site
   clients.json                    cached client metadata documents
   detected.json                   what the checks found (POST fallback needed or not)
   websub/                         the WebSub hub: settings.json, subscriptions/<feed>/<callback>.json, pending/<feed>.json
@@ -167,7 +171,7 @@ data/
 
 You may edit files by hand, including `host-meta.json`; PUPS reads them fresh on every request. `state.json` contains no usable tokens, only SHA-256 hashes, and your password only as an Argon2id or bcrypt hash. To start over, delete `data/`. Then setup runs again, with the same setup secret.
 
-**Concurrency.** PHP handles requests in parallel. Every change of `state.json` holds an exclusive lock (`flock` on `data/state.lock`) and writes a temp file that is then renamed. That makes code redemption, refresh-token rotation and rate limits atomic. Uploads are written to a temp file first; the precondition check (`If-Match`, `If-None-Match`), the quota check and the rename happen under a second lock. The same goes for every change of `host-meta.json`.
+**Concurrency.** PHP handles requests in parallel. Every change of `state.json` holds an exclusive lock (`flock` on `data/state.lock`) and writes a temp file that is then renamed. That makes code redemption, refresh-token rotation and rate limits atomic. The signing key of identity tokens is made, and their log written, under the same lock. Uploads are written to a temp file first; the precondition check (`If-Match`, `If-None-Match`), the quota check and the rename happen under a second lock. The same goes for every change of `host-meta.json`.
 
 ### Log
 
@@ -363,6 +367,15 @@ PUPS has a small built-in receiver. It puts what other sites send you into your 
 
 The apps page shows how many mentions are in the inbox, the page *Comments* how many comments.
 
+### Identity tokens
+
+Apps can act as you on other sites ([RFC-10](https://github.com/bigwide-net/RFCs/blob/main/RFC-10-Identity-Tokens.md)), e.g. vote in a poll, moderate a group or read a personal feed there, if you grant them the scope `identity-tokens`. The consent screen shows it as a group of its own, "Act as *your.domain* on other sites", and the grant comes with a refresh token. The configuration document lists the scope in `scopes_supported` and names the key set in `jwks_uri`, `<base>/pups/jwks.json`; the RFC 8414 metadata has the same `jwks_uri` and the grant type `urn:ietf:params:oauth:grant-type:token-exchange`.
+
+- **Token exchange.** When you act, the app sends its access token to `/oauth/token` with that grant type (RFC 8693), `subject_token_type` `urn:ietf:params:oauth:token-type:access_token` and the site as `audience`, one `https` origin such as `https://polls.example.com`. PUPS checks the token like the upload API does, for the app of the request (`invalid_grant`) and the scope (`invalid_scope`); the audience (no path, not even `/`, no `http`, IP address, `localhost`, `*.local`, or several values: `invalid_target`); and that there is no `resource`, `actor_token` or other `requested_token_type` than a JWT (`invalid_request`). It answers with a JWT (RFC 9068) signed with RS256, valid for 60 seconds: `iss` is the issuer, `sub` your `me`, `aud` the site, `client_id` the app, and `jti` a random value. With `scope=read` the app gets a **read token** instead, for fetching personal feeds: the same JWT with `"scope": "read"`, valid for 24 hours, with `scope` in the answer; any other `scope` gets `invalid_scope`. A grant gets at most 60 tokens a minute; more get `429` (`slow_down`, `Retry-After: 60`). Identity tokens are never accepted by the upload API.
+- **The key.** PUPS makes an RSA key pair of 2048 bits the first time it needs one, with the openssl extension, and keeps it in `data/identity-key.json`, outside the uploads, never served. Its `kid` is the date and a random suffix. `/pups/jwks.json` serves the public key with `Access-Control-Allow-Origin: *` and `Cache-Control: public, max-age=600`. If you think the key has leaked, replace it on the apps page: tokens signed with the old one stop working at once, and other sites see the new one within their cache time.
+- **The log.** Every issued token is logged in `data/identity-log.json` for 30 days: the time, the grant, the app, the site, and whether it was a read token. The apps page shows, for each app, where it acted as you, how often and when it last did. When you remove an app, it gets no more tokens.
+- **Without the openssl extension** PUPS offers no identity tokens: the scope is not listed and is refused, there is no `jwks_uri`, and `/pups/jwks.json` is `404`.
+
 ## How it maps to RFC-6
 
 - **OAuth is implemented by hand**, like in the Cloudflare Worker and the Node server: codes are single-use, and a reused code revokes every token issued from it. Refresh tokens rotate, and reuse revokes the grant. The exception is a 60-second grace period, while nothing issued by the replacement has been used. `me` is in every token response.
@@ -407,7 +420,7 @@ The server is in `pups/`; the paths below are relative to it. `tests/` and `scri
 | `.htaccess` | Sends every request to `index.php`, except webpup's script, styles and themes; passes the `Authorization` header on. |
 | `controller.php` | Routing, error handling, sending responses (`handle()`, `emit()`, `run()`). |
 | `handler/discovery.php` | `host-meta.json`, configuration document, RFC 8414 metadata, start page. |
-| `handler/oauth.php` | Authorization endpoint with consent screen, token and revocation endpoints. |
+| `handler/oauth.php` | Authorization endpoint with consent screen, token and revocation endpoints, the token exchange for identity tokens, the JWK Set. |
 | `handler/files.php` | Upload API, POST fallback, public reads with the sandbox headers. |
 | `handler/hostmeta.php` | `host_meta_endpoint` and the cleanup after revocation. |
 | `handler/admin.php` | The apps and sign-in pages. |
@@ -426,6 +439,7 @@ The server is in `pups/`; the paths below are relative to it. `tests/` and `scri
 | `lib/archive.php` | Kept feeds (RFC-7): `PUT` of a feed file and `POST` of items, the RFC-13 archives, indexes and post URLs. |
 | `lib/content.php` | Visible text, handles and excerpts of incoming posts. |
 | `lib/config.php` | Configuration and well-known path rules. |
+| `lib/identity.php` | Identity tokens (RFC-10): the audience and request checks, the signing key, the JWT, the log. |
 | `lib/state.php` | `state.json`: owner, codes, grants, tokens, refresh rotation, rate limits, all under a lock. |
 | `lib/storage.php` | Files on disk: atomic writes, ETags, the storage lock, no symlinks out of the root. |
 | `lib/cimd.php` | Client metadata documents, and the HTTP client with SSRF protection. |
@@ -455,6 +469,7 @@ They cover:
 - PKCE, code reuse and expiry;
 - refresh rotation, the grace period and reuse detection;
 - revocation and scope enforcement;
+- identity tokens: the consent group, the token exchange and its refusals, the signature checked with the published key, the rate limit, the log on the apps page, replacing the key, and a server without the openssl extension;
 - ETag preconditions, ranges, quota and rate limit;
 - path and type rules, serving headers, the POST fallback;
 - `host-meta.json` editing and the owner pages;

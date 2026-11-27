@@ -37,7 +37,14 @@ export const parseHtml = (html: string) => parseDocument(wellFormed(html)).child
 /** Collapses whitespace and removes unsafe characters. */
 export const normalizeSpace = (s: string) => stripUnsafe(wellFormed(s), ' ').replace(/\s+/g, ' ').trim()
 
-/** The visible text of HTML. `skipCode` leaves out `code` and `pre`, as handles there don't count. */
+/**
+ * Whether an element is RFC-9's fallback HTML for feed actions (`class="without-extension-actions"`, RFC-8): links to the
+ * actions of the system a post comes from. They are no part of the post, and only that system's own actions, so a
+ * received post is shown and published without them.
+ */
+export const isActionsFallback = (className: string | undefined) => !!className && /(?:^|\s)without-extension-actions(?:\s|$)/.test(className)
+
+/** The visible text of HTML, without RFC-9's action fallbacks. `skipCode` leaves out `code` and `pre`, as handles there don't count. */
 export function visibleText(html: string, skipCode = false): string {
   let out = ''
   const walk = (nodes: ChildNode[]) => {
@@ -45,6 +52,7 @@ export function visibleText(html: string, skipCode = false): string {
       if (n.type == 'text') out += n.data
       else if (isElement(n)) {
         const tag = n.name.toLowerCase()
+        if (isActionsFallback(n.attribs.class)) continue
         const block = BLOCK_TAGS.has(tag)
         if (block) out += ' '
         if (!HIDDEN_TAGS.has(tag) && !(skipCode && (tag == 'code' || tag == 'pre'))) walk(n.children)

@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { pingAll, type Subscription } from 'pups-feeds'
+import { IDENTITY_LOG_MS, IDENTITY_TOKENS_PER_MINUTE, type IdentityUse, type SigningKey } from 'pups-ui'
 import { randomToken } from './crypto'
 import type { Env } from './settings'
 
@@ -96,6 +97,8 @@ export class PupsStore extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, token TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS websub_subscriptions (topic TEXT NOT NULL, callback TEXT NOT NULL, host TEXT NOT NULL, secret TEXT,
         expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (topic, callback));
+      CREATE TABLE IF NOT EXISTS identity_log (at INTEGER NOT NULL, grant_id TEXT NOT NULL, client_id TEXT NOT NULL, audience TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS identity_log_grant ON identity_log (grant_id, at);
       CREATE TABLE IF NOT EXISTS websub_pending (topic TEXT PRIMARY KEY, hub TEXT NOT NULL, changed_at INTEGER NOT NULL, cursor TEXT NOT NULL);
     `)
     // Refresh state per grant: the current refresh token, the one it replaced and when, the
@@ -105,6 +108,9 @@ export class PupsStore extends DurableObject<Env> {
     for (const [name, type] of [['current_refresh', 'TEXT'], ['prev_refresh', 'TEXT'], ['replaced_at', 'INTEGER'],
       ['successor_access', 'TEXT'], ['successor_used', 'INTEGER NOT NULL DEFAULT 0']])
       if (!columns.has(name)) this.sql.exec(`ALTER TABLE grants ADD COLUMN ${name} ${type}`)
+    // Read tokens (RFC-10) are marked in the log.
+    if (!this.sql.exec('PRAGMA table_info(identity_log)').toArray().some(r => r.name == 'read'))
+      this.sql.exec('ALTER TABLE identity_log ADD COLUMN read INTEGER NOT NULL DEFAULT 0')
   }
 
   private one(query: string, ...args: SqlStorageValue[]): Row | undefined {
@@ -132,6 +138,7 @@ export class PupsStore extends DurableObject<Env> {
     this.sql.exec('DELETE FROM login_failures WHERE at < ?', now - 7 * 24 * 3600_000)
     this.sql.exec('DELETE FROM write_counters WHERE minute < ?', Math.floor(now / 60_000) - 1)
     this.sql.exec('DELETE FROM comment_status WHERE expires_at < ?', now)
+    this.sql.exec('DELETE FROM identity_log WHERE at < ?', now - IDENTITY_LOG_MS)
   }
 
   // --- Auto-moderation (pups-inbox's moderation.ts) ----------------------------------
@@ -162,6 +169,42 @@ export class PupsStore extends DurableObject<Env> {
     let s = this.kvGet('signing_key')
     if (!s) this.kvSet('signing_key', s = randomToken(32))
     return s
+  }
+
+  // --- Identity tokens (RFC-10) -----------------------------------------------------
+
+  /** The key that signs identity tokens, if there is one. It never leaves this object but to sign. */
+  signingKey(): SigningKey | undefined {
+    const k = this.kvGet('identity_key')
+    return k ? JSON.parse(k) : undefined
+  }
+
+  /** Stores `key` unless there is a key already (`replace`: in place of it). Returns the key that is now in use. */
+  setSigningKey(key: SigningKey, replace = false): SigningKey {
+    const old = this.signingKey()
+    if (old && !replace) return old
+    this.kvSet('identity_key', JSON.stringify(key))
+    return key
+  }
+
+  /**
+   * Logs an identity token for the grant, for the audience; `read`: a read token. False, and nothing logged, if the grant
+   * had IDENTITY_TOKENS_PER_MINUTE tokens in the last minute.
+   */
+  logIdentityToken(grant: Grant, audience: string, read = false): boolean {
+    this.cleanup()
+    const now = Date.now()
+    if ((this.one('SELECT COUNT(*) AS n FROM identity_log WHERE grant_id = ? AND at > ?', grant.id, now - 60_000)!.n as number) >= IDENTITY_TOKENS_PER_MINUTE)
+      return false
+    this.sql.exec('INSERT INTO identity_log (at, grant_id, client_id, audience, read) VALUES (?, ?, ?, ?, ?)', now, grant.id, grant.clientId, audience, read ? 1 : 0)
+    return true
+  }
+
+  /** Where the grant's app acted as the owner, per audience, the latest first. */
+  identityUses(grantId: string): IdentityUse[] {
+    return this.sql.exec(`SELECT audience, COUNT(*) AS count, SUM(read) AS reads, MAX(at) AS last FROM identity_log WHERE grant_id = ? AND at > ?
+      GROUP BY audience ORDER BY last DESC`, grantId, Date.now() - IDENTITY_LOG_MS).toArray()
+      .map(r => ({ audience: r.audience as string, count: r.count as number, reads: r.reads as number, last: r.last as number }))
   }
 
   // --- Owner -----------------------------------------------------------------------

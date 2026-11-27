@@ -7,6 +7,7 @@
   "group.private": "Manage non-public content",
   "group.privateRead": "Read non-public content",
   "group.identity": "Learn that you are {me}",
+  "group.actAs": "Act as {me} on other sites, e.g. vote in polls, moderate a group or read your personal feeds there",
 
   "scope.ownFolder": "its own folder ({path})",
   "scope.filesUnder": "files under {path}",
@@ -18,6 +19,7 @@
   "details.write": "Create, replace and delete:",
   "details.rels": "Add links to your <code>host-meta.json</code>: {list}",
   "details.properties": "Set in your <code>host-meta.json</code>: {list}",
+  "details.actAs": "It can prove to any site that it acts for you, whenever you use it there. Your apps page shows where it did.",
 
   "title.signIn": "Sign in to {app} as {me}",
   "title.allow": "Allow {app} to {verb} {me}?",

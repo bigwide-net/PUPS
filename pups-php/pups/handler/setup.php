@@ -62,6 +62,9 @@ function setupEndpoint(Request $req, Ctx $ctx): Response
         if (!$state->useNonce($st['nonce'], $st['exp']) || !$state->createOwner($password === null ? null : hashPassword($password), $passkey))
             return notFoundPage($c);
         Log::event('setup.complete', ['passkey' => (bool) $passkey, 'password' => $password !== null]);
+        // The key that signs identity tokens (RFC-10) is made during setup, before any app can ask for one.
+        if ($c->identityTokens)
+            signingKey($ctx);
         $wellKnown = installWellKnownRouting($c);
         return page($c, 'Setup complete', '<h1>Setup complete</h1>
 <p>You are the owner of this Personal Upload Server. Apps can now find it from your domain, <strong>' . h($c->host) . '</strong>.</p>

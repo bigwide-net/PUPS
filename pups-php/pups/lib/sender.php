@@ -41,7 +41,7 @@ function notified(Ctx $ctx, \stdClass $comment, ?\stdClass $answered): array
     $str = fn($v) => is_string($v) ? $v : null;
     $skip = [ownerHost($ctx->config), accountHost($str($comment->_source->accounts->socialspec ?? null))];
     $out = [];
-    $inReplyTo = $str($comment->_source->inReplyTo ?? null);
+    $inReplyTo = replyRef($comment->_source->inReplyTo ?? null);
     $author = accountHost($str($answered->_source->accounts->socialspec ?? null));
     if ($inReplyTo !== null && splitRef($inReplyTo)[1] !== null && $author !== null && !in_array($author, $skip, true)
         && ($answered->_commenting->notifyReplies ?? null) !== false)

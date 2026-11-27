@@ -139,6 +139,9 @@ function isSameComment(array $inboxItem, \stdClass $published, bool $exceptNotif
     $strip = function (\stdClass $c) use ($exceptNotify) {
         $c = deepCopy($c);
         unset($c->date_published, $c->date_modified);
+        // The server adds the feed and its title to the target when it publishes (setInReplyTo()).
+        if (isset($c->_source->inReplyTo))
+            $c->_source->inReplyTo = replyRef($c->_source->inReplyTo);
         if ($exceptNotify)
             unset($c->_commenting);
         setComments($c, null);
@@ -213,6 +216,22 @@ function commentItem(array $inboxItem, ?string $mode = null): \stdClass
 }
 
 /**
+ * Turns the target in a comment's `_source.inReplyTo` into RFC-1's object form, with the feed that
+ * holds what it answers (the target without its `#id`) and a title, which a reader shows as "In reply
+ * to …": for a comment on a post, the title of the post's feed; for a reply, the title of the comment
+ * it answers, if it has one, else none, so that the reader names it.
+ */
+function setInReplyTo(\stdClass $comment, array $thread): void
+{
+    $target = $comment->_source->inReplyTo ?? null;
+    if (!is_string($target))
+        return;
+    $named = $thread['depth'] > 1 ? $thread['parent']->title ?? null : $thread['feed']->doc->title ?? null;
+    $title = is_string($named) && $named !== '' ? $named : null;
+    $comment->_source->inReplyTo = (object) (['value' => $target, 'feedUrl' => splitRef($target)[0]] + ($title !== null ? ['feedTitle' => $title] : []));
+}
+
+/**
  * The counts of a comment feed for `_source.comments` (RFC-1): its items, and with all replies to
  * them, as far as the items say.
  */
@@ -279,6 +298,7 @@ function publishComment(Ctx $ctx, array $inboxItem, ?\stdClass &$built = null): 
         $level = count($thread['levels']) - 1;
         $doc = $thread['levels'][$level]['doc'] ??= newCommentFeed($ctx, $thread);
         $comment = $built = commentItem($inboxItem, $now === 'summary' ? 'summary' : null);
+        setInReplyTo($comment, $thread);
         $open = $thread['depth'] < maxDepthOf($policy?->maxDepth ?? null) ? (object) ['count' => 0, 'total' => 0] : null;
         $at = null;
         foreach ($doc->items as $p => $item)

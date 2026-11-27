@@ -58,7 +58,10 @@ describe('comment feeds', () => {
     expect(feed.items).toEqual([{
       id: item.id, url: 'https://bob.example/c/c-17', content_html: '<p>Agreed, but discovery is <strong>hard</strong>.</p>',
       date_published: item._inbox.postDate, authors: [{ name: 'Bob' }],
-      _source: { about: SOURCE_SPEC, inReplyTo: `${ORIGIN}/feed.json#p-12`, accounts: { socialspec: '@bob.example' }, comments: { count: 0, total: 0 } },
+      _source: {
+        about: SOURCE_SPEC, inReplyTo: { value: `${ORIGIN}/feed.json#p-12`, feedUrl: `${ORIGIN}/feed.json`, feedTitle: 'Notes' },
+        accounts: { socialspec: '@bob.example' }, comments: { count: 0, total: 0 },
+      },
     }])
     expect(post()._source.comments).toEqual({ feedUrl: `${ORIGIN}/feed/comments/0.json`, count: 1, total: 1 })
     expect(post().date_modified).toBeUndefined()
@@ -125,7 +128,8 @@ describe('comment feeds', () => {
     const feed = stored(`/feed/comments/0/${bob}.json`)
     expect([feed.title, feed.feed_url, feed.home_page_url, feed._pups.inReplyTo])
       .toEqual(['Replies to a comment by Bob on “Is RSS the better social network?”', bobs, 'https://bob.example/c/c-17', `${top}#${bob}`])
-    expect([feed.items[0]._source.inReplyTo, feed.items[0]._source.comments]).toEqual([`${top}#${bob}`, { count: 0, total: 0 }])
+    // The reply names the comment feed that holds Bob's comment, and no title, as Bob's comment has none.
+    expect([feed.items[0]._source.inReplyTo, feed.items[0]._source.comments]).toEqual([{ value: `${top}#${bob}`, feedUrl: top }, { count: 0, total: 0 }])
     expect(stored('/feed/comments/0.json').items[0]._source.comments).toEqual({ feedUrl: bobs, count: 1, total: 1 })
     expect(post()._source.comments).toEqual({ feedUrl: top, count: 1, total: 2 })
 
@@ -162,6 +166,39 @@ describe('comment feeds', () => {
     expect(files.has(`/feed/comments/0/${erin}.json`)).toBe(true)
     await app.post({ id: 'p-12', _pups: { delete: true } })
     expect([...files.keys()].filter(p => p.startsWith('/feed/comments/'))).toEqual([])
+  })
+
+  it('shows and publishes a comment without the action fallbacks of the system it comes from', async () => {
+    const { files, app, stored, comment, action } = await setupComments()
+    await app.post({ id: 'p-12', content_text: 'I think so.' })
+    await comment('c-17', '<p>Agreed.</p><p class="without-extension-actions"><a href="https://bob.example/moderate/c-17">Moderate this comment</a></p>')
+    const item = inbox(files).items[0]
+    expect(item.content_html).not.toContain('bob.example/moderate')
+    expect(item.content_html.startsWith('<p>Agreed.</p><p class="without-extension-actions">')).toBe(true)
+    await action(item.id, 'approve')
+    expect(stored('/feed/comments/0.json').items[0].content_html).toBe('<p>Agreed.</p>')
+  })
+
+  it('takes inReplyTo in the object form, and names its own feed and title, or the answered comment\'s, in the comment it publishes', async () => {
+    const { files, web, app, stored, r, action, replyTo } = await setupComments({ title: 'allowed' })
+    await app.post({ id: 'p-12', content_text: 'I think so.' })
+    const target = `${ORIGIN}/feed.json#p-12`
+    web.set('https://bob.example/comments.json', feedDoc([{
+      id: 'c-17', title: 'Agreed', authors: [{ name: 'Bob' }], content_html: '<p>Agreed.</p>',
+      _source: { accounts: { socialspec: '@bob.example' }, inReplyTo: { value: target, feedUrl: `${ORIGIN}/feed.json`, feedTitle: 'Not the title' } },
+    }]))
+    const res = (await commentEndpoint(webmention(COMMENTS, 'https://bob.example/comments.json#c-17', target), r))!
+    expect(res.status).toBe(201)
+    await processQueue(r)
+    const item = inbox(files).items[0]
+    expect(item._inbox.target).toBe(target)
+    await action(item.id, 'approve')
+    expect(stored('/feed/comments/0.json').items[0]._source.inReplyTo).toEqual({ value: target, feedUrl: `${ORIGIN}/feed.json`, feedTitle: 'Notes' })
+    // A reply to a comment with a title takes the comment's title.
+    const top = `${ORIGIN}/feed/comments/0.json`
+    await replyTo('carol.example', `${top}#${item.id}`)
+    await action(inbox(files).items[0].id, 'approve')
+    expect(stored(`/feed/comments/0/${item.id}.json`).items[0]._source.inReplyTo).toEqual({ value: `${top}#${item.id}`, feedUrl: top, feedTitle: 'Agreed' })
   })
 
   it("the owner's own comments are published at once, never in the inbox", async () => {

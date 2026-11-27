@@ -10,7 +10,7 @@ import { adminRoutes } from './handler/admin';
 import { discoveryRoutes } from './handler/discovery';
 import { fileRoutes } from './handler/files';
 import { hostMetaRoutes } from './handler/hostmeta';
-import { oauthRoutes } from './handler/oauth';
+import { oauthRoutes, signingKey } from './handler/oauth';
 import { ClientLoader, FetchDoc } from './lib/cimd';
 import { loadConfig, PupsConfig } from './lib/config';
 import { Ctx } from './lib/context';
@@ -38,6 +38,8 @@ export function createApp(config: PupsConfig = loadConfig(), deps: AppDeps = {})
         clients: new ClientLoader(config, deps.fetchClientDoc),
         owner: new OwnerAuth(config),
     };
+    // The key that signs identity tokens (RFC-10), made at the start, before any app can ask for one.
+    void signingKey(ctx);
     const app = express();
     app.disable('x-powered-by');
     app.disable('etag');

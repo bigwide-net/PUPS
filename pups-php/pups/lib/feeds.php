@@ -50,6 +50,13 @@ function splitRef(string $ref): array
     return [$parts[0], isset($parts[1]) && $parts[1] !== '' ? rawurldecode($parts[1]) : null];
 }
 
+/** What an RFC-1 `_source.inReplyTo` answers: the string, or the `value` of the object form (with `feedUrl` and `feedTitle`). */
+function replyRef(mixed $v): ?string
+{
+    $value = is_array($v) ? $v['value'] ?? null : ($v instanceof \stdClass ? $v->value ?? null : $v);
+    return is_string($value) ? $value : null;
+}
+
 /** Do two references name the same item? The fragments are compared decoded (RFC-4). */
 function sameRef(?string $a, ?string $b): bool
 {
@@ -227,7 +234,7 @@ function jsonFeed(array $j): array
             'html' => $str($it['content_html'] ?? null), 'text' => $str($it['content_text'] ?? null), 'markdown' => $str($src['markdown'] ?? null),
             'author' => $firstName($it['authors'] ?? null) ?? (is_array($it['author'] ?? null) ? $str($it['author']['name'] ?? null) : null) ?? $feedAuthor,
             'account' => is_array($src['accounts'] ?? null) ? $str($src['accounts']['socialspec'] ?? null) : null,
-            'inReplyTo' => $str($src['inReplyTo'] ?? null), 'date' => isoDate($str($it['date_published'] ?? null)),
+            'inReplyTo' => replyRef($src['inReplyTo'] ?? null), 'date' => isoDate($str($it['date_published'] ?? null)),
             'allowComments' => !is_array($it['_commenting'] ?? null) || ($it['_commenting']['allowComments'] ?? null) !== false,
             'notifyReplies' => !is_array($it['_commenting'] ?? null) || ($it['_commenting']['notifyReplies'] ?? null) !== false, 'links' => [],
         ];

@@ -33,6 +33,8 @@ describe('handles', () => {
       .toEqual(['a.example', 'b.example', 'c.example'])
     expect(handles('Grüße an @müller.example')).toEqual(['xn--mller-kva.example'])
     expect(visibleText('<p>Hi <a href="https://alice.pups.test/">@alice.pups.test</a></p><pre>@code.example</pre>', true)).toBe('Hi @alice.pups.test')
+    // RFC-9's action fallbacks are no part of the post.
+    expect(visibleText('<p>Vote!</p><p class="poll without-extension-actions"><a href="https://polls.example/p">Vote on the website</a></p>')).toBe('Vote!')
   })
 })
 

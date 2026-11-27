@@ -74,6 +74,12 @@ final class State
         }
     }
 
+    /** Runs `fn` under the state lock, e.g. to create a file in the data directory only once (identity.php's signing key). */
+    public function locked(callable $fn): mixed
+    {
+        return $this->tx($fn);
+    }
+
     /** Removes expired records. */
     private function prune(): void
     {

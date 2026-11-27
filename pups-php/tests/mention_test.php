@@ -91,6 +91,8 @@ test('handles: found as RFC-11 describes, not in e-mail and fediverse addresses 
     eq(handles("I did this thanks to @foo.com. And @bar.com!\nAlso @baz.com."), ['foo.com', 'bar.com', 'baz.com']);
     eq(handles('Thanks to @a.example/@b.example/@c.example! @d.example/@e.example/path x/@f.example @g.example/@nodot'), ['a.example', 'b.example', 'c.example']);
     eq(\Pups\visibleText('<p>Hi <a href="https://alice.pups.test/">@alice.pups.test</a></p><pre>@code.example</pre>', true), 'Hi @alice.pups.test');
+    // RFC-9's action fallbacks are no part of the post.
+    eq(\Pups\visibleText('<p>Vote!</p><p class="poll without-extension-actions"><a href="https://polls.example/p">Vote on the website</a></p>'), 'Vote!');
 });
 
 test('mentions: a post that names the owner reaches the inbox, attributed and with Dismiss', function () {

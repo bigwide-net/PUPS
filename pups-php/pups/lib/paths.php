@@ -89,14 +89,16 @@ function isPrivate(string $path): bool
 
 /**
  * Parses one scope string for a client (RFC-6 "Scopes"). Null if the scope is invalid: only
- * `identify`, the app's own directory, declared well-known paths and, for reading, declared
- * paths in /pups/private/ exist.
- * Returns ['kind' => 'identify'] or ['kind' => 'write'|'read', 'prefix' => …, 'wellKnown' => entry|null].
+ * `identify`, `identity-tokens` (RFC-10, if the server issues them), the app's own directory,
+ * declared well-known paths and, for reading, declared paths in /pups/private/ exist.
+ * Returns ['kind' => 'identify'|'identity-tokens'] or ['kind' => 'write'|'read', 'prefix' => …, 'wellKnown' => entry|null].
  */
 function parseScope(string $scope, string $clientHost, Config $c): ?array
 {
     if ($scope === 'identify')
         return ['kind' => 'identify'];
+    if ($scope === IDENTITY_SCOPE)
+        return $c->identityTokens ? ['kind' => IDENTITY_SCOPE] : null;
     if (!preg_match('#^(write|read):(/(?:[A-Za-z0-9\-._~/]|%[0-9A-Fa-f]{2})*)$#D', $scope, $m))
         return null;
     [, $kind, $prefix] = $m;
@@ -159,10 +161,13 @@ function readPrefixes(string $scope): array
     return $out;
 }
 
-/** Does a scope need step-up confirmation? Everything but `identify` and the app's own directory does. */
+/**
+ * Does a scope need step-up confirmation? Everything but `identify` and the app's own directory does, `identity-tokens`
+ * too. (In same-domain mode, every approval is confirmed anyway, so the consent screen is never skipped.)
+ */
 function needsStepUp(array $scope, string $clientHost): bool
 {
-    return $scope['kind'] !== 'identify' && $scope['prefix'] !== appdataPrefix($clientHost);
+    return $scope['kind'] === IDENTITY_SCOPE || $scope['kind'] !== 'identify' && $scope['prefix'] !== appdataPrefix($clientHost);
 }
 
 /** The public URL of a stored file (RFC-6 "Public URLs"). */

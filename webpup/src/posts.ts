@@ -15,7 +15,8 @@ import { href, isSitePath, type Route } from './router';
 /** How many archives "Older posts" looks through for the first post the feed file doesn't have. */
 const MAX_ARCHIVE_LOOKUPS = 4;
 
-export const feedTitle = (feed: SiteFeed) => feed.json.title?.trim() || (feed.name ?? 'Posts');
+/** The title of its link in host-meta.json, else the feed's own title, else its name. */
+export const feedTitle = (feed: SiteFeed) => feed.title || feed.json.title?.trim() || (feed.name ?? 'Posts');
 
 export const feedRoute = (feed: SiteFeed, archive?: number): Route => ({page: 'feed', feed: feed.name, archive});
 

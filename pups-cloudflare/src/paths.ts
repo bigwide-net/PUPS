@@ -1,4 +1,4 @@
-import { hasUnsafeChars, isPrivate } from 'pups-ui'
+import { hasUnsafeChars, IDENTITY_SCOPE, isPrivate } from 'pups-ui'
 import type { Settings, WellKnownEntry } from './settings'
 
 export const MAX_PATH_BYTES = 512
@@ -39,7 +39,7 @@ export function parsePath(raw: string, s: Settings): { path: string } | { error:
 export { isPrivate } from 'pups-ui'
 
 export type PathScope = { kind: 'write' | 'read'; prefix: string; wellKnown?: WellKnownEntry }
-export type Scope = { kind: 'identify' } | PathScope
+export type Scope = { kind: 'identify' } | { kind: 'identity-tokens' } | PathScope
 
 const SCOPE_SYNTAX = /^(write|read):(\/(?:[A-Za-z0-9\-._~\/]|%[0-9A-Fa-f]{2})*)$/
 
@@ -48,11 +48,12 @@ export const appdataPrefix = (clientHost: string) => `/appdata/${clientHost}/`
 
 /**
  * Parses one scope string for a client. Returns undefined if the scope is invalid: only
- * `identify`, the app's own directory and declared well-known paths exist, and `read:` only for
- * declared well-known paths in `/pups/private/`.
+ * `identify`, `identity-tokens` (RFC-10), the app's own directory and declared well-known paths exist, and `read:` only
+ * for declared well-known paths in `/pups/private/`.
  */
 export function parseScope(scope: string, clientHost: string, s: Settings): Scope | undefined {
   if (scope == 'identify') return { kind: 'identify' }
+  if (scope == IDENTITY_SCOPE) return { kind: 'identity-tokens' }
   const m = SCOPE_SYNTAX.exec(scope)
   if (!m) return
   const kind = m[1] as PathScope['kind']
@@ -101,7 +102,7 @@ export const readPrefixes = (scope: string) => prefixes(scope, ['write', 'read']
 
 /** Does a scope need step-up confirmation? Everything but `identify` and the app's own directory does. */
 export const needsStepUp = (scope: Scope, clientHost: string) =>
-  scope.kind != 'identify' && scope.prefix != appdataPrefix(clientHost)
+  scope.kind == 'identity-tokens' || scope.kind != 'identify' && scope.prefix != appdataPrefix(clientHost)
 
 /** The public URL of a stored file. Private files have none. */
 export function publicUrl(path: string, s: Settings): string | undefined {

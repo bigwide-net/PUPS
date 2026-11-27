@@ -43,7 +43,17 @@ function normalizeSpace(string $s): string
     return trim(preg_replace('/\s+/u', ' ', preg_replace('/' . UNSAFE . '/u', ' ', scrub($s))));
 }
 
-/** The visible text of HTML. `skipCode` leaves out `code` and `pre`, as handles there don't count. */
+/**
+ * Whether an element is RFC-9's fallback HTML for feed actions (`class="without-extension-actions"`,
+ * RFC-8): links to the actions of the system a post comes from. They are no part of the post, and
+ * only that system's own actions, so a received post is shown and published without them.
+ */
+function isActionsFallback(?string $className): bool
+{
+    return $className !== null && preg_match('/(?:^|\s)without-extension-actions(?:\s|$)/', $className) === 1;
+}
+
+/** The visible text of HTML, without RFC-9's action fallbacks. `skipCode` leaves out `code` and `pre`, as handles there don't count. */
 function visibleText(string $html, bool $skipCode = false): string
 {
     $body = htmlBody($html);
@@ -56,6 +66,8 @@ function visibleText(string $html, bool $skipCode = false): string
                 $out .= $c->data;
             elseif ($c instanceof \DOMElement) {
                 $tag = strtolower($c->tagName);
+                if (isActionsFallback($c->getAttribute('class')))
+                    continue;
                 $block = in_array($tag, BLOCK_TAGS, true);
                 $out .= $block ? ' ' : '';
                 if (!in_array($tag, HIDDEN_TAGS, true) && !($skipCode && ($tag === 'code' || $tag === 'pre')))

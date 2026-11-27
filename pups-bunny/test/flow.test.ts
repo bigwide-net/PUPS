@@ -38,7 +38,8 @@ describe('discovery', () => {
     expect(c).toMatchObject({
       issuer: ORIGIN, authorization_endpoint: `${ORIGIN}/oauth/authorize`, token_endpoint: `${ORIGIN}/oauth/token`,
       revocation_endpoint: `${ORIGIN}/oauth/revoke`, storage_base: `${ORIGIN}/files/`, public_base: `${ORIGIN}/files/`,
-      scopes_supported: ['identify', 'write:/appdata/'], spec_version: '0.1', host_meta_endpoint: `${ORIGIN}/pups/host-meta`,
+      scopes_supported: ['identify', 'write:/appdata/', 'identity-tokens'], jwks_uri: `${ORIGIN}/pups/jwks.json`, spec_version: '0.1',
+      host_meta_endpoint: `${ORIGIN}/pups/host-meta`,
       max_upload_bytes: 1048576,
     })
     // The version is package.json's.

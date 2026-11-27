@@ -1,7 +1,7 @@
 import express from 'express';
 import { CONFIG_PATH, IMPLEMENTATION, PupsConfig, SPEC_VERSION } from '../lib/config';
 import { Ctx } from '../lib/context';
-import { escapeHtml as h, page } from 'pups-ui';
+import { escapeHtml as h, IDENTITY_SCOPE, JWKS_PATH, page, TOKEN_EXCHANGE } from 'pups-ui';
 import { send } from '../lib/html';
 import { isPrivate } from '../lib/paths';
 import { defaultHostMeta, readHostMeta } from './hostmeta';
@@ -18,7 +18,9 @@ export const configDocument = (c: PupsConfig) => ({
     ...endpoints(c),
     storage_base: c.storageBase,
     public_base: c.publicBase,
-    scopes_supported: ['identify', 'write:/appdata/'],
+    scopes_supported: ['identify', 'write:/appdata/', IDENTITY_SCOPE],
+    // The keys that check identity tokens (RFC-10).
+    jwks_uri: `${c.issuer}${JWKS_PATH}`,
     well_known_paths: c.wellKnown.map(e => ({
         path: e.path,
         ...e.url && { url: e.url },
@@ -39,13 +41,14 @@ export const oauthMetadata = (c: PupsConfig) => ({
     ...endpoints(c),
     response_types_supported: ['code'],
     response_modes_supported: ['query'],
-    grant_types_supported: ['authorization_code', 'refresh_token'],
+    grant_types_supported: ['authorization_code', 'refresh_token', TOKEN_EXCHANGE],
+    jwks_uri: `${c.issuer}${JWKS_PATH}`,
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
     revocation_endpoint_auth_methods_supported: ['none'],
     authorization_response_iss_parameter_supported: true,
     client_id_metadata_document_supported: true,
-    scopes_supported: ['identify', 'write:/appdata/', ...c.wellKnown.map(e => `write:${e.path}`),
+    scopes_supported: ['identify', 'write:/appdata/', IDENTITY_SCOPE, ...c.wellKnown.map(e => `write:${e.path}`),
         ...c.wellKnown.filter(e => isPrivate(e.path)).map(e => `read:${e.path}`)],
     service_documentation: c.configUrl,
 });

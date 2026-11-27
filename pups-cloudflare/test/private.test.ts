@@ -152,7 +152,7 @@ describe('private well-known paths', () => {
   it('are declared with their path only', async () => {
     const c = await (await call('/personal-storage.json')).json() as any
     expect(c.well_known_paths.slice(2)).toEqual([{ path: INBOX }, { path: '/pups/private/settings.json' }, { path: '/pups/private/inbox.json' }])
-    expect(c.scopes_supported).toEqual(['identify', 'write:/appdata/'])
+    expect(c.scopes_supported).toEqual(['identify', 'write:/appdata/', 'identity-tokens'])
     const m = await (await call('/.well-known/oauth-authorization-server')).json() as any
     expect(m.scopes_supported).toContain(`read:${INBOX}`)
     expect(m.scopes_supported).not.toContain('read:/pups/images/')

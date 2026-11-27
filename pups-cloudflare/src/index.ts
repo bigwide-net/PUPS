@@ -1,9 +1,9 @@
 import { commentEndpoint, commentStatusEndpoint, dismissPage, inboxActionEndpoint, mentionEndpoint, type Receiver } from 'pups-inbox'
-import { errorPage, themeThumbnail, webpupResponse } from 'pups-ui'
+import { errorPage, JWKS_PATH, themeThumbnail, webpupResponse } from 'pups-ui'
 import { filesEndpoint, isPrivateRaw, postEndpoint, serve } from './files'
 import { ensureMentionLink, hostMetaEndpoint, serveHostMeta } from './hostmeta'
 import { cors, HttpError, htmlErrors, json, methodNotAllowed } from './http'
-import { authorize, configDocument, oauthMetadata, revoke, token } from './oauth'
+import { authorize, configDocument, jwks, oauthMetadata, revoke, token } from './oauth'
 import { apps, commentSettings, feedSettings, homepage, homepageState, login, logout, password, setup, start } from './owner'
 import { receiver, work } from './receiver'
 import { hubEndpoint } from './websub'
@@ -36,6 +36,7 @@ function authRoutes(req: Request, path: string, s: Settings, env: Env): Promise<
     case '/oauth/authorize': return htmlErrors(() => authorize(req, s, env))
     case '/oauth/token': return cors(req, () => token(req, s, env))
     case '/oauth/revoke': return cors(req, () => revoke(req, s, env))
+    case JWKS_PATH: return jwks(req, env)
     case '/pups/setup': return htmlErrors(() => setup(req, s, env))
     case '/pups/recover': return htmlErrors(() => setup(req, s, env, true))
     case '/pups/login': return htmlErrors(() => login(req, s, env))

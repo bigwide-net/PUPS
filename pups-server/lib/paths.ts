@@ -1,5 +1,5 @@
 import { PupsConfig, WellKnownEntry } from './config';
-import { hasUnsafeChars, isPrivate } from 'pups-ui';
+import { hasUnsafeChars, IDENTITY_SCOPE, isPrivate } from 'pups-ui';
 
 export const MAX_PATH_BYTES = 512;
 /** At most this many scopes in one request. */
@@ -44,7 +44,8 @@ export function parsePath(raw: string, c: PupsConfig): { path: string } | { erro
     return { path };
 }
 
-export type Scope = { kind: 'identify' } | { kind: 'write' | 'read'; prefix: string; wellKnown?: WellKnownEntry };
+/** A parsed scope. `identity-tokens` lets the app act as the owner on other sites (RFC-10). */
+export type Scope = { kind: 'identify' } | { kind: 'identity-tokens' } | { kind: 'write' | 'read'; prefix: string; wellKnown?: WellKnownEntry };
 
 const SCOPE_SYNTAX = /^(write|read):(\/(?:[A-Za-z0-9\-._~\/]|%[0-9A-Fa-f]{2})*)$/;
 
@@ -55,12 +56,14 @@ export { isPrivate } from 'pups-ui';
 
 /**
  * Parses one scope string for a client (RFC-6 "Scopes"). Returns undefined if the scope is
- * invalid: only `identify`, the app's own directory, declared well-known paths, and `read:`
- * for declared paths in /pups/private/ exist.
+ * invalid: only `identify`, `identity-tokens` (RFC-10), the app's own directory, declared
+ * well-known paths, and `read:` for declared paths in /pups/private/ exist.
  */
 export function parseScope(scope: string, clientHost: string, c: PupsConfig): Scope | undefined {
     if (scope == 'identify')
         return { kind: 'identify' };
+    if (scope == IDENTITY_SCOPE)
+        return { kind: 'identity-tokens' };
     const m = SCOPE_SYNTAX.exec(scope);
     if (!m)
         return;
@@ -109,9 +112,12 @@ export const writePrefixes = (scope: string) =>
 export const readPrefixes = (scope: string) =>
     [...writePrefixes(scope), ...scope.split(' ').filter(x => x.startsWith('read:')).map(x => decodeURIComponent(x.slice(5)))];
 
-/** Does a scope need step-up confirmation? Everything but `identify` and the app's own directory does. */
+/**
+ * Does a scope need step-up confirmation? Everything but `identify` and the app's own directory does,
+ * `identity-tokens` always (RFC-10 "Scope and consent").
+ */
 export const needsStepUp = (scope: Scope, clientHost: string) =>
-    scope.kind != 'identify' && scope.prefix != appdataPrefix(clientHost);
+    scope.kind == 'identity-tokens' || scope.kind != 'identify' && scope.prefix != appdataPrefix(clientHost);
 
 /** The public URL of a stored file (RFC-6 "Public URLs"). */
 export function publicUrl(path: string, c: PupsConfig): string {

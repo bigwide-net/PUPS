@@ -6,7 +6,7 @@
 
 namespace Pups;
 
-foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments', 'sender', 'moderation', 'markdown', 'commenthtml', 'websub'] as $f)
+foreach (['sanitize', 'crypto', 'http', 'config', 'log', 'paths', 'filetypes', 'state', 'storage', 'cimd', 'webauthn', 'html', 'owner', 'context', 'content', 'feeds', 'archive', 'inbox', 'comments', 'sender', 'moderation', 'markdown', 'commenthtml', 'websub', 'identity'] as $f)
     require_once __DIR__ . "/lib/$f.php";
 foreach (['discovery', 'hostmeta', 'files', 'oauth', 'admin', 'setup', 'homepage', 'mentions', 'inbox'] as $f)
     require_once __DIR__ . "/handler/$f.php";
@@ -71,6 +71,8 @@ function dispatch(Request $req, string $abs, ?string $rel, Ctx $ctx): ?Response
             return token($req, $ctx);
         case '/oauth/revoke':
             return revoke($req, $ctx);
+        case JWKS_PATH:
+            return jwksEndpoint($req, $ctx);
         case '/pups/setup':
             return setupEndpoint($req, $ctx);
         case '/pups/apps':

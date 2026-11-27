@@ -6,7 +6,7 @@ import { preferredEmail } from '@lib/socialspec/src/vcard';
 import { loadSite, type Site } from './data';
 import { followDialog } from './follow';
 import { installKeys } from './keys';
-import { createConsent, hydrateEmbeds, type PostContext } from './posts';
+import { createConsent, feedTitle, hydrateEmbeds, type PostContext } from './posts';
 import { detectUrlStyle, startRouter, type Route } from './router';
 import { applyThemeColor, hasTheme, themeSelector } from './themes';
 import { renderPage, siteName, siteSummary } from './view';
@@ -31,7 +31,7 @@ function applySite(s: Site): void {
         document.head.appendChild(Object.assign(document.createElement('link'), {rel: 'icon', href: favicon}));
     // Feed autodiscovery for the named feeds (index.html links /feed.json itself).
     for (const f of s.feeds.filter(f => f.name))
-        document.head.appendChild(Object.assign(document.createElement('link'), {rel: 'alternate', type: 'application/feed+json', href: f.url, title: f.json.title ?? f.name}));
+        document.head.appendChild(Object.assign(document.createElement('link'), {rel: 'alternate', type: 'application/feed+json', href: f.url, title: feedTitle(f)}));
 }
 
 /** Scrolls to the post of the #fragment and marks it. */

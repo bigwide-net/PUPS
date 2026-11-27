@@ -509,7 +509,7 @@ function withdrawComment(Ctx $ctx, string $target, string $id): array
     foreach ($removed as $i => ['item' => $item, 'address' => $address]) {
         $parent = $i ? null : $answered;
         foreach ($i ? $removed : [] as $p)
-            if (sameRef($p['address'], is_string($item->_source->inReplyTo ?? null) ? $item->_source->inReplyTo : null))
+            if (sameRef($p['address'], replyRef($item->_source->inReplyTo ?? null)))
                 $parent = $p['item'];
         $changes[] = ['address' => $address, 'before' => $item, 'answered' => $parent];
     }
