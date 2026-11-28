@@ -226,7 +226,8 @@ describe('password page', () => {
 })
 
 describe('recovery', () => {
-  const RECOVERY = 'a recovery secret of some length'
+  // Any length: only the Worker's owner can set it, and it works once.
+  const RECOVERY = 'short'
   const recover = (fields: Record<string, string>) => call('/pups/recover', { method: 'POST', body: form(fields) })
 
   it('exists only while RECOVERY_SECRET is set, replaces the passkeys and the password, and works once per secret', async () => {

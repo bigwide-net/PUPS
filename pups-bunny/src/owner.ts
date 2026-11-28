@@ -56,7 +56,7 @@ export async function setup(req: Request, s: Settings, env: Env, recover = false
   const db = store(env)
   const secret = recover ? env.RECOVERY_SECRET : env.BOOTSTRAP_SECRET
   if (recover) {
-    if (!secret || secret.length < 16) return notFound()
+    if (!secret) return notFound()
     if (!await db.ownerExists()) return seeOther('/pups/setup')
   } else {
     // After setup the page is unreachable.

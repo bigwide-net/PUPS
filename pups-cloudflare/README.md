@@ -21,20 +21,23 @@ The button copies this repository to your GitHub account, provisions the Worker,
 
 ### With Wrangler
 
+Keep your settings in `wrangler.local.jsonc`, a copy of `wrangler.jsonc` that git ignores, so pulling updates never overwrites them:
+
 ```sh
 npm install
+cp wrangler.jsonc wrangler.local.jsonc
+# in wrangler.local.jsonc: set OWNER_HOST (and optionally AUTH_HOST)
 npx wrangler r2 bucket create pups-files      # any name; if you choose another one, put it into bucket_name
-                                             # of the FILES binding in wrangler.jsonc (don't add a binding)
-npx wrangler secret put BOOTSTRAP_SECRET     # a long random value, e.g. `openssl rand -base64 32`
-# set OWNER_HOST (and optionally AUTH_HOST) in wrangler.jsonc
-npx wrangler deploy
+                                             # of the FILES binding in wrangler.local.jsonc (don't add a binding)
+npx wrangler secret put BOOTSTRAP_SECRET -c wrangler.local.jsonc   # asks you for a secret, e.g. from `openssl rand -base64 32`
+npx wrangler deploy -c wrangler.local.jsonc
 ```
 
-To keep your settings out of a clone you pull updates into, copy `wrangler.jsonc` to `wrangler.local.jsonc` (ignored by git), put your settings there, and deploy with `npx wrangler deploy -c wrangler.local.jsonc`. When an update changes `wrangler.jsonc`, carry the change over to your copy.
+Always pass `-c wrangler.local.jsonc` to Wrangler. When an update changes `wrangler.jsonc`, carry the change over to your copy.
 
 Then:
 
-1. **Attach your domain** to the Worker as a custom domain (Workers → your Worker → Settings → Domains & Routes). Your DNS has to be on Cloudflare. If your domain already serves a website, attach the Worker to routes instead (`tim.example.com/.well-known/*`, `/files/*`, `/oauth/*`, `/pups/*`, `/personal-storage.json`, and `/feed.json` and `/feed/*` unless you leave them out, see [Well-known paths](#well-known-paths)), or set `ORIGIN_FALLBACK` to `true` so unknown paths go through to your origin.
+1. **Attach your domain** to the Worker as a custom domain (Compute → Workers & Pages → your Worker → Domains → Custom Domains and Routes). Your DNS has to be on Cloudflare. If your domain already serves a website, attach the Worker to routes instead (`tim.example.com/.well-known/*`, `/files/*`, `/oauth/*`, `/pups/*`, `/personal-storage.json`, and `/feed.json` and `/feed/*` unless you leave them out, see [Well-known paths](#well-known-paths)), or set `ORIGIN_FALLBACK` to `true` so unknown paths go through to your origin.
 2. **Open `https://<your domain>/pups/setup`**, enter the bootstrap secret, and register a passkey (preferred) or a password. Setup works once; after that the page returns 404.
 3. **Check discovery**: `https://<your domain>/.well-known/host-meta.json` should link to `https://<your domain>/personal-storage.json`.
 4. **Manage apps** at `/pups/apps` and change your password at `/pups/password`.
@@ -62,9 +65,9 @@ Every change (removing an app, a link or a property, changing the password) need
 While you have a passkey, the owner pages offer no way around it. To get back in, prove that you control the Worker: set a recovery secret, open `/pups/recover`, and choose a new passkey or password there. It replaces all your passkeys and your password, and ends every session. Then delete the secret; the same value doesn't work a second time.
 
 ```sh
-npx wrangler secret put RECOVERY_SECRET      # a long random value
+npx wrangler secret put RECOVERY_SECRET -c wrangler.local.jsonc    # asks you for a secret, e.g. from `openssl rand -base64 32`
 # open https://<your domain>/pups/recover (or on AUTH_HOST)
-npx wrangler secret delete RECOVERY_SECRET
+npx wrangler secret delete RECOVERY_SECRET -c wrangler.local.jsonc
 ```
 
 Viewing a page needs a session. In auth subdomain mode that is the cookie. In same-domain mode, `owner.js` keeps a **page session** after your first confirmation: a signed token in the memory of the open page, never in a cookie or storage, sent in the `PUPS-Session` header. The pages then load without a full reload, and moving between them or reloading their content needs no new confirmation. The session ends after 15 minutes without use, an hour after the confirmation, when you reload the page or close the tab, and when the password changes. Owner pages are sent with `Cross-Origin-Opener-Policy: same-origin` and can't be framed, so no page of your website can reach into them.
@@ -75,12 +78,12 @@ Set `AUTH_HOST` to e.g. `id.tim.example.com` and attach that host to the same Wo
 
 ## Configuration
 
-All settings are `vars` in `wrangler.jsonc`, plus one secret.
+All settings are `vars` in `wrangler.jsonc` (your copy `wrangler.local.jsonc` if you deploy with Wrangler), plus one secret.
 
 | Name | Default | Meaning |
 | --- | --- | --- |
 | `BOOTSTRAP_SECRET` (secret) | — | Single-use secret that protects `/pups/setup`. At least 16 characters. |
-| `RECOVERY_SECRET` (secret) | — | Set only when you lost your passkey: opens `/pups/recover`, see [Lost passkey](#lost-passkey). Each value works once. At least 16 characters. |
+| `RECOVERY_SECRET` (secret) | — | Set only when you lost your passkey: opens `/pups/recover`, see [Lost passkey](#lost-passkey). Each value works once. Any length. |
 | `OWNER_HOST` | request host | Your domain, e.g. `tim.example.com`. It is your identity (`me`). Set it in production. |
 | `AUTH_HOST` | — | Optional auth subdomain, e.g. `id.tim.example.com`. Requires `OWNER_HOST`. |
 | `PUBLIC_BASE` | `https://<OWNER_HOST>/files/` | Base URL for public reads, e.g. a CDN. It should stay on your own host, see RFC-6 "Public URLs". It must be served by this Worker, or by a CDN that pulls through it, never directly by a public R2 bucket (see [Private areas](#private-areas)); an `r2.dev` URL is rejected. |

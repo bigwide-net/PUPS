@@ -92,7 +92,7 @@ The same variables as the Cloudflare version, set as Edge Script environment var
 | `STORAGE_HOST` | `storage.bunnycdn.com` | API host of the storage zone's primary region. |
 | `STORAGE_ACCESS_KEY` | | Storage zone password (**secret**). |
 | `BOOTSTRAP_SECRET` | | One-time setup secret (**secret**). |
-| `RECOVERY_SECRET` | | Set only when you lost your passkey (**secret**, at least 16 characters): open `/pups/recover` and choose a new passkey or password, which replaces all passkeys and the password. Then remove it; each value works once. While you have a passkey, the password is not accepted. |
+| `RECOVERY_SECRET` | | Set only when you lost your passkey (**secret**, any length): open `/pups/recover` and choose a new passkey or password, which replaces all passkeys and the password. Then remove it; each value works once. While you have a passkey, the password is not accepted. |
 | `PUBLIC_BASE` | `https://<OWNER_HOST>/files/` | Public base URL for reads. Never a pull zone on the storage zone itself. |
 | `MAX_UPLOAD_BYTES` | `26214400` | Largest accepted file. |
 | `MAX_STORAGE_BYTES` | `0` | Storage quota (approximate); `0` means unlimited. |
