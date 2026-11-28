@@ -1,7 +1,7 @@
 # webpup
 
 A single-page website for a domain with a [Personal Upload Server](https://github.com/bigwide-net/RFCs/blob/main/RFC-6-Personal-Upload-Server.md)
-(PUPS). Apps write the owner's feeds and profile through PUPS; webpup turns them into a web page,
+(PUPS). Apps write the owner's feeds, pages and profile through PUPS; webpup turns them into a website,
 in the visitor's browser, without any server code:
 
 - the profile header: banner, avatar, name, summary (from `host-meta.json`), a reader-independent
