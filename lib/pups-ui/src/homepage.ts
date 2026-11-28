@@ -13,6 +13,10 @@ export const WEBPUP_GENERATOR = '<meta name="generator" content="webpup">'
 /** The site property that tells apps the URL of a post's page (RFC-6 "Site properties", RFC-7 items). */
 export const POST_URL_TEMPLATE_PROP = 'https://bigwide.net/ns/post-url-template'
 
+/** The page link property that makes a page the site's home page (RFC-6 "Pages"). */
+export const WEBPUP_HOMEPAGE_PROP = 'https://bigwide.net/ns/webpup-homepage'
+const WEBPUP_PAGES_REL = 'https://bigwide.net/ns/webpup-pages'
+
 /** What the owner chose on /pups/homepage. Undefined: webpup is not installed. */
 export interface HomepageState {
   /** A theme's id, or 'default' for webpup's own look. */
@@ -63,6 +67,42 @@ export interface WebpupOptions {
   settingsUrl: string
   /** The link to the owner pages at the bottom of the page, if any: the URL of /pups/. */
   ownerLink?: string
+  /** The owner's origin, e.g. https://tim.example.com: index.html links the Markdown file that a URL shows (markdownTwin). */
+  ownerOrigin?: string
+  /** host-meta.json, parsed: the page link marked as the home page is the Markdown file of /. */
+  hostMeta?: () => Promise<unknown>
+}
+
+/** A path of a Markdown file of the site, as webpup shows them: absolute, .md or .markdown, no dot segments. */
+const isMarkdownPath = (path: string | null | undefined): path is string =>
+  !!path && /^\/(?![/\\])/.test(path) && /\.(md|markdown)$/i.test(path) && !/[\x00-\x1f\x7f\\?#]/.test(path)
+  && !path.split('/').some(seg => seg == '.' || seg == '..')
+
+/**
+ * The URL of the Markdown file that a webpup URL shows: for / (and /index.html without ?show) the page that host-meta.json
+ * marks as the home page; for /p/md/<path> (?show=md&path=<path>), that file. index.html links it, for Markdown browsers
+ * like bonBon (github.com/scripting/bonBon), which don't run webpup's script.
+ */
+async function markdownTwin(req: Request, path: string, o: WebpupOptions): Promise<string | undefined> {
+  if (!o.ownerOrigin) return
+  const q = new URL(req.url).searchParams
+  const show = q.get('show')
+  let file: string | null
+  if (path.startsWith('/p/md/'))
+    try {
+      file = decodeURIComponent(path.slice(5))
+    } catch {
+      return
+    }
+  else if (path == '/index.html' && show == 'md') file = q.get('path')
+  else if ((path == '/' || path == '/index.html' || path == '/p/') && show == null) {
+    const doc = await o.hostMeta?.().catch(() => undefined) as { links?: unknown } | undefined
+    const marked = (link: any) => link?.rel == WEBPUP_PAGES_REL && typeof link.href == 'string'
+      && String(typeof link.properties?.[WEBPUP_HOMEPAGE_PROP] == 'string' ? link.properties[WEBPUP_HOMEPAGE_PROP] : '').trim().toLowerCase() == 'true'
+    const href: string | undefined = (Array.isArray(doc?.links) ? doc.links : []).find(marked)?.href
+    return href?.startsWith(`${o.ownerOrigin}/`) ? href : undefined
+  } else return
+  return isMarkdownPath(file) ? o.ownerOrigin + file.split('/').map(encodeURIComponent).join('/') : undefined
 }
 
 /**
@@ -73,7 +113,11 @@ export interface WebpupOptions {
 export async function webpupResponse(req: Request, path: string, state: HomepageState, o: WebpupOptions): Promise<Response | undefined> {
   if (req.method != 'GET' && req.method != 'HEAD') return
   const file = (name: string) => WEBPUP_FILES[name]
-  if (path == '/' || path == '/index.html' || path.startsWith('/p/')) return siteFile(req, 'text/html', file('/index.html')!.text!)
+  if (path == '/' || path == '/index.html' || path.startsWith('/p/')) {
+    const twin = await markdownTwin(req, path, o)
+    const html = file('/index.html')!.text!
+    return siteFile(req, 'text/html', twin ? html.replace('</head>', `<link rel="alternate" type="text/markdown" href="${h(twin)}">\n</head>`) : html)
+  }
   if (path == '/webpups.js' || path == '/webpup.css') return siteFile(req, file(path)!.type, file(path)!.text!)
   if (path == '/theme.css')
     return siteFile(req, 'text/css', `/* webpup theme: ${state.theme}. Installed by PUPS; choose another one at ${o.settingsUrl} */\n` +

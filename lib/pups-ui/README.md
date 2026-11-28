@@ -17,7 +17,6 @@ The functions are pure: a server passes in plain data (its settings, the parsed 
 | --- | --- |
 | [pups-cloudflare](../../pups-cloudflare) | Pages and webpup from the package; `public/` as the Worker's static assets. |
 | [pups-bunny](../../pups-bunny) | Pages and webpup from the package; the assets bundled into the script (`pups-ui/assets`). |
-| [pups-server](../../pups-server) | The owner pages; `public/pups/assets/` with `express.static`. |
 | [pups-inbox](../pups-inbox) | The Dismiss pages and the inbox section's data type. |
 | [pups-php](../../pups-php) | Can't use the package: `scripts/sync-ui.sh` there copies `owner.css`, `owner.js` and `texts.json`, and a test fails while the copies are out of date. pups-php has its own copy of webpup. |
 
@@ -54,7 +53,7 @@ The servers in this repository depend on it as a local package:
 "dependencies": { "pups-ui": "file:../lib/pups-ui" }
 ```
 
-It ships TypeScript sources; the servers' bundlers (wrangler, esbuild) or ts-node and ts-jest (pups-server) compile them. The servers need `"resolveJsonModule": true` for `texts.json`.
+It ships TypeScript sources; the servers' bundlers (wrangler, esbuild) compile them. The servers need `"resolveJsonModule": true` for `texts.json`.
 
 - `import { consentPage, appsPage, … } from 'pups-ui'`
 - Cloudflare serves the assets as static assets: `"assets": { "directory": "./node_modules/pups-ui/public" }` in `wrangler.jsonc`.

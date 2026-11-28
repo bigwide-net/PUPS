@@ -2,6 +2,8 @@
 
 Reference implementation of the **Personal Upload Server** ([RFC-6](https://github.com/bigwide-net/RFCs/blob/main/RFC-6-Personal-Upload-Server.md), `spec_version` 0.1) as a single Cloudflare Worker. It lets apps upload files to your own domain: an app only needs your domain name, asks for permission with OAuth 2.1 + PKCE, and gets a token that can write the paths you approved. Everything uploaded is public, except the private areas.
 
+> **Experimental:** PUPS is at an experimental stage. Expect backward-incompatible changes to the protocol, the configuration and the stored data between versions.
+
 - **Worker** (TypeScript): discovery, OAuth authorization server, upload API, owner pages.
 - **R2** bucket `FILES`: uploaded files, `/.well-known/host-meta.json` and your inbox.
 - **Durable Object** `PupsStore` (SQLite): owner credentials, grants, hashed tokens, codes, sessions, rate limits, the locks of kept feeds, the homepage and WebSub settings, the WebSub subscriptions and the pings waiting to go out, webmentions waiting to be checked and comment status pages.
@@ -105,7 +107,7 @@ By default the server declares every path of RFC-6's list of well-known paths, a
 | `/feed.json` | Your main feed (JSON Feed); may register feeds with the rel `https://bigwide.net/ns/feed` | your feed |
 | `/feed/` | The files of your main feed (media, older pages) and your other feeds; may register feeds with the rel `https://bigwide.net/ns/feed` | the files of your feed, and your other feeds |
 | `/pups/images/` | Your site's profile images; may set the properties `https://bigwide.net/ns/avatar` and `…/banner`, to the URL of an image in `/pups/images/` | your site's profile images |
-| `/pups/pages/` | Your site's pages and footer (Markdown); may register pages with the rel `https://bigwide.net/ns/webpup-pages` and the link property `…/webpup-hidden`, and set the property `…/webpup-footer` to the URL of a file in `/pups/pages/` | your site's pages |
+| `/pups/pages/` | Your site's pages and footer (Markdown); may register pages with the rel `https://bigwide.net/ns/webpup-pages` and the link properties `…/webpup-hidden` and `…/webpup-homepage`, and set the property `…/webpup-footer` to the URL of a file in `/pups/pages/` | your site's pages |
 
 Like all uploads, these files are stored in R2 under `/files/` (e.g. `/files/pups/images/avatar.png`) and are also served at their URL at the domain root (`/pups/images/avatar.png`, `/pups/pages/now.md`). No route of the server is under `/pups/images/` or `/pups/pages/`, and they are the only directories under `/pups/` that can be declared, besides paths inside `/pups/private/` (see [Private areas](#private-areas)).
 
@@ -161,6 +163,7 @@ The Worker has a small built-in receiver, the same as the PHP and Bunny implemen
 On the page *Homepage* (`/pups/homepage`) you can make **webpup** the homepage of your domain: a single-page website that shows your profile, posts and pages from the files your apps write. Choose one of its themes, and whether visitors can try all themes (the theme browser). **Remove webpup** turns it off again, and `/` forwards to the owner pages.
 
 - webpup's files come with the Worker (from pups-ui); nothing is copied to R2. `/` and webpup's pretty URLs (`/p/about`, `/p/feed/photos`, …) serve its `index.html`; `/webpups.js`, `/webpup.css`, `/theme.css`, `/webpup-themes/…` and `/webpup-config.json` (with `settings-url` and `owner-link`) the rest. They are revalidated on every request (`no-cache` with an ETag).
+- **Markdown browsers.** Markdown browsers like [bonBon](https://github.com/scripting/bonBon) don't run webpup's script. For them, `index.html` links the Markdown file that the page shows, with `<link rel="alternate" type="text/markdown" href="…">`: at `/`, the page that `host-meta.json` marks as the home page (link property `https://bigwide.net/ns/webpup-homepage`); at `/p/md/<path>`, that file.
 - **Post pages.** Every post has a page of its own, e.g. `/p/feed/post/47`. While webpup is installed, `host-meta.json` declares these URLs with the site property `https://bigwide.net/ns/post-url-template` (`https://tim.example.com/p/{feed}/post/{index}`), so apps link new posts to their page (RFC-7). Removing webpup removes the property, unless you changed it.
 - With `ORIGIN_FALLBACK`, your existing website keeps `/`, and the page *Homepage* says so. On a route setup, add `/` and `/p/*` and webpup's files to the Worker's routes if you want webpup.
 

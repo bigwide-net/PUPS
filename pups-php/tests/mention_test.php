@@ -401,7 +401,7 @@ test('dismiss: the RFC-9 action with the inbox key, and the fallback page that a
     [$a, $b] = [$bySource['https://bob.example/f.json#a'], $bySource['https://bob.example/f.json#b']];
     $action = str_replace('{id}', rawurlencode($a['id']), inbox($t)['_actions']['templates']['dismiss']['action']);
     $path = substr($action, strlen(ORIGIN));
-    eq($t->req('POST', preg_replace('/key=\w+/', 'key=wrong', $path), ['content-type' => 'application/json'], '{}')->status, 403);
+    eq($t->req('POST', preg_replace('/key=[^&]+/', 'key=wrong', $path), ['content-type' => 'application/json'], '{}')->status, 403);
     eq($t->req('OPTIONS', $path, ['access-control-request-headers' => 'content-type'])->header('access-control-allow-origin'), '*');
     $res = $t->req('POST', $path, ['content-type' => 'application/json'], json_encode(['id' => $a['id']]));
     eq([$res->status, $res->json()['actions'], $res->header('access-control-allow-origin')], [200, [['type' => 'display', 'text' => 'Dismissed']], '*']);
@@ -418,7 +418,7 @@ test('dismiss: the RFC-9 action with the inbox key, and the fallback page that a
     $done = $t->post('/pups/inbox/dismiss', ['id' => hidden($page->text, 'id'), 'key' => hidden($page->text, 'key')]);
     contains($done->text, 'The item was removed from your inbox.');
     eq(inbox($t)['items'], []);
-    eq($t->get(preg_replace('/key=\w+/', 'key=nope', $link))->status, 403);
+    eq($t->get(preg_replace('/key=[^&"]+/', 'key=nope', $link))->status, 403);
 });
 
 test('inbox: the owner\'s reader reads it with a read scope; another writer\'s inbox is left alone', function () {

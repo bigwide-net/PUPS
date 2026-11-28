@@ -2,15 +2,19 @@
 //
 //   pretty (the server rewrites /p/* to /index.html)    query (a plain static server)
 //   /                                                   /index.html (or / if the server maps it)
+//   /p/blog (the main feed, if / is a Markdown page)    /index.html?show=blog
 //   /p/about, /p/following, /p/contact                  /index.html?show=about
 //   /p/blog/archive/3                                   /index.html?show=blog&mode=archive&page=3
 //   /p/feed/photos, /p/feed/photos/archive/3            /index.html?show=feed&feed=photos[&mode=archive&page=3]
 //   /p/feed/post/12, /p/feed/photos/post/12             /index.html?show=post&feed=feed[/photos]&index=12
 //   /p/pages                                            /index.html?show=pages
 //   /p/page/imprint                                     /index.html?show=page&name=imprint
+//   /p/md/docs/intro.md                                 /index.html?show=md&path=/docs/intro.md
 //
 // Pages are the Markdown files registered in host-meta.json (rel https://bigwide.net/ns/webpup-pages),
-// named by their file name. The main feed (/feed.json) is "blog"; named feeds (/feed/<name>.json, RFC-7) are under "feed", so
+// named by their file name. Other Markdown files of the site that pages link to are shown by their path ("md").
+// The home page (/) is the main feed, or a Markdown page (webpup-config.json's homepage, or the page
+// marked in host-meta.json); then the main feed is /p/blog. The main feed (/feed.json) is "blog"; named feeds (/feed/<name>.json, RFC-7) are under "feed", so
 // a feed can have any name, also "about" or "archive". Archive pages are numbered like the archive
 // files (feed.000003.json is page 3), so their URLs never change. A post has a page of its own,
 // addressed by its feed's path (feed, feed/photos) and its index (_archive.index, RFC-13): the URL of
@@ -23,13 +27,16 @@
 
 export type InfoPage = 'about' | 'following' | 'contact';
 
-/** A page of the site. `{page: 'feed'}` without feed and archive is the home page. */
+/** A page of the site. `{page: 'feed'}` without feed and archive is the main feed, which is also the
+ *  home page unless the site has a Markdown home page. */
 export type Route =
+    | {page: 'home'}
     | {page: 'feed', feed?: string, archive?: number}
     | {page: 'post', feed?: string, index: number}
     | {page: InfoPage}
     | {page: 'pages'}
     | {page: 'page', name: string}
+    | {page: 'md', path: string}
     | {page: 'notfound'};
 
 export interface UrlStyle {
@@ -48,6 +55,14 @@ export const isFeedName = (s: string | null | undefined): s is string =>
 /** The name of a page in URLs: its file name without .md, in lowercase letters, digits and '-'. */
 export const isPageName = (s: string | null | undefined): s is string => !!s && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(s);
 
+/** The path of a Markdown file of the site (route 'md'): absolute, .md or .markdown, without dot segments. */
+export const isMarkdownPath = (path: string | null | undefined): path is string =>
+    !!path && /^\/(?![/\\])/.test(path) && /\.(md|markdown)$/i.test(path) && !/[\x00-\x1f\\?#]/.test(path)
+    && !path.split('/').some(seg => seg == '..' || seg == '.');
+
+/** A path in a URL: each segment percent-encoded, the slashes kept. */
+const encodePath = (path: string) => path.split('/').map(encodeURIComponent).join('/');
+
 const archiveNumber = (s: string | null | undefined) => s && /^\d{1,6}$/.test(s) ? Number(s) : undefined;
 const postIndex = (s: string | null | undefined) => s && /^\d{1,9}$/.test(s) ? Number(s) : undefined;
 
@@ -57,10 +72,14 @@ export const feedPath = (feed?: string) => feed ? `feed/${feed}` : 'feed';
 /** The page of a path and query string, in either URL style. */
 export function parseRoute(pathname: string, search: string): Route {
     const notFound: Route = {page: 'notfound'};
+    if (pathname.startsWith('/p/md/')) {
+        const path = safeDecode(pathname.slice(5));
+        return isMarkdownPath(path) ? {page: 'md', path} : notFound;
+    }
     if (pathname.startsWith('/p/')) {
         const [first, ...rest] = pathname.slice(3).split('/').filter(Boolean).map(decodeURIComponent);
         if (!first)
-            return {page: 'feed'};
+            return {page: 'home'};
         if (INFO_PAGES.includes(first as InfoPage) || first == 'pages')
             return rest.length ? notFound : {page: first as InfoPage | 'pages'};
         if (first == 'page')
@@ -86,7 +105,11 @@ export function parseRoute(pathname: string, search: string): Route {
     const q = new URLSearchParams(search);
     const show = q.get('show');
     if (!show)
-        return {page: 'feed'};
+        return {page: 'home'};
+    if (show == 'md') {
+        const path = q.get('path');
+        return isMarkdownPath(path) ? {page: 'md', path} : notFound;
+    }
     if (INFO_PAGES.includes(show as InfoPage) || show == 'pages')
         return {page: show as InfoPage | 'pages'};
     if (show == 'page') {
@@ -107,12 +130,25 @@ export function parseRoute(pathname: string, search: string): Route {
     return archive == undefined ? notFound : {page: 'feed', feed: feed ?? undefined, archive};
 }
 
-/** The URL of a page (path and query, plus `#hash` if given). */
-export function formatRoute(route: Route, style: UrlStyle, hash = ''): string {
+function safeDecode(s: string): string | undefined {
+    try {
+        return decodeURIComponent(s);
+    } catch {
+        return undefined;
+    }
+}
+
+/** The URL of a page (path and query, plus `#hash` if given). `markdownHome`: the home page is a
+ *  Markdown page, so the main feed has a URL of its own. */
+export function formatRoute(route: Route, style: UrlStyle, hash = '', markdownHome = false): string {
     const home = style.root ? '/' : '/index.html';
     const fragment = hash && (hash.startsWith('#') ? hash : '#' + hash);
     if (route.page == 'notfound')
         return home;
+    if (route.page == 'home')
+        return home + fragment;
+    if (route.page == 'md')
+        return (style.pretty ? `/p/md${encodePath(route.path)}` : `${home}?show=md&path=${encodePath(route.path)}`) + fragment;
     if (route.page == 'page')
         return (style.pretty ? `/p/page/${route.name}` : `${home}?show=page&name=${route.name}`) + fragment;
     if (route.page == 'post')
@@ -120,7 +156,7 @@ export function formatRoute(route: Route, style: UrlStyle, hash = ''): string {
     if (route.page != 'feed')
         return (style.pretty ? `/p/${route.page}` : `${home}?show=${route.page}`) + fragment;
     const {feed, archive} = route;
-    if (!feed && archive == undefined)
+    if (!feed && archive == undefined && !markdownHome)
         return home + fragment;
     if (style.pretty)
         return (feed ? `/p/feed/${feed}` : '/p/blog') + (archive != undefined ? `/archive/${archive}` : '') + fragment;
@@ -194,17 +230,18 @@ export async function detectUrlStyle(pathname: string, fetchFn: typeof fetch = f
 export type RenderFn = (route: Route, hash: string, how: 'load' | 'push' | 'pop', keepScroll: boolean) => void;
 
 let style: UrlStyle = {pretty: false, root: false};
+let markdownHome = false;
 let renderPage: RenderFn | undefined;
 
 /** The URL of a page in the server's style. */
-export const href = (route: Route, hash = '') => formatRoute(route, style, hash);
+export const href = (route: Route, hash = '') => formatRoute(route, style, hash, markdownHome);
 
 const currentPath = () => location.pathname + location.search + location.hash;
 
 function show(how: 'load' | 'push' | 'pop', keepScroll = false): void {
     const route = parseRoute(location.pathname, location.search);
     // One address per page: switch to the server's URL style, keep the post (#id).
-    const canonical = formatRoute(route, style, location.hash);
+    const canonical = formatRoute(route, style, location.hash, markdownHome);
     if (route.page != 'notfound' && canonical != currentPath())
         history.replaceState(history.state, '', canonical);
     renderPage?.(route, location.hash, how, keepScroll);
@@ -235,9 +272,11 @@ function onClick(e: MouseEvent): void {
     navigate(url.pathname + url.search + url.hash, a.hasAttribute('data-keep-scroll'));
 }
 
-/** Starts the router: renders the current page, then every page the visitor goes to. */
-export function startRouter(urlStyle: UrlStyle, render: RenderFn): void {
+/** Starts the router: renders the current page, then every page the visitor goes to.
+ *  `hasMarkdownHome`: the home page is a Markdown page, and the main feed is /p/blog. */
+export function startRouter(urlStyle: UrlStyle, render: RenderFn, hasMarkdownHome = false): void {
     style = urlStyle;
+    markdownHome = hasMarkdownHome;
     renderPage = render;
     history.scrollRestoration = 'manual';
     document.addEventListener('click', onClick);

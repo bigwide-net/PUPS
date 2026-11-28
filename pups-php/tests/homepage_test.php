@@ -154,3 +154,31 @@ test('homepage: removing webpup keeps a post URL template the owner set', functi
     homepage($t, ['webpup' => 'remove']);
     eq($t->get('/.well-known/host-meta.json')->json()['properties'][$prop], 'https://blog.example/{feed}/{index}.html');
 });
+
+test('homepage: index.html links the Markdown file of the URL, for Markdown browsers like bonBon', function () {
+    $t = new T();
+    homepage($t, ['webpup' => 'install', 'theme' => 'default']);
+    $twin = fn(string $url) => preg_match('#<link rel="alternate" type="text/markdown" href="([^"]*)">#', $t->get($url)->text, $m) ? html_entity_decode($m[1]) : null;
+    eq($twin('/'), null, 'no home page: the feed');
+    eq($twin('/p/md/docs/%C3%9Cber%20uns.md'), ORIGIN . '/docs/%C3%9Cber%20uns.md');
+    eq($twin('/index.html?show=md&path=/docs/intro.md'), ORIGIN . '/docs/intro.md');
+    foreach (['/p/md/docs/x.html', '/p/md//evil.example/x.md', '/index.html?show=md&path=x.md', '/p/about', '/index.html?show=about'] as $url)
+        eq($twin($url), null, $url);
+
+    // The page marked as the home page in host-meta.json...
+    $pages = 'https://bigwide.net/ns/webpup-pages';
+    $mark = 'https://bigwide.net/ns/webpup-homepage';
+    $doc = $t->get('/.well-known/host-meta.json')->json();
+    $doc['links'][] = ['rel' => $pages, 'href' => ORIGIN . '/pups/pages/now.md'];
+    $doc['links'][] = ['rel' => $pages, 'href' => ORIGIN . '/pups/pages/welcome.md', 'properties' => [$mark => 'true']];
+    file_put_contents($t->config->dataDir . '/files/.well-known/host-meta.json', json_encode($doc, JSON_UNESCAPED_SLASHES));
+    eq($twin('/'), ORIGIN . '/pups/pages/welcome.md');
+    eq($twin('/index.html'), ORIGIN . '/pups/pages/welcome.md');
+    eq($twin('/?show=about'), null);
+    // ...unless webpup-config.json names another.
+    $config = $t->config->siteDir . '/webpup-config.json';
+    file_put_contents($config, json_encode(json_decode(file_get_contents($config), true) + ['homepage' => '/index.md']));
+    eq($twin('/'), ORIGIN . '/index.md');
+    eq($t->get('/webpup-config.json')->json()['homepage'], '/index.md');
+    ok($t->get('/')->header('etag') !== $t->get('/p/md/a.md')->header('etag'), 'each its own ETag');
+});

@@ -57,3 +57,32 @@ describe('pages', () => {
     expect(page).toContain('<code>https://tim.example.com/p/{feed}/post/{index}</code>')
   })
 })
+
+describe('Markdown twin', () => {
+  const state = { theme: 'default', themeSelector: false }
+  const pages = 'https://bigwide.net/ns/webpup-pages', mark = 'https://bigwide.net/ns/webpup-homepage'
+  const hostMeta = async () => ({ links: [
+    { rel: pages, href: 'https://tim.example.com/pups/pages/now.md' },
+    { rel: pages, href: 'https://tim.example.com/pups/pages/welcome.md', properties: { [mark]: 'true' } },
+  ] })
+  const twin = async (url: string, o: object = { ...opts, ownerOrigin: 'https://tim.example.com', hostMeta }) => {
+    const u = new URL(url, 'https://tim.example.com')
+    const html = await (await webpupResponse(get(url), u.pathname, state, o as any))!.text()
+    return /<link rel="alternate" type="text\/markdown" href="([^"]*)">/.exec(html)?.[1]?.replace(/&amp;/g, '&')
+  }
+
+  it('links the Markdown file of the URL, for Markdown browsers like bonBon', async () => {
+    expect(await twin('/')).toBe('https://tim.example.com/pups/pages/welcome.md')
+    expect(await twin('/index.html')).toBe('https://tim.example.com/pups/pages/welcome.md')
+    expect(await twin('/p/md/docs/%C3%9Cber%20uns.md')).toBe('https://tim.example.com/docs/%C3%9Cber%20uns.md')
+    expect(await twin('/index.html?show=md&path=/docs/intro.md')).toBe('https://tim.example.com/docs/intro.md')
+    for (const url of ['/?show=about', '/p/about', '/p/md/x.html', '/p/md//evil.example/x.md', '/p/md/%E0%A4%A.md', '/index.html?show=md&path=x.md'])
+      expect(await twin(url), url).toBeUndefined()
+  })
+
+  it('has none without a marked page, or without the owner origin', async () => {
+    expect(await twin('/', { ...opts, ownerOrigin: 'https://tim.example.com', hostMeta: async () => ({ links: [{ rel: pages, href: 'https://elsewhere.example/x.md', properties: { [mark]: 'true' } }] }) })).toBeUndefined()
+    expect(await twin('/', { ...opts, ownerOrigin: 'https://tim.example.com', hostMeta: async () => { throw new Error('x') } })).toBeUndefined()
+    expect(await twin('/p/md/a.md', opts)).toBeUndefined()
+  })
+})

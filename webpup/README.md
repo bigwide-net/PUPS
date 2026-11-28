@@ -15,9 +15,13 @@ in the visitor's browser, without any server code:
   `titles` (in the site's language, else `default`), else by the feed's own title;
 - **Following**, **About** and **Contact** from the [SocialSpec](https://socialspec.org) files; on Following, each
   site with a feed has a Follow button that opens the follow dialog, and the list downloads as OPML;
-- **pages**: Markdown files registered in `host-meta.json`, as a tab of their own or on a **Pages** tab;
+- **pages**: Markdown files registered in `host-meta.json`, as a tab of their own or on a **Pages** tab,
+  and other Markdown files of the site that they link to;
+- optionally a **Markdown home page** at `/` instead of the feed (see [Home page](#home-page));
 - a **footer** from a Markdown file, on every page;
 - optionally a **theme selector** with ten themes to try.
+
+> **Experimental:** webpup and PUPS are at an experimental stage. Expect backward-incompatible changes between versions.
 
 ## Files
 
@@ -77,13 +81,15 @@ keep it). The answer is kept in the browser's localStorage for 7 days.
 
 | Page | With the `/p/*` rewrite | Without |
 | --- | --- | --- |
-| Start page: the profile and the main feed | `/` | `/index.html` |
+| Start page: the profile and the main feed (or the [Markdown home page](#home-page)) | `/` | `/index.html` |
+| The main feed, when the start page is a Markdown page | `/p/blog` | `/index.html?show=blog` |
 | About, Following, Contact | `/p/about`, `/p/following`, `/p/contact` | `/index.html?show=about`, … |
 | Archive page 3 of the main feed | `/p/blog/archive/3` | `/index.html?show=blog&mode=archive&page=3` |
 | Named feed `photos` | `/p/feed/photos` | `/index.html?show=feed&feed=photos` |
 | Archive page 3 of `photos` | `/p/feed/photos/archive/3` | `/index.html?show=feed&feed=photos&mode=archive&page=3` |
 | The Pages tab | `/p/pages` | `/index.html?show=pages` |
 | The page `imprint.md` | `/p/page/imprint` | `/index.html?show=page&name=imprint` |
+| A Markdown file that a page links to, `/docs/intro.md` | `/p/md/docs/intro.md` | `/index.html?show=md&path=/docs/intro.md` |
 | Post 47 of the main feed (`_archive.index` 47) | `/p/feed/post/47` | `/index.html?show=post&feed=feed&index=47` |
 | Post 3 of `photos` | `/p/feed/photos/post/3` | `/index.html?show=post&feed=feed/photos&index=3` |
 | A post without an index | its page + `#<item id>` | the same |
@@ -136,6 +142,12 @@ All from the site's own origin, in parallel:
 - The **pages**: links with `rel` `https://bigwide.net/ns/webpup-pages` to Markdown files on this
   site. See [Pages and footer](#pages-and-footer).
 - The **footer**: the Markdown file of the property `https://bigwide.net/ns/webpup-footer`.
+- The **home page**, if `webpup-config.json` or a page link names one (see [Home page](#home-page)).
+- Markdown files are asked for with `Accept: text/markdown, text/plain;q=0.9`: a server that serves
+  the same URL as HTML to browsers and as Markdown to Markdown browsers like
+  [bonBon](https://github.com/scripting/bonBon) gives webpup the Markdown. After a `406`, webpup asks
+  again with `Accept: */*`, as bonBon does. An answer of type `text/html` is not used (e.g. a server
+  that answers unknown paths with `index.html`); anything else is read as Markdown.
 - `/feed.json`, registered or not, and the registered named feeds. Archives
   ([RFC-13](https://github.com/bigwide-net/RFCs/blob/main/RFC-13-JSON-Feed-Archives.md):
   `_archive.archive_url`, and `archive_template` if given) are loaded when an archive page is opened.
@@ -154,6 +166,8 @@ owner can also edit `host-meta.json` by hand.
 ```json
 {
   "links": [
+    { "rel": "https://bigwide.net/ns/webpup-pages", "type": "text/markdown", "href": "https://tim.example.com/pups/pages/welcome.md",
+      "properties": { "https://bigwide.net/ns/webpup-homepage": "true" } },
     { "rel": "https://bigwide.net/ns/webpup-pages", "type": "text/markdown", "href": "https://tim.example.com/pups/pages/now.md" },
     { "rel": "https://bigwide.net/ns/webpup-pages", "type": "text/markdown", "href": "https://tim.example.com/pups/pages/uses.md",
       "titles": { "default": "Uses" } },
@@ -178,11 +192,38 @@ owner can also edit `host-meta.json` by hand.
   (`imprint.md` is `/p/page/imprint`).
 - **Footer.** The Markdown file of `https://bigwide.net/ns/webpup-footer`, shown at the bottom of
   every page.
-- **Links** in the site's Markdown (pages, footer, `about.md`) to the Markdown file of a page go to
-  that page, e.g. `[Imprint](/pups/pages/imprint.md)`. Links to the site open in the same tab,
-  others in a new one.
+- **Home page.** A link with the property `https://bigwide.net/ns/webpup-homepage` set to `"true"`
+  is the home page (see [Home page](#home-page)).
+- **Links** in the site's Markdown (pages, footer, `about.md`, the home page) to the Markdown file of
+  a page go to that page, e.g. `[Imprint](/pups/pages/imprint.md)`; to the home page's file, to `/`;
+  to `/.well-known/about.md`, to About. Links to other Markdown files of the site (`.md` or
+  `.markdown`, relative or not, without a query) open them as pages of their own, e.g.
+  `[Intro](/docs/intro.md)` is `/p/md/docs/intro.md`, and the links in that file work the same way,
+  relative to it. The Markdown keeps plain links to the files, so the site also works in a Markdown
+  browser like bonBon. Links to the site open in the same tab, others in a new one.
 - Only files on the site's own origin are used. They are rendered by postviewer's Markdown
   renderer, without raw HTML.
+
+## Home page
+
+By default, `/` shows the main feed. It can show a Markdown file instead, e.g. a welcome page; the
+feed is then on the **Posts** tab, at `/p/blog`, and a **Home** tab comes first. Two ways to choose
+the file:
+
+- `"homepage": "/index.md"` in `webpup-config.json`: the path of any Markdown file on the site. If it
+  is also a registered page, it gets the page's title.
+- In `host-meta.json`, the page link with the property `https://bigwide.net/ns/webpup-homepage` set
+  to `"true"` ([RFC-6, Pages](https://github.com/bigwide-net/RFCs/blob/main/RFC-6-Personal-Upload-Server.md#pages)).
+  Apps that publish pages can set it. If several links have it, the first one counts.
+
+The config wins over `host-meta.json`. The home page is neither a tab of its own nor on the Pages
+tab. If its file is missing, empty or an HTML page, `/` shows the main feed as before.
+
+Markdown browsers like [bonBon](https://github.com/scripting/bonBon) don't run the script, but they
+follow a `<link rel="alternate" type="text/markdown" href="…">` in the page's head to its Markdown
+file. The static `index.html` can't know the home page, so the PUPS servers add that link when they
+serve it: at `/` the home page, at `/p/md/<path>` that file. By hand, add it to `index.html`
+yourself, with the home page's URL (it is then on every page).
 
 ## Configuration
 
@@ -192,6 +233,8 @@ owner can also edit `host-meta.json` by hand.
 { "embeds": "on", "theme-selector": false }
 ```
 
+- `homepage`: the path of a Markdown file on the site that `/` shows instead of the main feed, e.g.
+  `"/index.md"`. See [Home page](#home-page).
 - `embeds`: what happens with YouTube videos, embedded posts (X, Instagram, Bluesky, …) and other
   third-party content in the posts. `"on"` (default): shown at once, as the owner put them in their
   feed. `"consent"`: behind an overlay until the visitor allows the service (remembered in their

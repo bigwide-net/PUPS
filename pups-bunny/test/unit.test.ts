@@ -47,7 +47,7 @@ describe('scopes', () => {
   })
   it('accepts the profile images and pages directories, nothing else under /pups/', () => {
     expect(parseScope('write:/pups/images/', host, s)).toMatchObject({ wellKnown: { urlProperties: ['https://bigwide.net/ns/avatar', 'https://bigwide.net/ns/banner'] } })
-    expect(parseScope('write:/pups/pages/', host, s)).toMatchObject({ wellKnown: { linkProperties: ['https://bigwide.net/ns/webpup-hidden'] } })
+    expect(parseScope('write:/pups/pages/', host, s)).toMatchObject({ wellKnown: { linkProperties: ['https://bigwide.net/ns/webpup-hidden', 'https://bigwide.net/ns/webpup-homepage'] } })
     for (const scope of ['write:/pups/', 'write:/pups/assets/', 'write:/pups/apps', 'write:/pups/imagesx/', 'write:/pups/pagesx/']) expect(parseScope(scope, host, s), scope).toBeUndefined()
   })
   it('accepts files and subdirectories of a declared directory', () => {

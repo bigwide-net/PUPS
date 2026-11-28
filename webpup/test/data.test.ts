@@ -1,15 +1,23 @@
-import { archivesOf, archiveUrl, feedNameOf, findItem, loadSite, type SiteFeed } from '../src/data';
+import { archivesOf, archiveUrl, feedNameOf, findItem, loadMarkdown, loadSite, MD_ACCEPT, type SiteFeed } from '../src/data';
 import { feedTitle } from '../src/posts';
 
 const O = 'https://tim.example';
 const feed = (title: string, extra = {}) => JSON.stringify({version: 'https://jsonfeed.org/version/1.1', title, items: [{id: '1', content_text: 'x'}], ...extra});
 
-function mockFetch(files: Record<string, string>) {
-    globalThis.fetch = jest.fn(async (url: string) => {
-        const text = files[url.replace(O, '')];
-        return {ok: text != undefined, status: text != undefined ? 200 : 404, text: async () => text};
+/** A file is its text, or its answer: status, Content-Type and text. */
+type MockFile = string | {status?: number, type?: string, text?: string};
+
+function mockFetch(files: Record<string, MockFile | ((accept: string) => MockFile)>) {
+    globalThis.fetch = jest.fn(async (url: string, init?: RequestInit) => {
+        const f = files[url.replace(O, '')];
+        const file = typeof f == 'function' ? f((init?.headers as Record<string, string>)?.Accept) : f;
+        const {status = file == undefined ? 404 : 200, type = undefined, text = undefined} = typeof file == 'string' ? {text: file} : file ?? {};
+        return {ok: status >= 200 && status < 300, status, headers: new Headers(type ? {'Content-Type': type} : {}), text: async () => text};
     }) as any;
 }
+
+const acceptOf = (path: string) => ((globalThis.fetch as jest.Mock).mock.calls.find(c => c[0] == O + path)?.[1]?.headers as Record<string, string>)?.Accept;
+const pageLink = (href: string, properties?: Record<string, string>) => ({rel: 'https://bigwide.net/ns/webpup-pages', href: O + href, properties});
 
 describe('feed names', () => {
     it.each([
@@ -182,5 +190,60 @@ describe('loadSite', () => {
         expect((await loadSite(O)).config).toEqual({embeds: 'on', themeSelector: false, ownerLink: '/pups/', settingsUrl: '/pups/homepage'});
         mockFetch({'/webpup-config.json': '{"owner-link": "//evil.example/", "settings-url": "https://evil.example/"}'});
         expect((await loadSite(O)).config).toEqual({embeds: 'on', themeSelector: false});
+    });
+
+    it('shows the Markdown file of the config’s homepage at /, asked for as text/markdown', async () => {
+        mockFetch({
+            '/webpup-config.json': '{"homepage": "/index.md"}',
+            '/index.md': {type: 'text/markdown; charset=utf-8', text: '# Welcome\n\nHi.'},
+            '/feed.json': feed('Notes'),
+        });
+        const site = await loadSite(O);
+        expect(site.config.homepage).toBe('/index.md');
+        expect(site.home).toEqual({name: 'index', url: `${O}/index.md`, markdown: '# Welcome\n\nHi.', title: 'Welcome', hidden: true});
+        expect(site.pages).toEqual([]);
+        expect(acceptOf('/index.md')).toBe(MD_ACCEPT);
+        expect(MD_ACCEPT.startsWith('text/markdown')).toBe(true);
+    });
+
+    it('takes the first page marked as the home page in host-meta.json, unless the config names another', async () => {
+        const hostMeta = JSON.stringify({links: [
+            pageLink('/pups/pages/now.md'),
+            pageLink('/pups/pages/missing.md', {'https://bigwide.net/ns/webpup-homepage': 'true'}),
+            pageLink('/pups/pages/home.md', {'https://bigwide.net/ns/webpup-homepage': 'TRUE'}),
+            pageLink('/pups/pages/other.md', {'https://bigwide.net/ns/webpup-homepage': 'true'}),
+        ]});
+        const files = {'/.well-known/host-meta.json': hostMeta, '/pups/pages/now.md': '# Now', '/pups/pages/home.md': '# Hello', '/pups/pages/other.md': 'Other'};
+        mockFetch(files);
+        let site = await loadSite(O);
+        expect(site.home?.name).toBe('home');
+        expect(site.home).toBe(site.pages[1]);
+        mockFetch({...files, '/webpup-config.json': '{"homepage": "/pups/pages/now.md"}'});
+        site = await loadSite(O);
+        expect(site.home).toBe(site.pages[0]);
+        expect((globalThis.fetch as jest.Mock).mock.calls.filter(c => c[0] == `${O}/pups/pages/now.md`).length).toBe(1);
+    });
+
+    it('has no Markdown home page when the file is missing, empty, a web page or elsewhere', async () => {
+        for (const [homepage, file] of [['/index.md', undefined], ['/index.md', '  \n'], ['/index.md', {type: 'text/html', text: '<!doctype html>'}],
+            ['//evil.example/x.md', 'x'], ['https://evil.example/x.md', 'x']] as [string, MockFile | undefined][]) {
+            mockFetch({'/webpup-config.json': JSON.stringify({homepage}), ...file != undefined && {'/index.md': file}, '/feed.json': feed('Notes')});
+            expect((await loadSite(O)).home).toBeUndefined();
+        }
+    });
+
+    it('asks again for anything when the server has no Markdown for the URL (406), like bonBon', async () => {
+        mockFetch({'/docs/a.md': accept => accept == MD_ACCEPT ? {status: 406} : {type: 'text/plain', text: '# A'}});
+        expect(await loadMarkdown(`${O}/docs/a.md`)).toBe('# A');
+        expect((globalThis.fetch as jest.Mock).mock.calls.map(c => c[1].headers.Accept)).toEqual([MD_ACCEPT, '*/*']);
+    });
+
+    it('loads linked Markdown files once, and not when they are web pages', async () => {
+        mockFetch({'/docs/b.md': '# B', '/docs/c.md': {type: 'text/html', text: '<!doctype html>'}});
+        expect(await loadMarkdown(`${O}/docs/b.md`)).toBe('# B');
+        expect(await loadMarkdown(`${O}/docs/b.md`)).toBe('# B');
+        expect(await loadMarkdown(`${O}/docs/c.md`)).toBeUndefined();
+        expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+        expect(acceptOf('/docs/b.md')).toBe(MD_ACCEPT);
     });
 });

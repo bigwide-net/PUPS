@@ -1,4 +1,4 @@
-import { detectUrlStyle, formatRoute, parseRoute, STYLE_KEY, type Route, type UrlStyle } from '../src/router';
+import { detectUrlStyle, formatRoute, isMarkdownPath, parseRoute, STYLE_KEY, type Route, type UrlStyle } from '../src/router';
 
 const PRETTY: UrlStyle = {pretty: true, root: true};
 const PLAIN: UrlStyle = {pretty: false, root: false};
@@ -10,7 +10,7 @@ const parse = (url: string) => {
 
 describe('routes', () => {
     const cases: [Route, string, string][] = [
-        [{page: 'feed'}, '/', '/index.html'],
+        [{page: 'home'}, '/', '/index.html'],
         [{page: 'about'}, '/p/about', '/index.html?show=about'],
         [{page: 'following'}, '/p/following', '/index.html?show=following'],
         [{page: 'contact'}, '/p/contact', '/index.html?show=contact'],
@@ -53,8 +53,10 @@ describe('routes', () => {
     });
 
     it('accepts /p/, /p/blog and trailing slashes as the home page and its pages', () => {
-        expect(parse('/p/')).toEqual({page: 'feed'});
+        expect(parse('/p/')).toEqual({page: 'home'});
         expect(parse('/p/blog')).toEqual({page: 'feed'});
+        expect(parse('/index.html?show=blog')).toEqual({page: 'feed'});
+        expect(formatRoute({page: 'feed'}, PRETTY)).toBe('/');
         expect(parse('/p/about/')).toEqual({page: 'about'});
     });
 
@@ -122,4 +124,29 @@ describe('page routes', () => {
     });
     it.each(['/p/page', '/p/page/Imprint', '/p/page/a/b', '/p/pages/x', '/index.html?show=page', '/index.html?show=page&name=-x'])('rejects %s', url =>
         expect(parse(url)).toEqual({page: 'notfound'}));
+});
+
+describe('Markdown home page and Markdown files', () => {
+    it('gives the main feed a URL of its own when the home page is a Markdown page', () => {
+        expect(formatRoute({page: 'feed'}, PRETTY, '', true)).toBe('/p/blog');
+        expect(formatRoute({page: 'feed'}, PLAIN, '#p-1', true)).toBe('/index.html?show=blog#p-1');
+        expect(formatRoute({page: 'home'}, PRETTY, '', true)).toBe('/');
+        expect(formatRoute({page: 'feed', archive: 2}, PRETTY, '', true)).toBe('/p/blog/archive/2');
+    });
+
+    it('formats and parses Markdown files of the site by their path', () => {
+        const route: Route = {page: 'md', path: '/docs/Über uns.md'};
+        expect(formatRoute(route, PRETTY, '#a')).toBe('/p/md/docs/%C3%9Cber%20uns.md#a');
+        expect(formatRoute(route, PLAIN)).toBe('/index.html?show=md&path=/docs/%C3%9Cber%20uns.md');
+        expect(parse('/p/md/docs/%C3%9Cber%20uns.md')).toEqual(route);
+        expect(parse('/index.html?show=md&path=/docs/%C3%9Cber%20uns.md')).toEqual(route);
+        expect(parse('/p/md/index.markdown')).toEqual({page: 'md', path: '/index.markdown'});
+    });
+
+    it.each(['/p/md/', '/p/md/docs/x.html', '/p/md//evil.example/x.md', '/p/md/%E0%A4%A.md',
+        '/index.html?show=md', '/index.html?show=md&path=x.md', '/index.html?show=md&path=/a%5Cb.md'])('rejects %s', url =>
+        expect(parse(url)).toEqual({page: 'notfound'}));
+
+    it.each(['/a/../b.md', '/a/./b.md', '//evil.example/b.md', 'b.md', '/a\\b.md', '/a.md?x', '/a.txt'])('is no Markdown path: %s', path =>
+        expect(isMarkdownPath(path)).toBe(false));
 });

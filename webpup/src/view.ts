@@ -8,10 +8,10 @@ import { renderMarkdown } from '@lib/postviewer/src/markdown';
 import { icon, type IconName } from '@lib/socialspec/src/icons';
 import type { FollowEntry } from '@lib/socialspec/src/opml';
 import { preferredEmail, type Contact, type ContactEntry } from '@lib/socialspec/src/vcard';
-import { feedOfRoute, type MarkdownFile, type Site, type SiteFeed } from './data';
+import { feedOfRoute, headingOf, loadMarkdown, type MarkdownFile, type Site, type SiteFeed } from './data';
 import { followButton } from './follow';
 import { archivePanel, feedRoute, feedTitle, latestPanel, postPanel, type PostContext } from './posts';
-import { href, type InfoPage, type Route } from './router';
+import { href, isMarkdownPath, type InfoPage, type Route } from './router';
 
 /** The site's name: its title, the owner's name, the contact card's name, the main feed's title or
  *  the domain. */
@@ -39,8 +39,8 @@ const INFO_TABS: {page: InfoPage, label: string}[] = [
 
 const hasInfo = (s: Site, page: InfoPage) => page == 'about' ? !!s.about : page == 'following' ? !!s.following : !!s.contact;
 
-/** The pages that are listed (not hidden), in the order of host-meta.json. */
-const listedPages = (s: Site) => s.pages.filter(p => !p.hidden);
+/** The pages that are listed (not hidden, not the home page), in the order of host-meta.json. */
+const listedPages = (s: Site) => s.pages.filter(p => !p.hidden && p != s.home);
 
 /** One listed page is a tab of its own, like About; several are listed on the Pages tab. */
 function pagesTab(s: Site): Tab[] {
@@ -54,14 +54,18 @@ export function tabsOf(s: Site): Tab[] {
     const info = INFO_TABS.filter(t => hasInfo(s, t.page)).map(t => ({route: {page: t.page} as Route, label: t.label}));
     const contact = info.findIndex(t => t.route.page == 'contact');
     return [
+        ...s.home ? [{route: {page: 'home'} as Route, label: 'Home'}] : [],
         ...s.feeds.map(f => ({route: feedRoute(f), label: f.name ? feedTitle(f) : 'Posts'})),
         // Following, About, the pages, Contact
         ...contact < 0 ? [...info, ...pagesTab(s)] : [...info.slice(0, contact), ...pagesTab(s), ...info.slice(contact)],
     ];
 }
 
-/** The page a route shows. The home page is the main feed; without one, the first tab. */
+/** The page a route shows. The home page is the Markdown home page, else the main feed, else the
+ *  first tab. */
 export function resolveRoute(s: Site, route: Route): Route | undefined {
+    if (route.page == 'home')
+        return s.home ? route : feedOfRoute(s, undefined) ? {page: 'feed'} : tabsOf(s)[0]?.route;
     if (route.page == 'feed' && !route.feed && route.archive == undefined && !feedOfRoute(s, undefined))
         return tabsOf(s)[0]?.route;
     return route;
@@ -70,7 +74,8 @@ export function resolveRoute(s: Site, route: Route): Route | undefined {
 /** Whether the tab `tab` is the one of the page `page` (a listed page belongs to the Pages tab;
  *  hidden pages to none). */
 const sameTab = (s: Site, tab: Route, page: Route) =>
-    tab.page == 'pages' ? page.page == 'pages' || page.page == 'page' && listedPages(s).some(p => p.name == page.name)
+    tab.page == 'home' ? page.page == 'home' || page.page == 'page' && page.name == s.home?.name && s.pages.includes(s.home)
+    : tab.page == 'pages' ? page.page == 'pages' || page.page == 'page' && listedPages(s).some(p => p.name == page.name)
     : tab.page == 'page' ? page.page == 'page' && page.name == tab.name
     : tab.page == 'feed' ? (page.page == 'feed' || page.page == 'post') && tab.feed == page.feed
     : tab.page == page.page;
@@ -113,7 +118,7 @@ function header(s: Site, feed: SiteFeed | undefined): HTMLElement {
         actions.appendChild(followButton(followData(s, feed)));
 
     const id = addHtml(top, 'div', {class: 'wp-id'});
-    addHtml(id, 'h1', {class: 'wp-name'}, newHtml('a', {href: href({page: 'feed'})}, siteName(s)));
+    addHtml(id, 'h1', {class: 'wp-name'}, newHtml('a', {href: href({page: 'home'})}, siteName(s)));
     const name = s.props.title && s.props.name && s.props.name != s.props.title ? s.props.name : undefined;
     addHtml(id, 'p', {class: 'wp-handle'}, name ? [newHtml('span', {class: 'wp-owner'}, name), ' · @' + s.host] : '@' + s.host);
     const summary = siteSummary(s);
@@ -124,8 +129,23 @@ function header(s: Site, feed: SiteFeed | undefined): HTMLElement {
 
 /* ---------- Markdown ---------- */
 
+/** The page of the site that shows the Markdown file at `url` (without #fragment): the home page, a
+ *  registered page, About, or else, for a .md file, its own page (route 'md'). */
+function markdownRoute(s: Site, url: URL): Route | undefined {
+    const file = url.href.replace(/#.*$/, '');
+    const page = s.pages.find(p => p.url == file);
+    if (s.home?.url == file)
+        return {page: 'home'};
+    if (page)
+        return {page: 'page', name: page.name};
+    if (file == `${s.origin}/.well-known/about.md` && s.about)
+        return {page: 'about'};
+    return !url.search && isMarkdownPath(url.pathname) ? {page: 'md', path: decodeURIComponent(url.pathname)} : undefined;
+}
+
 /** The site's own Markdown (about.md, pages, footer) as DOM. Links to the site open in place, not
- *  in a new tab like other links, and links to the Markdown file of a page go to that page. */
+ *  in a new tab like other links, and links to Markdown files of the site go to the page that shows
+ *  them, also files that aren't registered, like /docs/intro.md. */
 export function siteMarkdown(s: Site, markdown: string, base: string): DocumentFragment {
     const fragment = renderMarkdown(markdown, base);
     fragment.querySelectorAll<HTMLAnchorElement>('a[href]').forEach(a => {
@@ -139,9 +159,12 @@ export function siteMarkdown(s: Site, markdown: string, base: string): DocumentF
             return;
         a.removeAttribute('target');
         a.removeAttribute('rel');
-        const page = s.pages.find(p => p.url == url.href.replace(/#.*$/, ''));
-        if (page)
-            a.href = href({page: 'page', name: page.name}, url.hash);
+        let route: Route | undefined;
+        try {
+            route = markdownRoute(s, url);
+        } catch { /* a malformed %-escape: left as it is */ }
+        if (route)
+            a.href = href(route, url.hash);
     });
     return fragment;
 }
@@ -236,6 +259,25 @@ function pagePanel(s: Site, page: MarkdownFile, all: boolean): HTMLElement {
     return panel;
 }
 
+/** A Markdown file of the site that isn't registered, loaded when it is shown. `setTitle` gets its
+ *  first heading. */
+function markdownPanel(s: Site, path: string, ready: (panel: HTMLElement) => void, setTitle: (title: string) => void): HTMLElement {
+    const panel = newHtml('section', {class: 'wp-page wp-md'}, newHtml('p', {class: 'wp-loading'}, 'Loading…'));
+    const url = new URL(path, s.origin).href;
+    loadMarkdown(url).then(markdown => {
+        if (markdown == undefined)
+            panel.replaceChildren(...notFound().childNodes);
+        else {
+            panel.replaceChildren(markdown.trim() ? siteMarkdown(s, markdown, url) : newHtml('p', {class: 'wp-empty'}, 'This page is empty.'));
+            const heading = headingOf(markdown);
+            if (heading)
+                setTitle(heading);
+        }
+        ready(panel);
+    });
+    return panel;
+}
+
 function pagesPanel(s: Site): HTMLElement {
     const panel = newHtml('section', {class: 'wp-pages'});
     const list = addHtml(panel, 'ul', {class: 'wp-page-list'});
@@ -247,7 +289,7 @@ function pagesPanel(s: Site): HTMLElement {
 function notFound(): HTMLElement {
     return newHtml('section', {class: 'wp-notfound'}, [
         newHtml('h2', {}, 'Page not found'),
-        newHtml('p', {}, ['This page doesn’t exist (any more). ', newHtml('a', {href: href({page: 'feed'})}, 'Go to the start page'), '.']),
+        newHtml('p', {}, ['This page doesn’t exist (any more). ', newHtml('a', {href: href({page: 'home'})}, 'Go to the start page'), '.']),
     ]);
 }
 
@@ -278,7 +320,12 @@ export function renderPage(app: HTMLElement, s: Site, requested: Route, ctx: Pos
     let panel: HTMLElement;
     let title = name;
     const done = () => setTimeout(() => ready(panel));
-    if (route.page == 'feed' && feed && route.archive != undefined && feed.archives) {
+    if (route.page == 'home' && s.home) {
+        panel = pagePanel(s, s.home, false);
+        done();
+    } else if (route.page == 'md') {
+        panel = markdownPanel(s, route.path, ready, pageTitle => document.title = `${pageTitle} · ${name}`);
+    } else if (route.page == 'feed' && feed && route.archive != undefined && feed.archives) {
         panel = archivePanel(feed, route.archive, ctx, ready);
         title = `${feed.name ? feedTitle(feed) : 'Posts'}, page ${route.archive} · ${name}`;
     } else if (route.page == 'post' && feed) {
@@ -297,7 +344,7 @@ export function renderPage(app: HTMLElement, s: Site, requested: Route, ctx: Pos
         panel = pagesPanel(s);
         title = `Pages · ${name}`;
         done();
-    } else if (route.page != 'feed' && route.page != 'post' && route.page != 'notfound' && route.page != 'page' && route.page != 'pages' && hasInfo(s, route.page)) {
+    } else if ((route.page == 'about' || route.page == 'following' || route.page == 'contact') && hasInfo(s, route.page)) {
         panel = route.page == 'about' ? aboutPanel(s) : route.page == 'following' ? followingPanel(s.following!, s.origin) : contactPanel(s.contact!);
         title = `${INFO_TABS.find(t => t.page == route.page)!.label} · ${name}`;
         done();

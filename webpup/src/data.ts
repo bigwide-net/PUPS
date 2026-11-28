@@ -14,6 +14,9 @@ export const FEED_REL = 'https://bigwide.net/ns/feed';
  *  is neither a tab nor on the Pages tab. */
 export const PAGES_REL = 'https://bigwide.net/ns/webpup-pages';
 export const HIDDEN_PROP = 'https://bigwide.net/ns/webpup-hidden';
+/** A page link with this property "true" is the site's home page: shown at / instead of the main
+ *  feed. The first such link counts. webpup-config.json's "homepage" overrides it. */
+export const HOMEPAGE_PROP = 'https://bigwide.net/ns/webpup-homepage';
 /** The link property of RFC-10 that marks a feed that needs an identity token: "restricted",
  *  "personal" or "optional". Visitors can read only public and optional feeds. */
 export const ACCESS_PROP = 'https://bigwide.net/ns/access';
@@ -39,12 +42,14 @@ export interface SiteProps {
  *  webpup-config.json, so a new site shows it; a config file turns it off unless it says true.
  *  ownerLink ("owner-link"): a link to the owner pages at the very bottom of the page. settingsUrl
  *  ("settings-url"): where the owner changes the theme (the theme selector says so); both are
- *  paths on this site, set by a server that installs webpup, like pups-php. */
+ *  paths on this site, set by a server that installs webpup, like pups-php. homepage: the path of a
+ *  Markdown file on this site, e.g. "/index.md", shown at / instead of the main feed. */
 export interface Config {
     embeds: 'on' | 'consent' | 'off';
     themeSelector: boolean;
     ownerLink?: string;
     settingsUrl?: string;
+    homepage?: string;
 }
 
 /** A Markdown file of the site: a page, or the footer. */
@@ -84,21 +89,54 @@ export interface Site {
     contact?: Contact;
     /** In the order of host-meta.json. */
     pages: SitePage[];
+    /** The Markdown home page, shown at / instead of the main feed: webpup-config.json's homepage,
+     *  else the page marked with HOMEPAGE_PROP. One of `pages` if it is registered. */
+    home?: SitePage;
     footer?: MarkdownFile;
 }
 
-/** The text of a file of the site; undefined if it doesn't exist or can't be read. */
-async function getText(url: string, accept: string): Promise<string | undefined> {
+/** The text of a file of the site; undefined if it doesn't exist or can't be read. `accepts` checks
+ *  the response's Content-Type (lowercase, without parameters). */
+async function getText(url: string, accept: string, accepts?: (type: string) => boolean): Promise<string | undefined> {
     try {
-        const res = await fetch(url, {headers: {Accept: accept}, credentials: 'omit', cache: 'no-cache'});
-        if (res.ok)
+        let res = await fetch(url, {headers: {Accept: accept}, credentials: 'omit', cache: 'no-cache'});
+        // Like bonBon: a server that has no Markdown for the URL may say 406; then anything goes.
+        if (res.status == 406)
+            res = await fetch(url, {headers: {Accept: '*/*'}, credentials: 'omit', cache: 'no-cache'});
+        const type = res.headers?.get('Content-Type')?.split(';')[0].trim().toLowerCase() ?? '';
+        if (res.ok && (!accepts || accepts(type)))
             return await res.text();
-        if (res.status != 404 && res.status != 410)
+        if (res.ok)
+            console.warn(`webpup: ${url}: not Markdown but ${type}`);
+        else if (res.status != 404 && res.status != 410)
             console.warn(`webpup: ${url}: HTTP ${res.status}`);
     } catch (e) {
         console.warn(`webpup: ${url}:`, e);
     }
     return undefined;
+}
+
+/** Markdown files are asked for as text/markdown, so that a server that also serves the URL as HTML
+ *  (to browsers) answers with the Markdown, as for bonBon (github.com/scripting/bonBon). */
+export const MD_ACCEPT = 'text/markdown, text/plain;q=0.9';
+
+/** An answer that is a web page isn't Markdown: e.g. a server that answers unknown paths with
+ *  index.html. Everything else is (text/markdown, text/plain, no type...). */
+const isMarkdownType = (type: string) => type != 'text/html' && type != 'application/xhtml+xml';
+
+/** A Markdown file of the site, asked for as text/markdown; undefined if there is none at the URL. */
+const getMarkdown = (url: string) => getText(url, MD_ACCEPT, isMarkdownType);
+
+const markdownCache = new Map<string, Promise<string | undefined>>();
+
+/** A Markdown file of the site that isn't registered, e.g. one that a page links; loaded once per page view. */
+export function loadMarkdown(url: string): Promise<string | undefined> {
+    let p = markdownCache.get(url);
+    if (!p) {
+        p = getMarkdown(url);
+        markdownCache.set(url, p);
+    }
+    return p;
 }
 
 /** The feed name of a feed URL of this site: '' for /feed.json, the name for /feed/<name>.json.
@@ -237,6 +275,7 @@ function configOf(text: string | undefined): Config {
         themeSelector: text == undefined || json?.['theme-selector'] == true,
         ...sitePath(json?.['owner-link']) && {ownerLink: sitePath(json['owner-link'])},
         ...sitePath(json?.['settings-url']) && {settingsUrl: sitePath(json['settings-url'])},
+        ...sitePath(json?.homepage) && {homepage: sitePath(json.homepage)},
     };
 }
 
@@ -252,21 +291,25 @@ function titleOfLink(link: HostMetaLink, language?: string): string | undefined 
     return pick(language) || pick('default') || Object.values(titles).find((t): t is string => typeof t == 'string' && !!t.trim())?.trim() || undefined;
 }
 
+/** The first heading of a Markdown file, as text. */
+export const headingOf = (markdown: string) => /^#{1,6}[ \t]+(.+?)[ \t#]*$/m.exec(markdown)?.[1]?.replace(/[*_`]/g, '').trim() || undefined;
+
 /** The page's title: the link's title, else its first heading, else its name. */
 function titleOfPage(link: HostMetaLink, markdown: string, name: string, language?: string): string {
-    const heading = /^#{1,6}[ \t]+(.+?)[ \t#]*$/m.exec(markdown)?.[1];
-    return titleOfLink(link, language) || heading?.replace(/[*_`]/g, '').trim() || name.replace(/-/g, ' ').replace(/^./, c => c.toUpperCase());
+    return titleOfLink(link, language) || headingOf(markdown) || name.replace(/-/g, ' ').replace(/^./, c => c.toUpperCase());
 }
 
-const MD_ACCEPT = 'text/markdown, text/plain;q=0.9';
+const isTrue = (link: HostMetaLink, prop: string) =>
+    String(link.properties && typeof link.properties == 'object' ? link.properties[prop] : '').trim().toLowerCase() == 'true';
 
-/** The pages registered in host-meta.json, loaded. Unique names: a second imprint.md is imprint-2. */
-async function loadPages(hostMeta: HostMeta | undefined, origin: string, language?: string): Promise<SitePage[]> {
+/** The pages registered in host-meta.json, loaded, and the URL of the one marked as the home page.
+ *  Unique names: a second imprint.md is imprint-2. */
+async function loadPages(hostMeta: HostMeta | undefined, origin: string, language?: string): Promise<{pages: SitePage[], home?: string}> {
     const links = (Array.isArray(hostMeta?.links) ? hostMeta!.links : []).filter(l => l?.rel == PAGES_REL);
     const urls = new Set<string>();
     const found = links.map(link => ({link, url: ownUrl(link.href, origin)}))
         .filter((p): p is {link: HostMetaLink, url: string} => !!p.url && !urls.has(p.url) && !!urls.add(p.url));
-    const texts = await Promise.all(found.map(p => getText(p.url, MD_ACCEPT)));
+    const texts = await Promise.all(found.map(p => getMarkdown(p.url)));
     const names = new Set<string>();
     const pages: SitePage[] = [];
     found.forEach(({link, url}, i) => {
@@ -277,10 +320,22 @@ async function loadPages(hostMeta: HostMeta | undefined, origin: string, languag
         for (let n = 2; names.has(name); n++)
             name = `${nameOfPage(url).slice(0, 60)}-${n}`;
         names.add(name);
-        const hidden = String(link.properties && typeof link.properties == 'object' ? link.properties[HIDDEN_PROP] : '').trim().toLowerCase() == 'true';
-        pages.push({name, url, markdown, title: titleOfPage(link, markdown, nameOfPage(url), language), hidden});
+        pages.push({name, url, markdown, title: titleOfPage(link, markdown, nameOfPage(url), language), hidden: isTrue(link, HIDDEN_PROP)});
     });
-    return pages;
+    return {pages, home: found.find(({link, url}) => isTrue(link, HOMEPAGE_PROP) && pages.some(p => p.url == url))?.url};
+}
+
+/** The home page: the configured file (`configured`: its URL and, unless it is a registered page,
+ *  its text), else the page marked in host-meta.json. None if the file is missing or empty: then the
+ *  main feed is the home page. */
+async function homeOf(configured: {url: string, text?: Promise<string | undefined>} | undefined, pages: SitePage[], marked: string | undefined)
+    : Promise<SitePage | undefined> {
+    const url = configured?.url ?? marked;
+    const page = pages.find(p => p.url == url);
+    const markdown = page ? page.markdown : await configured?.text;
+    if (!url || !markdown?.trim())
+        return undefined;
+    return page ?? {name: nameOfPage(url), url, markdown, title: headingOf(markdown) ?? 'Home', hidden: true};
 }
 
 function parseJson<T>(text: string | undefined): T | undefined {
@@ -298,7 +353,7 @@ export async function loadSite(origin = location.origin): Promise<Site> {
     const [hostMetaText, configText, aboutText, followingText, contactText, mainText] = await Promise.all([
         getText(`${origin}/.well-known/host-meta.json`, 'application/json'),
         getText(`${origin}/webpup-config.json`, 'application/json'),
-        getText(`${origin}/.well-known/about.md`, 'text/markdown, text/plain;q=0.9'),
+        getMarkdown(`${origin}/.well-known/about.md`),
         getText(`${origin}/.well-known/following.opml`, 'text/x-opml, application/xml;q=0.9'),
         getText(`${origin}/.well-known/contact.vcf`, 'text/vcard, text/plain;q=0.9'),
         getText(`${origin}/feed.json`, FEED_ACCEPT),
@@ -306,7 +361,12 @@ export async function loadSite(origin = location.origin): Promise<Site> {
     const hostMeta = parseJson<HostMeta>(hostMetaText);
     const props = propsOf(hostMeta, origin);
     const pagesLoading = loadPages(hostMeta, origin, props.language);
-    const footerLoading = props.footer ? getText(props.footer, MD_ACCEPT) : Promise.resolve(undefined);
+    const config = configOf(configText);
+    // The configured home page loads with the pages, unless it is one of them.
+    const homeUrl = config.homepage ? ownUrl(config.homepage, origin) : undefined;
+    const registered = (Array.isArray(hostMeta?.links) ? hostMeta!.links : []).some(l => l?.rel == PAGES_REL && ownUrl(l.href, origin) == homeUrl);
+    const configured = homeUrl ? {url: homeUrl, ...!registered && {text: getMarkdown(homeUrl)}} : undefined;
+    const footerLoading = props.footer ? getMarkdown(props.footer) : Promise.resolve(undefined);
 
     // The main feed is at /feed.json, registered or not (RFC-7, Reading); the named feeds come
     // from host-meta.json, with the titles of their links. Feeds that need an identity token
@@ -344,14 +404,16 @@ export async function loadSite(origin = location.origin): Promise<Site> {
         .map(f => ({...f, ...titles.has(f.name ?? '') && {title: titles.get(f.name ?? '')}, archives: archivesOf(f.json, origin)}));
 
     const about = aboutText != undefined ? parseAbout(aboutText) : undefined;
-    const [pages, footerText] = await Promise.all([pagesLoading, footerLoading]);
+    const [{pages, home: marked}, footerText] = await Promise.all([pagesLoading, footerLoading]);
+    const home = await homeOf(configured, pages, marked);
     return {
         origin,
         host: new URL(origin).host,
-        config: configOf(configText),
+        config,
         props,
         feeds,
         pages,
+        ...home && {home},
         footer: props.footer && footerText != undefined ? {url: props.footer, markdown: footerText} : undefined,
         about,
         following: followingText != undefined ? parseOpml(followingText, origin + '/') : undefined,

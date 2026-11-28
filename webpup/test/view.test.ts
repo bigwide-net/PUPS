@@ -116,6 +116,60 @@ describe('view', () => {
         expect(siteMarkdown(s, '[x](imprint.md#a)', `${O}/pups/pages/`).querySelector('a')?.getAttribute('href')).toBe('/index.html?show=page&name=imprint#a');
     });
 
+    it('shows the Markdown home page at /, with a Home tab, and the main feed on Posts', () => {
+        const home = page('index', 'Welcome', true);
+        const s = site({home, pages: [page('now', 'Now')], about: {markdown: 'Me'} as Site['about']});
+        expect(tabsOf(s).map(t => [t.label, t.route.page])).toEqual([['Home', 'home'], ['Posts', 'feed'], ['About', 'about'], ['Now', 'page']]);
+        const {app, result} = render(s, {page: 'home'});
+        expect(result.title).toBe('Notes');
+        expect(app.querySelector('.wp-page h2')?.textContent).toBe('Welcome');
+        expect(app.querySelector('.wp-tab[aria-current]')?.textContent).toBe('Home');
+        expect(app.querySelector('.postCard')).toBeNull();
+        expect(render(s, {page: 'feed'}).app.querySelector('.wp-tab[aria-current]')?.textContent).toBe('Posts');
+        // Without one, / is the main feed, else the first tab.
+        expect(resolveRoute(site(), {page: 'home'})).toEqual({page: 'feed'});
+        expect(resolveRoute(site({feeds: [], contact: {entries: []}}), {page: 'home'})).toEqual({page: 'contact'});
+    });
+
+    it('lists a registered home page on neither the Pages tab nor a tab of its own', () => {
+        const home = page('start', 'Start');
+        const s = site({home, pages: [home, page('now', 'Now'), page('uses', 'Uses')]});
+        expect(tabsOf(s).map(t => t.label)).toEqual(['Home', 'Posts', 'Pages']);
+        expect([...render(s, {page: 'pages'}).app.querySelectorAll('.wp-page-list a')].map(a => a.textContent)).toEqual(['Now', 'Uses']);
+        expect(render(s, {page: 'page', name: 'start'}).app.querySelector('.wp-tab[aria-current]')?.textContent).toBe('Home');
+    });
+
+    it('links Markdown files of the site to the pages that show them', () => {
+        const s = site({home: page('index', 'Welcome', true), pages: [page('now', 'Now')], about: {markdown: 'Me'} as Site['about']});
+        const md = '[home](/pups/pages/index.md) [now](now.md#x) [about](/.well-known/about.md) [docs](/docs/intro.md#y) [rel](../guide/Über.markdown) '
+            + '[query](/a.md?v=2) [html](/a.html) [other](https://other.example/x.md)';
+        const links = [...siteMarkdown(s, md, `${O}/pups/pages/index.md`).querySelectorAll('a')].map(a => a.getAttribute('href'));
+        expect(links).toEqual(['/index.html', '/index.html?show=page&name=now#x', '/index.html?show=about', '/index.html?show=md&path=/docs/intro.md#y',
+            '/index.html?show=md&path=/pups/guide/%C3%9Cber.markdown', `${O}/a.md?v=2`, `${O}/a.html`, 'https://other.example/x.md']);
+    });
+
+    it('shows a linked Markdown file of the site on a page of its own, with links relative to it', async () => {
+        globalThis.fetch = jest.fn(async (url: string) => url == `${O}/docs/intro.md`
+            ? {ok: true, status: 200, headers: new Headers({'Content-Type': 'text/markdown'}), text: async () => '# Intro\n\nSee [next](next.md).'}
+            : {ok: false, status: 404, headers: new Headers(), text: async () => ''}) as any;
+        const s = site();
+        const ready = jest.fn();
+        const app = document.createElement('div');
+        renderPage(app, s, {page: 'md', path: '/docs/intro.md'}, {site: s, consent: createConsent('on')}, ready);
+        expect(app.querySelector('.wp-loading')).not.toBeNull();
+        await new Promise(r => setTimeout(r));
+        expect(ready).toHaveBeenCalled();
+        expect(app.querySelector('.wp-page h2')?.textContent).toBe('Intro');
+        expect(document.title).toBe('Intro · Notes');
+        expect(app.querySelector('.wp-page p a')?.getAttribute('href')).toBe('/index.html?show=md&path=/docs/next.md');
+        expect(app.querySelector('.wp-tab[aria-current]')).toBeNull();
+
+        const missing = document.createElement('div');
+        renderPage(missing, s, {page: 'md', path: '/docs/gone.md'}, {site: s, consent: createConsent('on')}, () => {});
+        await new Promise(r => setTimeout(r));
+        expect(missing.querySelector('.wp-page h2')?.textContent).toBe('Page not found');
+    });
+
     it('ends the page with the owner link, if the config has one', () => {
         expect(render(site(), {page: 'feed'}).app.querySelector('.wp-owner-link')).toBeNull();
         const app = render(site({config: {embeds: 'on', themeSelector: false, ownerLink: '/pups/'}}), {page: 'feed'}).app;

@@ -84,7 +84,7 @@ async function start(): Promise<void> {
             scrollTo(0, typeof scroll == 'number' ? scroll : 0);
         if (how == 'push')
             document.getElementById('wp-main')?.focus({preventScroll: true});
-    });
+    }, !!site.home);
 }
 
 start().catch(e => {

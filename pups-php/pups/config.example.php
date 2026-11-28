@@ -45,7 +45,7 @@ return [
     //      'properties' => ['https://bigwide.net/ns/avatar'], 'url_properties' => ['https://bigwide.net/ns/avatar'],
     //      'description' => "your site's profile images"],
     //     ['path' => '/pups/pages/', 'url' => 'https://alice.example/pups/pages/',
-    //      'rels' => ['https://bigwide.net/ns/webpup-pages'], 'link_properties' => ['https://bigwide.net/ns/webpup-hidden'],
+    //      'rels' => ['https://bigwide.net/ns/webpup-pages'], 'link_properties' => ['https://bigwide.net/ns/webpup-hidden', 'https://bigwide.net/ns/webpup-homepage'],
     //      'properties' => ['https://bigwide.net/ns/webpup-footer'], 'url_properties' => ['https://bigwide.net/ns/webpup-footer'],
     //      'description' => "your site's pages"],
     // ],

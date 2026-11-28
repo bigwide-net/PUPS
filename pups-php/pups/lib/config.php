@@ -198,7 +198,7 @@ function defaultWellKnown(string $origin, string $basePath = ''): array
         $root ? ['path' => '/feed/', 'url' => "$origin/feed/", 'rels' => ["{$ns}feed"], 'description' => 'the files of your feed, and your other feeds'] : null,
         ['path' => IMAGES_PATH, 'url' => $root ? $origin . IMAGES_PATH : null, 'properties' => ["{$ns}avatar", "{$ns}banner"],
             'url_properties' => ["{$ns}avatar", "{$ns}banner"], 'description' => "your site's profile images"],
-        ['path' => PAGES_PATH, 'url' => $root ? $origin . PAGES_PATH : null, 'rels' => ["{$ns}webpup-pages"], 'link_properties' => ["{$ns}webpup-hidden"],
+        ['path' => PAGES_PATH, 'url' => $root ? $origin . PAGES_PATH : null, 'rels' => ["{$ns}webpup-pages"], 'link_properties' => ["{$ns}webpup-hidden", "{$ns}webpup-homepage"],
             'properties' => ["{$ns}webpup-footer"], 'url_properties' => ["{$ns}webpup-footer"], 'description' => "your site's pages"],
     ]));
 }

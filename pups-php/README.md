@@ -2,9 +2,11 @@
 
 A **Personal Upload Server** ([RFC-6](https://github.com/bigwide-net/RFCs/blob/main/RFC-6-Personal-Upload-Server.md), `spec_version` 0.1) for ordinary shared web hosting. It lets apps upload files to your own domain: an app only needs your domain name, asks for permission with OAuth 2.1 + PKCE, and gets a token that can write the paths you approved. Everything uploaded is public, except in the [private areas](#private-areas).
 
+> **Experimental:** PUPS is at an experimental stage. Expect backward-incompatible changes to the protocol, the configuration and the stored data between versions.
+
 It needs **PHP 8.1 or later with the openssl extension** and a web server that reads `.htaccess` files (Apache or LiteSpeed, which is what cheap hosting plans run). There is no database, no Composer and no build step: you upload a folder. All data is in JSON files and plain files.
 
-It implements the same protocol as the [Cloudflare Worker](../pups-cloudflare) and the [Node test server](../pups-server):
+It implements the same protocol as the [Cloudflare Worker](../pups-cloudflare) and the [Bunny Edge Script](../pups-bunny):
 
 - discovery (`host-meta.json`, the configuration document, RFC 8414 metadata);
 - OAuth 2.1 with PKCE and Client ID Metadata Documents;
@@ -106,9 +108,9 @@ Then open <https://alice-php.pups.test/pups/setup> and enter the setup secret th
    - `extra_ca`: mkcert's CA, so that PUPS trusts those apps' certificates.
 4. Writes `Caddyfile.local`.
 
-`scripts/serve-local.sh` runs PHP's built-in server on `127.0.0.1:8080`, with 4 workers so that the setup checks can call the server while it answers, and Caddy on port 443. macOS lets normal users open port 443 on all interfaces; on Linux, see the Node server's README. The log goes to the terminal and to `pups/data/pups.log`.
+`scripts/serve-local.sh` runs PHP's built-in server on `127.0.0.1:8080`, with 4 workers so that the setup checks can call the server while it answers, and Caddy on port 443. macOS lets normal users open port 443 on all interfaces; Linux needs `sudo sysctl net.ipv4.ip_unprivileged_port_start=443`, `sudo setcap cap_net_bind_service=+ep $(readlink -f $(which caddy))`, or another port with a port forward from 443. The log goes to the terminal and to `pups/data/pups.log`.
 
-The default host name is `alice-php.pups.test`, so that it doesn't collide with the Node test server's `alice.pups.test`. Only one program can listen on port 443, so stop the Node server first, or give one of them a second loopback address (`127.0.0.2 alice-php.pups.test` in `/etc/hosts`, plus `sudo ifconfig lo0 alias 127.0.0.2` and `bind 127.0.0.2` in the site block of `Caddyfile.local`).
+The default host name is `alice-php.pups.test`, so that it doesn't collide with other local test servers on `alice.pups.test`. Only one program can listen on port 443, so stop the other server first, or give one of them a second loopback address (`127.0.0.2 alice-php.pups.test` in `/etc/hosts`, plus `sudo ifconfig lo0 alias 127.0.0.2` and `bind 127.0.0.2` in the site block of `Caddyfile.local`).
 
 **Plain HTTP:** for quick `curl` tests without TLS, create a `pups/config.php` with `'origin' => 'http://localhost:8080', 'allow_http' => true` and run `PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8080 -t pups pups/index.php`. RFC-6 clients won't accept it.
 
@@ -138,7 +140,7 @@ The default host name is `alice-php.pups.test`, so that it doesn't collide with 
 | `/pups/probe` | Used by the checks: echoes the method and whether the `Authorization` header arrived. |
 | `/p/…`, `/index.html`, `/webpup-config.json`, … | webpup's pages and files, while it is installed. |
 
-**Uploads live at the root of the domain**, as with the Node server: an app's file `/appdata/app.example/logo.svg` is at `https://me.example.com/appdata/app.example/logo.svg`. The server's own routes take precedence: `/`, `/oauth/…`, `/pups/…`, `/personal-storage.json`, webpup's URLs while it is installed (`/p/…` and its files), `/.well-known/host-meta.json` and `/.well-known/oauth-authorization-server`. Uploads can never shadow them: scopes allow writes only in `/appdata/<app>/` and the declared well-known paths, and well-known paths may not overlap these routes. The exceptions are `/pups/images/` and `/pups/pages/`, the declared directories for your site's profile images and pages, and the private paths you declare inside `/pups/private/`: no route of PUPS is in them.
+**Uploads live at the root of the domain**, as with the Cloudflare Worker: an app's file `/appdata/app.example/logo.svg` is at `https://me.example.com/appdata/app.example/logo.svg`. The server's own routes take precedence: `/`, `/oauth/…`, `/pups/…`, `/personal-storage.json`, webpup's URLs while it is installed (`/p/…` and its files), `/.well-known/host-meta.json` and `/.well-known/oauth-authorization-server`. Uploads can never shadow them: scopes allow writes only in `/appdata/<app>/` and the declared well-known paths, and well-known paths may not overlap these routes. The exceptions are `/pups/images/` and `/pups/pages/`, the declared directories for your site's profile images and pages, and the private paths you declare inside `/pups/private/`: no route of PUPS is in them.
 
 **Every change needs a fresh confirmation**: approving an app, removing one, changing the password or a setting. The owner pages share the origin of your domain (same-domain mode), so PUPS never sets a cookie: a script on your website would have no session to abuse. If you have a passkey, `assets/owner.js` asks for it when you submit a form, and the password is not accepted: it is kept for the day you lose your passkeys. Without a passkey, `owner.js` asks for the password in a dialog.
 
@@ -196,7 +198,7 @@ Passwords and tokens are never logged. Codes and tokens appear as a fingerprint:
 
 ## Untrusted input
 
-Client metadata documents, scopes, paths, form fields, headers and `host-meta.json` all come from outside. The rules are those of the Node server and the Cloudflare Worker, following Downread's sanitizer:
+Client metadata documents, scopes, paths, form fields, headers and `host-meta.json` all come from outside. The rules are those of the Cloudflare Worker and the Bunny Edge Script, following Downread's sanitizer:
 
 - **Encoding.** Every value written into an HTML page is HTML-encoded, in element content and in double-quoted attributes (`htmlspecialchars` with `ENT_QUOTES | ENT_SUBSTITUTE`, so invalid UTF-8 can't break out either). Pages contain no inline script; JSON for `owner.js` is embedded with `<`, `>` and `&` escaped.
 - **Sanitizing self-declared text.** `client_name` is shown cleaned up:
@@ -250,6 +252,8 @@ On the page *Homepage* (`/pups/homepage`, also linked from the start page and th
 **Install webpup** copies webpup to the domain's folder (next to `index.php`): `index.html`, `webpups.js`, `webpup.css`, `theme.css` (the theme), `webpup-config.json`, and `webpup-themes/` while the theme browser is on. **Save** writes them again, with your new choices; your other settings in `webpup-config.json`, such as `embeds`, stay. **Remove webpup** deletes these files, and `/` forwards to the owner pages again.
 
 - `/` and webpup's pretty URLs (`/p/about`, `/p/feed/photos`, …) serve its `index.html`. `.htaccess` lets the web server deliver its script, styles and themes directly; everything else goes through `index.php`.
+- **Home page.** `/` can show a Markdown page instead of your feed: add `"homepage": "/index.md"` (any Markdown file on your domain) to `webpup-config.json`, or let an app mark one of your pages in `host-meta.json` (link property `https://bigwide.net/ns/webpup-homepage`). See [webpup's README](../webpup/README.md#home-page).
+- **Markdown browsers.** Markdown browsers like [bonBon](https://github.com/scripting/bonBon) don't run webpup's script. For them, `index.html` links the Markdown file that the page shows, with `<link rel="alternate" type="text/markdown" href="…">`: at `/`, the home page (`webpup-config.json`'s, else the one `host-meta.json` marks); at `/p/md/<path>`, that file.
 - **Post pages.** Every post has a page of its own, e.g. `/p/feed/post/47` for the post with index 47 of your main feed. PUPS declares these URLs in `host-meta.json`, with the site property `https://bigwide.net/ns/post-url-template` set to `https://me.example.com/p/{feed}/post/{index}`, and removes it again with webpup. PUPS then links new posts of your feeds to their page ([RFC-7, Post URLs](https://github.com/bigwide-net/RFCs/blob/main/RFC-7-Feed-Publishing-with-PUPS.md#post-urls)). Apps can't change the property.
 - `webpup-config.json` is served with two links that PUPS adds: `settings-url`, where the theme browser tells you to change the theme, and `owner-link`, the **Owner** link to `/pups/` at the very bottom of the page. Set `'webpup_owner_link' => false` in `config.php` to leave that link out.
 - An `index.html` of your own takes precedence: PUPS serves it at `/`, never replaces it, and the page *Homepage* asks you to remove or rename it before installing webpup.
@@ -290,7 +294,7 @@ By default PUPS declares the list of well-known paths of RFC-6, at the domain ro
 | `/feed.json` | your feed | may register feeds with the rel `https://bigwide.net/ns/feed` |
 | `/feed/` | the files of your feed, and your other feeds | may register feeds with the rel `https://bigwide.net/ns/feed` |
 | `/pups/images/` | your site's profile images | may set the properties `https://bigwide.net/ns/avatar` and `…/banner`, to the URL of an image in `/pups/images/` |
-| `/pups/pages/` | your site's pages | may register pages with the rel `https://bigwide.net/ns/webpup-pages`, with the link property `…/webpup-hidden`, and set the property `https://bigwide.net/ns/webpup-footer` to the URL of a file in `/pups/pages/` |
+| `/pups/pages/` | your site's pages | may register pages with the rel `https://bigwide.net/ns/webpup-pages`, with the link properties `…/webpup-hidden` and `…/webpup-homepage`, and set the property `https://bigwide.net/ns/webpup-footer` to the URL of a file in `/pups/pages/` |
 
 The consent screen groups them, with one checkbox per group: `/feed.json`, `/feed/` and `following.opml` under "Manage your feeds", the others under "Manage your profile", and [private paths](#private-areas) under "Read non-public content" or "Manage non-public content". The names in the table appear in the group's details.
 
@@ -306,7 +310,7 @@ In a [folder installation](#installing-in-a-folder) only `/.well-known/` reaches
      'properties' => ['https://bigwide.net/ns/avatar'], 'url_properties' => ['https://bigwide.net/ns/avatar'],
      'description' => "your site's profile images"],
     ['path' => '/pups/pages/', 'url' => 'https://me.example.com/pups/pages/',
-     'rels' => ['https://bigwide.net/ns/webpup-pages'], 'link_properties' => ['https://bigwide.net/ns/webpup-hidden'],
+     'rels' => ['https://bigwide.net/ns/webpup-pages'], 'link_properties' => ['https://bigwide.net/ns/webpup-hidden', 'https://bigwide.net/ns/webpup-homepage'],
      'properties' => ['https://bigwide.net/ns/webpup-footer'], 'url_properties' => ['https://bigwide.net/ns/webpup-footer'],
      'description' => "your site's pages"],
 ],
@@ -378,7 +382,7 @@ Apps can act as you on other sites ([RFC-10](https://github.com/bigwide-net/RFCs
 
 ## How it maps to RFC-6
 
-- **OAuth is implemented by hand**, like in the Cloudflare Worker and the Node server: codes are single-use, and a reused code revokes every token issued from it. Refresh tokens rotate, and reuse revokes the grant. The exception is a 60-second grace period, while nothing issued by the replacement has been used. `me` is in every token response.
+- **OAuth is implemented by hand**, like in the Cloudflare Worker and the Bunny Edge Script: codes are single-use, and a reused code revokes every token issued from it. Refresh tokens rotate, and reuse revokes the grant. The exception is a 60-second grace period, while nothing issued by the replacement has been used. `me` is in every token response.
 - **Same-domain mode only.** There is no auth subdomain: typical shared hosting offers no easy way to run one install on two hosts. This matches RFC-6's description of the PHP drop-in.
 - **Passkeys are verified with the openssl extension**, without a library:
   - CBOR and COSE parsing, ES256 and RS256, and Ed25519 where the sodium extension exists;

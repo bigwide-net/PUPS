@@ -4,6 +4,8 @@ A [Personal Upload Server](https://github.com/bigwide-net/RFCs/blob/main/RFC-6-P
 
 **Status: not yet run on Bunny.** The tests run against a fake of the Bunny Storage HTTP API. Several platform details are undocumented and must be checked on the first deployment; see [Open questions](#open-questions).
 
+> **Experimental:** PUPS is at an experimental stage. Expect backward-incompatible changes to the protocol, the configuration and the stored data between versions.
+
 ## How it works
 
 ```
@@ -126,7 +128,7 @@ The script has the same small built-in receiver as the PHP and Cloudflare versio
 
 ## Homepage
 
-On the page *Homepage* (`/pups/homepage`) you can make **webpup** the homepage of your domain, choose its theme and the theme browser, or remove it again; then `/` forwards to the owner pages at `/pups/`. webpup's files are part of the script, nothing is copied to the storage zone. `/` and `/p/…` serve its `index.html`; `/webpups.js`, `/webpup.css`, `/theme.css`, `/webpup-themes/…` and `/webpup-config.json` the rest, revalidated on every request. While webpup is installed, `host-meta.json` declares its post pages with the property `https://bigwide.net/ns/post-url-template` (`https://tim.example.com/p/{feed}/post/{index}`). With `ORIGIN_URL`, your existing website keeps `/`.
+On the page *Homepage* (`/pups/homepage`) you can make **webpup** the homepage of your domain, choose its theme and the theme browser, or remove it again; then `/` forwards to the owner pages at `/pups/`. webpup's files are part of the script, nothing is copied to the storage zone. `/` and `/p/…` serve its `index.html`; `/webpups.js`, `/webpup.css`, `/theme.css`, `/webpup-themes/…` and `/webpup-config.json` the rest, revalidated on every request. For Markdown browsers like [bonBon](https://github.com/scripting/bonBon), which don't run webpup's script, `index.html` links the Markdown file that the page shows (`<link rel="alternate" type="text/markdown">`): at `/`, the page that `host-meta.json` marks as the home page; at `/p/md/<path>`, that file. While webpup is installed, `host-meta.json` declares its post pages with the property `https://bigwide.net/ns/post-url-template` (`https://tim.example.com/p/{feed}/post/{index}`). With `ORIGIN_URL`, your existing website keeps `/`.
 
 ## Security notes
 

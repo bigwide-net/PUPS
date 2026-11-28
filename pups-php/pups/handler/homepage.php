@@ -12,6 +12,9 @@ namespace Pups;
 const WEBPUP_GENERATOR = '<meta name="generator" content="webpup">';
 /** The site property that tells apps the URL of a post's page (RFC-6 "Site properties", RFC-7 items). */
 const POST_URL_TEMPLATE_PROP = 'https://bigwide.net/ns/post-url-template';
+/** The page link property that makes a page the site's home page (RFC-6 "Pages"). */
+const WEBPUP_HOMEPAGE_PROP = 'https://bigwide.net/ns/webpup-homepage';
+const WEBPUP_PAGES_REL = 'https://bigwide.net/ns/webpup-pages';
 /** webpup's files besides index.html, the themes and the config, served as they are. */
 const WEBPUP_ASSETS = ['/webpups.js' => 'text/javascript', '/webpup.css' => 'text/css', '/theme.css' => 'text/css'];
 
@@ -157,7 +160,7 @@ function homepageRoute(Request $req, string $rel, Ctx $ctx): ?Response
     $c = $ctx->config;
     if ($rel === '/') {
         $kind = homepageKind($c);
-        return $kind ? siteFile($req, "$c->siteDir/index.html", 'text/html') : seeOther($c->path('/pups/'));
+        return $kind === 'webpup' ? webpupIndex($req, $rel, $ctx) : ($kind ? siteFile($req, "$c->siteDir/index.html", 'text/html') : seeOther($c->path('/pups/')));
     }
     $theme = preg_match('#^/webpup-themes/([a-z0-9-]+\.(css|jpg)|index\.json)$#D', $rel, $m);
     if (!($rel === '/index.html' || str_starts_with($rel, '/p/') || isset(WEBPUP_ASSETS[$rel]) || $rel === '/webpup-config.json' || $theme)
@@ -174,7 +177,68 @@ function homepageRoute(Request $req, string $rel, Ctx $ctx): ?Response
     }
     if (isset(WEBPUP_ASSETS[$rel]))
         return is_file("$c->siteDir$rel") ? siteFile($req, "$c->siteDir$rel", WEBPUP_ASSETS[$rel]) : null;
-    return siteFile($req, "$c->siteDir/index.html", 'text/html');
+    return webpupIndex($req, $rel, $ctx);
+}
+
+/**
+ * webpup's index.html, with a link to the Markdown file that the URL shows, if any:
+ * <link rel="alternate" type="text/markdown" href="…">. Markdown browsers like bonBon
+ * (github.com/scripting/bonBon), which don't run webpup's script, show that file instead.
+ */
+function webpupIndex(Request $req, string $rel, Ctx $ctx): Response
+{
+    $c = $ctx->config;
+    $html = file_get_contents("$c->siteDir/index.html");
+    $twin = markdownTwin($req, $rel, $ctx);
+    if ($twin !== null)
+        $html = preg_replace('#</head>#i', '<link rel="alternate" type="text/markdown" href="' . h($twin) . "\">\n</head>", $html, 1);
+    return siteFile($req, '', 'text/html', $html);
+}
+
+/** A path of a Markdown file of the site, as webpup shows them: absolute, .md or .markdown, no dot segments. */
+function isMarkdownPath(?string $path): bool
+{
+    return $path !== null && preg_match('#^/(?![/\\\\])#', $path) && preg_match('/\.(md|markdown)$/iD', $path)
+        && isUtf8($path) && !preg_match('/[\x00-\x1f\x7f\\\\?#]/', $path)
+        && !array_intersect(explode('/', $path), ['.', '..']);
+}
+
+/**
+ * The URL of the Markdown file that a webpup URL shows: for / (and /index.html without ?show), the
+ * home page, i.e. webpup-config.json's homepage, else the page link marked with
+ * WEBPUP_HOMEPAGE_PROP in host-meta.json; for /p/md/<path> (?show=md&path=<path>), that file.
+ */
+function markdownTwin(Request $req, string $rel, Ctx $ctx): ?string
+{
+    $c = $ctx->config;
+    $q = $req->query();
+    $show = $q['show'][0] ?? null;
+    $path = match (true) {
+        str_starts_with($rel, '/p/md/') => rawurldecode(substr($rel, 5)),
+        $rel === '/index.html' && $show === 'md' => $q['path'][0] ?? '',
+        ($rel === '/' || $rel === '/index.html' || $rel === '/p/') && $show === null => null,
+        default => false,
+    };
+    if ($path === false)
+        return null;
+    if ($path !== null)
+        return isMarkdownPath($path) ? $c->origin . implode('/', array_map('rawurlencode', explode('/', $path))) : null;
+    $configured = installedWebpupConfig($c)['homepage'] ?? null;
+    if (is_string($configured))
+        return preg_match('#^/(?![/\\\\])#', $configured) ? $c->origin . $configured : null;
+    try {
+        $stored = readHostMeta($ctx);
+        $doc = $stored ? parseHostMeta($stored['text']) : null;
+    } catch (HttpError | \UnexpectedValueException) {
+        return null;
+    }
+    foreach ($doc->links ?? [] as $link) {
+        $props = $link->properties ?? null;
+        $mark = $props instanceof \stdClass ? $props->{WEBPUP_HOMEPAGE_PROP} ?? null : null;
+        if (($link->rel ?? null) === WEBPUP_PAGES_REL && is_string($link->href ?? null) && is_string($mark) && strtolower(trim($mark)) === 'true')
+            return str_starts_with($link->href, "$c->origin/") ? $link->href : null;
+    }
+    return null;
 }
 
 /** /pups/assets/themes/<id>.jpg: the theme thumbnails for the homepage page. */

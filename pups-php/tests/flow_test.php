@@ -1,5 +1,5 @@
 <?php
-// End-to-end tests of the protocol, ported from the Node test server.
+// End-to-end tests of the protocol, ported from the former Node test server.
 
 namespace Pups\Test;
 
@@ -29,7 +29,7 @@ test('discovery: links host-meta.json to the configuration document, with CORS',
         ['path' => '/feed/', 'url' => ORIGIN . '/feed/', 'rels' => $feed],
         ['path' => '/pups/images/', 'url' => ORIGIN . '/pups/images/', 'properties' => ['https://bigwide.net/ns/avatar', 'https://bigwide.net/ns/banner']],
         ['path' => '/pups/pages/', 'url' => ORIGIN . '/pups/pages/', 'rels' => ['https://bigwide.net/ns/webpup-pages'],
-            'properties' => ['https://bigwide.net/ns/webpup-footer'], 'link_properties' => ['https://bigwide.net/ns/webpup-hidden']],
+            'properties' => ['https://bigwide.net/ns/webpup-footer'], 'link_properties' => ['https://bigwide.net/ns/webpup-hidden', 'https://bigwide.net/ns/webpup-homepage']],
     ]);
     eq($t->get('/.well-known/oauth-authorization-server')->json()['code_challenge_methods_supported'], ['S256']);
     eq($t->req('HEAD', '/personal-storage.json')->status, 200, 'HEAD');
@@ -566,7 +566,7 @@ test('apps page: needs the password to view and to change, and never sets a cook
     eq($res->header('set-cookie'), null);
     contains($res->text, 'app.example');
     ok(preg_match('/name="revoke" value="([^"]+)"/', $res->text, $m), 'remove button');
-    // A removal without the password shows nothing (unlike the Node server, which showed the list).
+    // A removal without the password shows nothing (unlike the former Node server, which showed the list).
     $res = $t->post('/pups/apps', ['revoke' => $m[1]]);
     eq($res->status, 401);
     notContains($res->text, 'app.example');

@@ -106,7 +106,7 @@ const DEFAULT_WELL_KNOWN = (origin: string) => [
   { path: '/feed.json', rels: [`${NS}feed`], description: 'your feed' },
   { path: '/feed/', rels: [`${NS}feed`], description: 'the files of your feed, and your other feeds' },
   { path: '/pups/images/', properties: [`${NS}avatar`, `${NS}banner`], url_properties: [`${NS}avatar`, `${NS}banner`], description: "your site's profile images" },
-  { path: '/pups/pages/', rels: [`${NS}webpup-pages`], link_properties: [`${NS}webpup-hidden`], properties: [`${NS}webpup-footer`], url_properties: [`${NS}webpup-footer`], description: "your site's pages" },
+  { path: '/pups/pages/', rels: [`${NS}webpup-pages`], link_properties: [`${NS}webpup-hidden`, `${NS}webpup-homepage`], properties: [`${NS}webpup-footer`], url_properties: [`${NS}webpup-footer`], description: "your site's pages" },
 ].map(e => ({ ...e, url: origin + e.path }))
 
 const strings = (v: unknown, what: string) => {

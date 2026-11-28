@@ -1,5 +1,5 @@
 <?php
-// Sanitizing, untrusted input and size limits, ported from the Node test server; unit tests.
+// Sanitizing, untrusted input and size limits, ported from the former Node test server; unit tests.
 
 namespace Pups\Test;
 
@@ -203,7 +203,7 @@ test('config: validates the origin, the base path and the well-known paths', fun
     eq([$images['path'], $images['urlProperties'], $images['singleRels']], ['/pups/images/', ['https://bigwide.net/ns/avatar', 'https://bigwide.net/ns/banner'], []]);
     $pages = parseWellKnown(null, ORIGIN)[6];
     eq([$pages['path'], $pages['rels'], $pages['linkProperties'], $pages['urlProperties']],
-        ['/pups/pages/', ['https://bigwide.net/ns/webpup-pages'], ['https://bigwide.net/ns/webpup-hidden'], ['https://bigwide.net/ns/webpup-footer']]);
+        ['/pups/pages/', ['https://bigwide.net/ns/webpup-pages'], ['https://bigwide.net/ns/webpup-hidden', 'https://bigwide.net/ns/webpup-homepage'], ['https://bigwide.net/ns/webpup-footer']]);
 });
 
 test('source files contain no literal control or invisible characters', function () {

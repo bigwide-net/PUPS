@@ -1,7 +1,7 @@
 import { commentEndpoint, commentStatusEndpoint, dismissPage, inboxActionEndpoint, mentionEndpoint, type Receiver } from 'pups-inbox'
 import { errorPage, JWKS_PATH, themeThumbnail, webpupResponse } from 'pups-ui'
 import { filesEndpoint, isPrivateRaw, postEndpoint, serve } from './files'
-import { ensureMentionLink, hostMetaEndpoint, serveHostMeta } from './hostmeta'
+import { ensureMentionLink, hostMetaEndpoint, readHostMeta, serveHostMeta } from './hostmeta'
 import { cors, HttpError, htmlErrors, json, methodNotAllowed } from './http'
 import { authorize, configDocument, jwks, oauthMetadata, revoke, token } from './oauth'
 import { apps, commentSettings, feedSettings, homepage, homepageState, login, logout, password, setup, start } from './owner'
@@ -90,6 +90,7 @@ async function homeRoutes(req: Request, path: string, s: Settings, env: Env): Pr
   if (!state) return path == '/' ? seeOther(s.subdomainMode ? `${s.issuer}/pups/` : '/pups/') : undefined
   return webpupResponse(req, path, state, {
     settingsUrl: `${s.issuer}/pups/homepage`, ...s.webpupOwnerLink && { ownerLink: `${s.issuer}/pups/` },
+    ownerOrigin: s.ownerOrigin, hostMeta: () => readHostMeta(s, env).then(r => r.doc),
   })
 }
 
